@@ -28,9 +28,17 @@ One-command setup for cc-otel telemetry dashboard. Downloads the latest binary (
    - Run `<bin>/cc-otel -v` — if it works and `--force` was not passed, skip to step 4.
 
 3. **Download the latest release and install:**
-   - Fetch from `https://github.com/young1lin/cc-otel/releases/latest/download/cc-otel_{os}_{arch}.tar.gz`
-     (Windows: `.zip` instead of `.tar.gz`)
-   - Extract to a temp dir.
+   - Query GitHub API to get the actual download URL (release assets include version in filename):
+     ```bash
+     curl -sL https://api.github.com/repos/young1lin/cc-otel/releases/latest | jq -r '.assets[] | .browser_download_url'
+     ```
+   - Match the URL for the current platform: `{os}_{arch}` where os=`windows`/`darwin`/`linux`, arch=`amd64`/`arm64`.
+     Windows uses `.zip`, others use `.tar.gz`.
+   - If `curl`/`jq` are not available, or API fails, fallback to building from source:
+     ```bash
+     git clone https://github.com/young1lin/cc-otel.git /tmp/cc-otel-build && cd /tmp/cc-otel-build && go build -o cc-otel ./cmd/cc-otel/
+     ```
+   - Download the matched asset to a temp dir, extract it.
    - Run `./cc-otel install` — copies the binary to `~/.claude/cc-otel/cc-otel(.exe)`.
    - **No need to add to PATH** — all commands use absolute path to `~/.claude/cc-otel/cc-otel`.
 
