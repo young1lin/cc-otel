@@ -1,0 +1,12 @@
+{
+  "name": "cc-otel",
+  "description": "OTLP telemetry receiver + Web dashboard for Claude Code token usage and cost analysis. Companion to claude-token-monitor statusline.",
+  "version": "0.1.0",
+  "author": {
+    "name": "young1lin"
+  },
+  "homepage": "https://github.com/young1lin/cc-otel",
+  "repository": "https://github.com/young1lin/cc-otel",
+  "license": "MIT",
+  "tags": ["telemetry", "token-usage", "cost", "dashboard", "otel"]
+}

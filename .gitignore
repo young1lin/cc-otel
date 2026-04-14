@@ -1,0 +1,33 @@
+*.exe
+*.exe~
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.zip
+*.test.exe
+*.bak
+*.jsonl
+
+# Local runtime artifacts
+cc-otel.log
+cc-otel.pid
+cc-otel.yaml
+
+# Build output
+dist/
+bin/
+build/
+
+# Coverage output
+coverage.out
+coverage.html
+
+# Local build artifacts
+cc-otel-linux
+
+# Environment
+.env
+
+# Claude Code internal instructions
+.claude/

@@ -1,0 +1,24 @@
+# cc-otel configuration
+# Edit this file to customize cc-otel behavior.
+# Restart the daemon after changes: cc-otel restart   (or: stop && start)
+
+# OTLP gRPC receiver port
+# Claude Code sends telemetry to this port.
+# Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:<otel_port> in Claude Code env.
+otel_port: 4317
+
+# Web UI port
+# Access the dashboard at http://localhost:<web_port>
+web_port: 8899
+
+# SQLite database path (~ is expanded to home directory)
+db_path: ./cc-otel.db
+
+# Model name mapping: map a local/proxy model name to the Claude model it uses.
+# This lets you see the "actual" model name in the dashboard.
+# Format: local_name: claude_model_id
+# Example:
+#   model_mapping:
+#     my-proxy: claude-opus-4-6
+#     glm-5: claude-sonnet-4-6
+model_mapping: {}
