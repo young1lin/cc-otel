@@ -97,6 +97,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", h.Status)
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
 	mux.HandleFunc("/api/daily", h.DailyModel)
+	mux.HandleFunc("/api/hourly", h.HourlyModel)
 	mux.HandleFunc("/api/requests", h.Requests)
 	mux.HandleFunc("/api/sessions", h.Sessions)
 	mux.HandleFunc("/api/models", h.Models)
@@ -133,8 +134,8 @@ type StatusResponse struct {
 
 	DBOK bool `json:"db_ok"`
 
-	SSEClients int   `json:"sse_clients"`
-	LastUpdate int64 `json:"last_update_unix"`
+	SSEClients  int   `json:"sse_clients"`
+	LastUpdate  int64 `json:"last_update_unix"`
 	NotifyCount int64 `json:"notify_count"`
 
 	WebPort  int `json:"web_port"`
@@ -204,6 +205,10 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 }
 
 // rangeToFromTo converts a range name to (from, to) date strings in local time.
+// SYNC: This logic is mirrored in app.js rangeToFromTo(). Keep both in sync:
+//   week  = today − 6 days  (inclusive → 7 days total)
+//   month = today − 29 days (inclusive → 30 days total)
+//   all   = 1970-01-01 → today
 func rangeToFromTo(rangeParam string) (from, to string) {
 	now := time.Now().Local()
 	today := now.Format("2006-01-02")
@@ -276,6 +281,47 @@ func (h *Handler) DailyModel(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(PagedResponse{Data: data, Total: total, Page: page, PageSize: pageSize})
+}
+
+type HourlyResponse struct {
+	Date string                  `json:"date"`
+	Data []db.HourlyModelSummary `json:"data"`
+}
+
+// HourlyModel returns per-hour, per-model token usage and cost for a single local day.
+// Query params:
+// - date=YYYY-MM-DD (optional; defaults to today)
+// - model=<name> (optional filter)
+func (h *Handler) HourlyModel(w http.ResponseWriter, r *http.Request) {
+	date := r.URL.Query().Get("date")
+	if date == "" {
+		from, to := rangeToFromTo(r.URL.Query().Get("range"))
+		if from == to {
+			date = from
+		} else {
+			// Default to today if range is not a single day.
+			_, t := rangeToFromTo("today")
+			date = t
+		}
+	}
+	if !isValidDate(date) {
+		http.Error(w, "invalid date", http.StatusBadRequest)
+		return
+	}
+	model := r.URL.Query().Get("model")
+
+	data, err := h.repo.GetHourlyStatsByModel(r.Context(), date, model)
+	if err != nil {
+		log.Printf("hourly data error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if data == nil {
+		data = []db.HourlyModelSummary{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(HourlyResponse{Date: date, Data: data})
 }
 
 // Requests returns individual API request records with optional model and date filters.

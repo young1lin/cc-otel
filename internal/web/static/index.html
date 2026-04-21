@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=8">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -99,35 +99,71 @@
             <button class="panel-btn" data-panel="requests">Request Log</button>
         </div>
         <div class="panel-filter" id="request-filter">
-            <select id="model-filter" onchange="loadRequests()">
+            <select id="model-filter">
                 <option value="">All Models</option>
             </select>
-            <button onclick="loadRequests()">Refresh</button>
+            <button id="requests-refresh-btn">Refresh</button>
         </div>
     </div>
 
     <div id="panel-daily" class="panel active">
-        <div class="table-wrap">
-            <table>
-                <thead>
-                    <tr>
-                        <th rowspan="2">Date</th>
-                        <th rowspan="2">Model</th>
-                        <th rowspan="2">Requests</th>
-                        <th colspan="3" class="th-group">Input</th>
-                        <th rowspan="2">Output</th>
-                        <th rowspan="2">Cost</th>
-                    </tr>
-                    <tr>
-                        <th>Uncached</th>
-                        <th>Cache Read</th>
-                        <th>Cache Create</th>
-                    </tr>
-                </thead>
-                <tbody id="daily-tbody"></tbody>
-            </table>
+        <div class="daily-subtabs">
+            <button type="button" class="daily-subtab active" id="daily-view-day">By day</button>
+            <button type="button" class="daily-subtab" id="daily-view-hour">By hour</button>
         </div>
-        <div id="daily-pagination" class="pagination"></div>
+
+        <div id="daily-byday">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th rowspan="2">Date</th>
+                            <th rowspan="2">Model</th>
+                            <th rowspan="2">Requests</th>
+                            <th colspan="3" class="th-group">Input</th>
+                            <th rowspan="2">Output</th>
+                            <th rowspan="2">Cost</th>
+                        </tr>
+                        <tr>
+                            <th>Uncached</th>
+                            <th>Cache Read</th>
+                            <th>Cache Create</th>
+                        </tr>
+                    </thead>
+                    <tbody id="daily-tbody"></tbody>
+                </table>
+            </div>
+            <div id="daily-pagination" class="pagination"></div>
+        </div>
+
+        <div id="daily-byhour" style="display:none">
+            <div class="chart-section hourly-section">
+                <div class="chart-section-header">
+                    <span class="chart-section-title">Hourly by Model</span>
+                    <span class="hourly-hint">One bar per hour+model · switch Tokens/Cost/Requests above</span>
+                </div>
+                <div class="chart-wrap" id="hourly-chart"></div>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Hour</th>
+                            <th>Model</th>
+                            <th>Total Tokens</th>
+                            <th>Input</th>
+                            <th>Uncached</th>
+                            <th>Cache Read</th>
+                            <th>Cache Create</th>
+                            <th>Output</th>
+                            <th>Cost</th>
+                            <th>Reqs</th>
+                        </tr>
+                    </thead>
+                    <tbody id="hourly-tbody"></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <div id="panel-sessions" class="panel">
@@ -252,6 +288,6 @@
     </div>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

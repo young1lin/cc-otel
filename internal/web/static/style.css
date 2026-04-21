@@ -65,6 +65,168 @@ body {
     transition: background 0.25s ease, color 0.25s ease;
 }
 
+/* ── Insights bar (Avg/day + Top models) ─────────────────────────────────── */
+.insights-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 10px 18px;
+    margin: 10px 0 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+}
+.insights-main {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex: 1;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    min-width: 0;
+}
+.insights-main:hover { opacity: 0.95; }
+.insights-main:focus { outline: 2px solid var(--accent-dim); outline-offset: 2px; border-radius: 8px; }
+.insights-details-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+}
+.insights-details-btn:hover { border-color: var(--border-hover); }
+.insights-k {
+    color: var(--text-muted);
+    font-weight: 600;
+    letter-spacing: -0.2px;
+}
+.insights-v {
+    color: var(--text);
+}
+.insights-sep {
+    color: var(--text-dim);
+}
+.insights-tail {
+    color: var(--text-muted);
+}
+
+.insights-details { display: none; }
+.insights-details-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    gap: 10px;
+}
+.insights-details-title {
+    font-weight: 700;
+    letter-spacing: -0.2px;
+}
+.insights-details-close {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+}
+.insights-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+.insights-select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    outline: none;
+}
+.insights-select:focus { border-color: var(--border-hover); }
+
+.insights-days-details {
+    margin-top: 8px;
+}
+.insights-days-summary {
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+}
+.insights-days-list {
+    margin-top: 6px;
+    color: var(--text);
+    line-height: 1.45;
+    word-break: break-word;
+}
+.insights-details-close:hover { border-color: var(--border-hover); }
+.insights-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+@media (max-width: 720px) {
+    .insights-grid { grid-template-columns: 1fr; }
+}
+.insights-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+}
+.insights-card-k {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+.insights-card-v {
+    margin-top: 4px;
+    font-size: 13px;
+    font-weight: 700;
+}
+.insights-card-sub {
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.insights-table-wrap {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+}
+.insights-table-title {
+    font-weight: 700;
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+.insights-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.insights-table th, .insights-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 8px 8px;
+    text-align: left;
+    vertical-align: top;
+}
+.insights-table th { color: var(--text-muted); font-weight: 700; }
+
 /* ── Top nav ───────────────────────────────── */
 .topnav {
     display: flex;
@@ -298,8 +460,15 @@ body {
     border-radius: 6px !important;
     font-size: 12px !important;
     line-height: 32px !important;
-    max-width: 32px !important;
     height: 32px !important;
+    width: calc(100% / 7) !important;
+    max-width: calc(100% / 7) !important;
+    flex-basis: calc(100% / 7) !important;
+}
+span.flatpickr-weekday {
+    width: calc(100% / 7) !important;
+    max-width: calc(100% / 7) !important;
+    flex-basis: calc(100% / 7) !important;
 }
 .flatpickr-day:hover {
     background: var(--surface3) !important;
@@ -403,6 +572,8 @@ span.flatpickr-weekday {
     box-shadow: var(--shadow-md);
     overflow: hidden;
     position: fixed; /* popover placement set in JS */
+    display: flex;
+    flex-direction: column;
 }
 
 /* Slightly larger breakdown (KPI) modal only */
@@ -429,7 +600,37 @@ span.flatpickr-weekday {
 }
 .modal-close:hover { color: var(--text); }
 
-.modal-body { padding: 14px 16px 16px; }
+.modal-body {
+    padding: 14px 16px 16px;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    flex: 1 1 auto;
+}
+
+/* Insights: flex-centered in backdrop; drag bottom-right corner to resize */
+#insights-modal .modal.insights-modal {
+    position: relative;
+    left: auto;
+    top: auto;
+    transform: none;
+    width: min(980px, calc(100vw - 48px));
+    min-width: 280px;
+    min-height: 220px;
+    max-width: min(1400px, calc(100vw - 24px));
+    max-height: calc(100vh - 48px);
+    resize: both;
+    overflow: hidden;
+}
+@media (max-width: 640px) {
+    #insights-modal .modal.insights-modal {
+        resize: none;
+        width: min(980px, calc(100vw - 32px));
+        max-width: calc(100vw - 32px);
+    }
+}
+#insights-modal .modal.insights-modal .modal-body {
+    min-height: 0;
+}
 
 .cost-meta {
     font-size: 12px;
@@ -721,6 +922,37 @@ span.flatpickr-weekday {
     justify-content: space-between;
     margin-bottom: 12px;
     border-bottom: 1px solid var(--border);
+}
+
+/* ── Daily detail subtabs (By day / By hour) ─────────────────────────────── */
+.daily-subtabs {
+    display: flex;
+    gap: 8px;
+    margin: 10px 0 10px;
+}
+.daily-subtab {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.daily-subtab.active {
+    color: var(--text);
+    border-color: rgba(95, 147, 255, 0.55);
+    box-shadow: 0 0 0 3px rgba(95, 147, 255, 0.14);
+}
+.daily-subtab:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.hourly-section { margin-bottom: 12px; }
+.hourly-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: auto;
 }
 
 .panel-tabs {
