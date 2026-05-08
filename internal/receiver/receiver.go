@@ -2,7 +2,6 @@ package receiver
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commontpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -25,15 +25,21 @@ type ModelResolver interface {
 
 // logsServiceServer handles OTLP log exports (the primary data source for per-request details).
 // Notifier is implemented by api.Broker to decouple packages.
+//
+// Notify() is kept for backward compatibility — it implicitly tags the event
+// as "claude". The Codex path uses NotifySource("codex") so the frontend SSE
+// listener can route updates to the active tab.
 type Notifier interface {
 	Notify()
+	NotifySource(source string)
 }
 
 type logsServiceServer struct {
 	collogspb.UnimplementedLogsServiceServer
-	repo     *db.Repository
-	cfg      ModelResolver
-	notifier Notifier
+	repo         *db.Repository
+	cfg          ModelResolver
+	notifier     Notifier
+	codexTracker *codexSpanTracker
 }
 
 func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
@@ -41,17 +47,22 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 	for _, rl := range req.ResourceLogs {
 		for _, sl := range rl.ScopeLogs {
 			for _, lr := range sl.LogRecords {
+				// Source routing: Codex CLI clients are tagged via OTLP Resource
+				// service.name. Empty / unknown service.name keeps the existing
+				// Claude path for backward compatibility.
+				svc := serviceNameFromResource(rl.Resource)
+				if isCodexService(svc) {
+					dispatchCodexLog(ctx, s.repo, lr, rl.Resource, s.notifier, s.codexTracker)
+					continue
+				}
+
 				// 1. Parse ALL events into Event struct (never nil)
 				event := parseEventFromOTLP(lr, rl.Resource)
 				if event == nil {
 					continue
 				}
 
-				// 2. Raw JSON backup of every log record
-				rawJSON, _ := json.Marshal(event)
-				s.repo.InsertRawEvent(ctx, "log", event.Timestamp.Unix(), string(rawJSON))
-
-				// 3. Route by Claude Code event.name (not by model presence)
+				// 2. Route by Claude Code event.name (not by model presence)
 				switch event.EventName {
 				case "api_request":
 					apiReq := apiRequestFromEvent(event)
@@ -98,35 +109,8 @@ type metricsServiceServer struct {
 }
 
 func (s *metricsServiceServer) Export(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
-	if s.repo == nil {
-		return &colmetricspb.ExportMetricsServiceResponse{}, nil
-	}
-	for _, rm := range req.ResourceMetrics {
-		for _, sm := range rm.ScopeMetrics {
-			for _, m := range sm.Metrics {
-				sum := m.GetSum()
-				if sum == nil {
-					continue
-				}
-				for _, dp := range sum.DataPoints {
-					ts := time.Now().Unix()
-					if dp.TimeUnixNano > 0 {
-						ts = int64(dp.TimeUnixNano / 1e9)
-					}
-					attrs := extractAttrs(dp.Attributes)
-					sessionID := attrs["session.id"]
-					userID := attrs["user.id"]
-					terminalType := attrs["terminal.type"]
-					model := attrs["model"]
-					attrType := attrs["type"]
-					val := numberDataPointValue(dp)
-					if err := s.repo.InsertMetricPoint(ctx, ts, m.Name, val, sessionID, userID, terminalType, model, attrType); err != nil {
-						log.Printf("metric insert %s: %v", m.Name, err)
-					}
-				}
-			}
-		}
-	}
+	// Metrics (token.usage, cost.usage, etc.) are redundant with api_requests log events.
+	// Accept the gRPC call to avoid client errors, but skip storage.
 	return &colmetricspb.ExportMetricsServiceResponse{}, nil
 }
 
@@ -134,19 +118,22 @@ func (s *metricsServiceServer) Export(ctx context.Context, req *colmetricspb.Exp
 type Receiver struct {
 	logs    *logsServiceServer
 	metrics *metricsServiceServer
+	traces  *tracesServiceServer
 }
 
 // New creates a Receiver that stores parsed OTEL data via repo and resolves model names via cfg.
 func New(repo *db.Repository, cfg ModelResolver, notifier Notifier) *Receiver {
 	return &Receiver{
-		logs:    &logsServiceServer{repo: repo, cfg: cfg, notifier: notifier},
+		logs:    &logsServiceServer{repo: repo, cfg: cfg, notifier: notifier, codexTracker: newCodexSpanTracker()},
 		metrics: &metricsServiceServer{repo: repo},
+		traces:  &tracesServiceServer{repo: repo, notifier: notifier},
 	}
 }
 
 func (r *Receiver) Register(srv *grpc.Server) {
 	collogspb.RegisterLogsServiceServer(srv, r.logs)
 	colmetricspb.RegisterMetricsServiceServer(srv, r.metrics)
+	coltracepb.RegisterTraceServiceServer(srv, r.traces)
 }
 
 // --- Parsing helpers ---
@@ -227,6 +214,30 @@ func eventNameFromLogBody(lr *logspb.LogRecord) string {
 		return strings.TrimPrefix(s, "claude_code.")
 	}
 	return ""
+}
+
+// serviceNameFromResource extracts service.name from OTLP Resource attributes.
+// Returns "" if absent.
+func serviceNameFromResource(res *resourcepb.Resource) string {
+	if res == nil {
+		return ""
+	}
+	for _, kv := range res.Attributes {
+		if kv.Key == "service.name" {
+			return anyValueToString(kv.Value)
+		}
+	}
+	return ""
+}
+
+// isCodexService returns true if service.name identifies a Codex CLI client.
+// Defaults to false (Claude path) when empty so older Claude clients without
+// service.name keep working.
+func isCodexService(name string) bool {
+	if name == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(name), "codex")
 }
 
 func apiRequestFromEvent(e *db.Event) *db.APIRequest {

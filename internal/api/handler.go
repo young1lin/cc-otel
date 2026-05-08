@@ -98,10 +98,21 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
 	mux.HandleFunc("/api/daily", h.DailyModel)
 	mux.HandleFunc("/api/hourly", h.HourlyModel)
+	mux.HandleFunc("/api/intraday", h.Intraday)
 	mux.HandleFunc("/api/requests", h.Requests)
+	mux.HandleFunc("/api/durations", h.Durations)
 	mux.HandleFunc("/api/sessions", h.Sessions)
 	mux.HandleFunc("/api/models", h.Models)
 	mux.HandleFunc("/api/events", h.Events)
+
+	// Codex telemetry mirror routes (Task 11). Paths follow /api/codex/<name>.
+	mux.HandleFunc("/api/codex/dashboard", h.CodexDashboard)
+	mux.HandleFunc("/api/codex/daily", h.CodexDaily)
+	mux.HandleFunc("/api/codex/requests", h.CodexRequests)
+	mux.HandleFunc("/api/codex/sessions", h.CodexSessions)
+	mux.HandleFunc("/api/codex/durations", h.CodexDurations)
+	mux.HandleFunc("/api/codex/models", h.CodexModels)
+	mux.HandleFunc("/api/codex/intraday", h.CodexIntraday)
 
 	// Embedded static files reflect the tree at compile time. For local UI edits without
 	// rebuilding, set CC_OTEL_STATIC_DIR to the static folder (e.g. internal/web/static).
@@ -206,9 +217,10 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 
 // rangeToFromTo converts a range name to (from, to) date strings in local time.
 // SYNC: This logic is mirrored in app.js rangeToFromTo(). Keep both in sync:
-//   week  = today − 6 days  (inclusive → 7 days total)
-//   month = today − 29 days (inclusive → 30 days total)
-//   all   = 1970-01-01 → today
+//
+//	week  = today − 6 days  (inclusive → 7 days total)
+//	month = today − 29 days (inclusive → 30 days total)
+//	all   = 1970-01-01 → today
 func rangeToFromTo(rangeParam string) (from, to string) {
 	now := time.Now().Local()
 	today := now.Format("2006-01-02")
@@ -222,6 +234,53 @@ func rangeToFromTo(rangeParam string) (from, to string) {
 	default: // "today" or empty
 		return today, today
 	}
+}
+
+// Durations returns per-model average duration stats for the selected date range.
+// Query:
+//   - from=YYYY-MM-DD&to=YYYY-MM-DD (preferred)
+//   - or range=today|week|month|all
+//   - optional: model=<name> to filter down to a single model
+//   - optional: limit=<n> (default 2000, max 2000)
+func (h *Handler) Durations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.repo == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode([]db.DurationStat{})
+		return
+	}
+
+	q := r.URL.Query()
+	from := q.Get("from")
+	to := q.Get("to")
+	if from == "" || to == "" {
+		rr := q.Get("range")
+		if rr == "" {
+			rr = "today"
+		}
+		from, to = rangeToFromTo(rr)
+	}
+	if !isValidDate(from) || !isValidDate(to) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid from/to date; expected YYYY-MM-DD"})
+		return
+	}
+
+	model := q.Get("model")
+	limit := 2000
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 2000 {
+			limit = n
+		}
+	}
+
+	stats, err := h.repo.GetDurationStatsByModel(r.Context(), model, from, to, limit)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(stats)
 }
 
 // Dashboard returns aggregated token usage and cost KPIs for a date range.
@@ -324,6 +383,75 @@ func (h *Handler) HourlyModel(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(HourlyResponse{Date: date, Data: data})
 }
 
+// IntradayResponse wraps Intraday for the JSON envelope; From/To are inclusive
+// local YYYY-MM-DD; BucketMinutes echoes back the granularity actually used so
+// the client can label its axis without re-deriving it.
+type IntradayResponse struct {
+	From          string                    `json:"from"`
+	To            string                    `json:"to"`
+	BucketMinutes int                       `json:"bucket_minutes"`
+	Data          []db.IntradayModelSummary `json:"data"`
+}
+
+// Intraday returns per-(time-bucket, model) stats across a [from, to] window of
+// at most 7 local days, bucketed at 15/30/60 minutes. Designed for the new
+// line-chart "Intraday by Model" view; defaults to today + 30-min buckets.
+//
+// Query params:
+//   - from=YYYY-MM-DD, to=YYYY-MM-DD (optional; default = today)
+//   - range=<today|week|month|all> (used only if from/to omitted)
+//   - bucket=15|30|60 (default 30)
+//   - model=<name> (optional filter)
+func (h *Handler) Intraday(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	from := q.Get("from")
+	to := q.Get("to")
+	if from == "" || to == "" {
+		rng := q.Get("range")
+		if rng == "" {
+			rng = "today"
+		}
+		from, to = rangeToFromTo(rng)
+	}
+	if !isValidDate(from) || !isValidDate(to) {
+		http.Error(w, "invalid date", http.StatusBadRequest)
+		return
+	}
+	loc := time.Local
+	fromT, errF := time.ParseInLocation("2006-01-02", from, loc)
+	toT, errT := time.ParseInLocation("2006-01-02", to, loc)
+	if errF != nil || errT != nil || toT.Before(fromT) {
+		http.Error(w, "invalid date range", http.StatusBadRequest)
+		return
+	}
+	if toT.Sub(fromT) > 6*24*time.Hour {
+		http.Error(w, "intraday range must not exceed 7 days", http.StatusBadRequest)
+		return
+	}
+
+	bucket := 30
+	if v := q.Get("bucket"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil && (n == 15 || n == 30 || n == 60) {
+			bucket = n
+		}
+	}
+	model := q.Get("model")
+
+	data, err := h.repo.GetIntradayStatsByModel(r.Context(), from, to, bucket, model)
+	if err != nil {
+		log.Printf("intraday data error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if data == nil {
+		data = []db.IntradayModelSummary{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(IntradayResponse{From: from, To: to, BucketMinutes: bucket, Data: data})
+}
+
 // Requests returns individual API request records with optional model and date filters.
 func (h *Handler) Requests(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := parsePage(r)
@@ -408,8 +536,14 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case <-ch:
-			fmt.Fprintf(w, "data: update\n\n")
+		case src, ok := <-ch:
+			if !ok {
+				return
+			}
+			if src == "" {
+				src = "claude"
+			}
+			fmt.Fprintf(w, "data: %s\n\n", src)
 			flusher.Flush()
 		case <-ticker.C:
 			fmt.Fprintf(w, ": keepalive\n\n")

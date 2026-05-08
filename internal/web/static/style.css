@@ -911,8 +911,11 @@ span.flatpickr-weekday {
 }
 
 .chart-wrap {
+    position: relative;
     height: 300px;
     min-height: 200px;
+    /* overflow:hidden clips legend/tooltip at the top; layout is fixed via grid + appendToBody tooltip */
+    overflow: visible;
 }
 
 /* ── Panel header — tabs + contextual filter in one row ── */
@@ -1147,4 +1150,31 @@ td.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: 
     .topnav { flex-wrap: wrap; height: auto; padding: 8px 16px; gap: 8px; }
     .toolbar-filters { order: 3; width: 100%; justify-content: flex-start; flex-wrap: wrap; }
     .custom-range { border-left: none; padding: 0; }
+}
+
+/* ── Source tabs (Claude Code | Codex) ─────── */
+.source-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 0 0 14px 0;
+}
+.source-tab {
+    background: var(--surface);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.source-tab:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+}
+.source-tab.is-active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: var(--accent);
 }

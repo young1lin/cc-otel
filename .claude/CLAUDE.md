@@ -127,6 +127,39 @@ cc-otel restart
 
 - **Skip rebuilding during local development (optional)**: set `CC_OTEL_STATIC_DIR=internal/web/static` and the web UI will read static files directly from disk. After editing, usually just refresh the page.
 
+### Frontend module layout (ESM, no build tools)
+
+`internal/web/static/app.js` is a thin entry module (~230 lines) that imports
+focused ES modules under `internal/web/static/js/`. The page loads them via
+`<script type="module" src="app.js?v=NN">`; vendor scripts (ECharts, Flatpickr)
+load before it as classic globals.
+
+| Module | Responsibility |
+|---|---|
+| `state.js` | Central mutable state object + paging counters. Cross-module reads/writes go through `state.*`. |
+| `utils.js` | Pure formatters: fmtNum / fmtUSD / fmtTime / fmtHourRange / escapeHtml / toYMD / rangeToFromTo, etc. |
+| `theme.js` | Theme toggle, palette, per-model branded colors (Claude / GLM / GPT / etc.). |
+| `api.js` | Thin wrappers around every `/api/*` endpoint; the only place `fetch()` is called. |
+| `filters.js` | Date range tabs, day-dropdown, Flatpickr, range/metric/granularity/panel button listeners, URL ↔ state sync. |
+| `sse.js` | SSE live-stream + status modal. |
+| `breakdown.js` | KPI breakdown modal (cost / input / output / cache hit / requests pie). |
+| `insights.js` | Insights bar + modal. |
+| `chart-main.js` | Main bar chart + `buildBarTooltip` (shared with hourly chart). |
+| `panel-daily.js` | Daily by-day table + by-hour hourly chart. |
+| `panel-sessions.js` | Sessions table. |
+| `panel-requests.js` | Request log + duration stats sort. |
+| `pagination.js` | Pagination renderer shared by panels. |
+
+Tests live under `internal/web/static/tests/*.test.mjs` and import directly from
+the modules (`import { fmtNum } from '../js/utils.js';`). Run with
+`node --test internal/web/static/tests/*.test.mjs` (Node ≥ 18 built-in).
+
+When extracting more code or adding a new view, follow the same pattern:
+- Pure helpers go in `utils.js` / `theme.js` and get a `*.test.mjs` companion.
+- DOM-bound modules expose an `initX({ openPopover, closePopover, ...callbacks })`
+  factory; cross-module dependencies are injected by `app.js` at boot.
+- Never `import` ECharts or Flatpickr — read them from `window.echarts` / `window.flatpickr`.
+
 ### Change verification checklist (mandatory for Agent)
 
 When modifying code that **affects the web UI** (especially `internal/web/static/`, chart/table field semantics), the Agent must complete the following steps before reporting back to the user. Do NOT tell the user to "refresh and check yourself".
@@ -235,3 +268,7 @@ Display order and hierarchy (**must be preserved**):
 ### Agent UI verification on changes
 
 When changes touch any of the above rules, in addition to the standard "build -> restart -> API -> browser `?v=` -> screenshot" flow, verify in the browser: **hover a bar in Token mode**, confirm **Total = Input (parent row) + Output**, and **Input (parent row) = sum of three child rows**.
+
+### Source routing (Claude Code vs Codex)
+
+cc-otel reads OTLP Resource attribute `service.name` to decide which storage path applies. Names containing `codex` (case-insensitive) go to `codex_*` tables and `/api/codex/*` routes; everything else (including missing service.name) goes to the existing Claude tables for back-compat. Frontend tabs key on `state.source` (`claude` default, `codex` via `?source=codex` URL param).

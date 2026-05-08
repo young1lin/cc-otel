@@ -398,6 +398,83 @@ func TestInsertRequestDuplicateSkipsAgg(t *testing.T) {
 	}
 }
 
+func TestBackfillTTFTByRequestID(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	repo := NewRepository(database)
+	ctx := context.Background()
+
+	_, err = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp: time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC),
+		SessionID: "api-session",
+		PromptID:  "prompt-1",
+		Model:     "claude-opus-4-7",
+		RequestID: "req-exact",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := repo.BackfillTTFTByRequestID(ctx, "req-exact", 3409)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated {
+		t.Fatal("expected request_id TTFT update")
+	}
+
+	var ttft int64
+	if err := database.QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE request_id = 'req-exact'`).Scan(&ttft); err != nil {
+		t.Fatal(err)
+	}
+	if ttft != 3409 {
+		t.Fatalf("expected ttft 3409, got %d", ttft)
+	}
+}
+
+func TestPendingTTFTByRequestIDSurvivesSessionMismatch(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	repo := NewRepository(database)
+	ctx := context.Background()
+	ts := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)
+
+	if err := repo.EnqueuePendingTTFTSpan(ctx, "req-pending", "trace-session", "claude-opus-4-7", ts.Unix(), 2552, `{}`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp: ts,
+		SessionID: "api-session",
+		PromptID:  "prompt-1",
+		Model:     "claude-opus-4-7",
+		RequestID: "req-pending",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ttft, processed int64
+	if err := database.QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE request_id = 'req-pending'`).Scan(&ttft); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT processed FROM pending_ttft_spans WHERE request_id = 'req-pending'`).Scan(&processed); err != nil {
+		t.Fatal(err)
+	}
+	if ttft != 2552 || processed != 1 {
+		t.Fatalf("expected ttft=2552 and processed=1, got ttft=%d processed=%d", ttft, processed)
+	}
+}
+
 func TestRebuildDailyAggregates(t *testing.T) {
 	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
 	database, err := Init(cfg)

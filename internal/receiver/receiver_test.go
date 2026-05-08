@@ -7,7 +7,46 @@ import (
 	commontpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
+
+func TestServiceNameFromResource(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		val  string
+	}{
+		{"empty", "", ""},
+		{"claude-code", "claude-code", "claude-code"},
+		{"codex-cli", "codex-cli", "codex-cli"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+				{Key: "service.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: tt.val}}},
+			}}
+			got := serviceNameFromResource(res)
+			if got != tt.want {
+				t.Errorf("got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsCodexService(t *testing.T) {
+	if !isCodexService("codex-cli") {
+		t.Error("codex-cli not detected")
+	}
+	if !isCodexService("openai-codex") {
+		t.Error("openai-codex not detected")
+	}
+	if isCodexService("claude-code") {
+		t.Error("claude-code mis-routed")
+	}
+	if isCodexService("") {
+		t.Error("empty mis-routed")
+	}
+}
 
 func makeNumberDataPoint(value float64, attrs ...*commontpb.KeyValue) *metricspb.NumberDataPoint {
 	return &metricspb.NumberDataPoint{

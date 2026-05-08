@@ -407,6 +407,49 @@ func cmdServe() {
 		}
 	}
 
+	// Raw event TTL: aggressive short-lived cleanup for raw_otlp_events / codex_raw_otlp_events.
+	// Runs once on startup, then every hour in the background.
+	rawTTLDays := cfg.RawTTLDays
+	if rawTTLDays <= 0 {
+		rawTTLDays = 5
+	}
+	{
+		cutoff := time.Now().Unix() - int64(rawTTLDays)*86400
+		n, err := repo.CleanupRaw(ctx, cutoff)
+		if err != nil {
+			log.Printf("raw TTL cleanup error: %v", err)
+		} else if n > 0 {
+			log.Printf("raw TTL cleanup: deleted %d raw records older than %d days", n, rawTTLDays)
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Unix() - int64(rawTTLDays)*86400
+			n, err := repo.CleanupRaw(context.Background(), cutoff)
+			if err != nil {
+				log.Printf("periodic raw TTL cleanup error: %v", err)
+			} else if n > 0 {
+				log.Printf("periodic raw TTL cleanup: deleted %d raw records older than %d days", n, rawTTLDays)
+			}
+		}
+	}()
+
+	// Periodic cleanup: codex.websocket_event rows older than 10 minutes are stale.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			n, err := repo.CleanupCodexWebsocketEvents(context.Background(), 600)
+			if err != nil {
+				log.Printf("codex ws event cleanup error: %v", err)
+			} else if n > 0 {
+				log.Printf("codex ws event cleanup: deleted %d stale websocket_events", n)
+			}
+		}
+	}()
+
 	broker := api.NewBroker()
 
 	grpcSrv := grpc.NewServer()

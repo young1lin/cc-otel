@@ -196,6 +196,19 @@ func runMigrations(db *sql.DB) error {
 			raw_json TEXT NOT NULL
 		);
 
+		-- Pending TTFT spans that arrived before the corresponding api_request log row.
+		-- We opportunistically apply these when inserting api_requests (best-effort).
+		CREATE TABLE IF NOT EXISTS pending_ttft_spans (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_unix INTEGER NOT NULL,
+			session_id TEXT NOT NULL,
+			model TEXT NOT NULL,
+			span_end_unix INTEGER NOT NULL,
+			ttft_ms INTEGER NOT NULL,
+			raw_json TEXT NOT NULL,
+			processed INTEGER NOT NULL DEFAULT 0
+		);
+
 		-- Pre-aggregated per-(local-day, model) rollup for Dashboard / Daily queries.
 		-- Written alongside api_requests in InsertRequest; dashboard/daily reads hit
 		-- at most O(days * models) rows instead of scanning raw requests.
@@ -249,10 +262,221 @@ func runMigrations(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(prompt_id);
 
 		CREATE INDEX IF NOT EXISTS idx_raw_otlp_time ON raw_otlp_events(timestamp);
+
+		CREATE INDEX IF NOT EXISTS idx_pending_ttft_lookup ON pending_ttft_spans(processed, session_id, model, span_end_unix);
 	`)
 	if err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "pending_ttft_spans", "request_id", "TEXT DEFAULT ''"); err != nil {
+		return fmt.Errorf("pending ttft request_id migration: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_pending_ttft_request ON pending_ttft_spans(processed, request_id)`); err != nil {
+		return fmt.Errorf("pending ttft request_id index: %w", err)
+	}
+
+	// 3) Codex tables — completely independent from Claude Code tables.
+	// Mirrors api_requests / daily_model_agg structure with codex-specific extras.
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS codex_api_requests (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp INTEGER NOT NULL,
+			session_id TEXT DEFAULT '',
+			user_id TEXT DEFAULT '',
+			model TEXT DEFAULT '',
+			input_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0,
+			cache_read_tokens INTEGER DEFAULT 0,
+			cache_creation_tokens INTEGER DEFAULT 0,
+			reasoning_tokens INTEGER DEFAULT 0,
+			total_tokens INTEGER DEFAULT 0,
+			cost_usd INTEGER DEFAULT 0,
+			duration_ms INTEGER DEFAULT 0,
+			ttft_ms INTEGER DEFAULT 0,
+			http_status INTEGER DEFAULT 0,
+			endpoint TEXT DEFAULT '',
+			conversation_id TEXT DEFAULT '',
+			event_name TEXT DEFAULT '',
+			event_sequence INTEGER DEFAULT 0,
+			terminal_type TEXT DEFAULT '',
+			service_name TEXT DEFAULT '',
+			service_version TEXT DEFAULT '',
+			host_arch TEXT DEFAULT '',
+			os_type TEXT DEFAULT '',
+			os_version TEXT DEFAULT '',
+			error_message TEXT DEFAULT ''
+		);
+
+		CREATE TABLE IF NOT EXISTS codex_daily_model_agg (
+			date TEXT NOT NULL,
+			model TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+			reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			cost_usd INTEGER NOT NULL DEFAULT 0,
+			request_count INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (date, model)
+		) WITHOUT ROWID;
+	`)
+	if err != nil {
+		return fmt.Errorf("codex tables: %w", err)
+	}
+
+	if err := ensureColumn(db, "codex_api_requests", "total_tokens", "INTEGER DEFAULT 0"); err != nil {
+		return fmt.Errorf("codex api total_tokens migration: %w", err)
+	}
+	if err := ensureColumn(db, "codex_daily_model_agg", "total_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("codex agg total_tokens migration: %w", err)
+	}
+	if hasOldTool, err := columnExists(db, "codex_api_requests", "tool_tokens"); err != nil {
+		return fmt.Errorf("codex api tool_tokens check: %w", err)
+	} else if hasOldTool {
+		if _, err := db.Exec(`UPDATE codex_api_requests SET total_tokens = tool_tokens WHERE total_tokens = 0 AND tool_tokens > 0`); err != nil {
+			return fmt.Errorf("codex api total_tokens backfill: %w", err)
+		}
+	}
+	if hasOldTool, err := columnExists(db, "codex_daily_model_agg", "tool_tokens"); err != nil {
+		return fmt.Errorf("codex agg tool_tokens check: %w", err)
+	} else if hasOldTool {
+		if _, err := db.Exec(`UPDATE codex_daily_model_agg SET total_tokens = tool_tokens WHERE total_tokens = 0 AND tool_tokens > 0`); err != nil {
+			return fmt.Errorf("codex agg total_tokens backfill: %w", err)
+		}
+	}
+
+	_, err = db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_codex_requests_timestamp ON codex_api_requests(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_codex_requests_model     ON codex_api_requests(model);
+		CREATE INDEX IF NOT EXISTS idx_codex_requests_session   ON codex_api_requests(session_id);
+		CREATE INDEX IF NOT EXISTS idx_codex_requests_time_model   ON codex_api_requests(timestamp, model);
+		CREATE INDEX IF NOT EXISTS idx_codex_requests_time_session ON codex_api_requests(timestamp, session_id);
+		-- Correlation lookup: find newest zero-token row for (session_id, model)
+		CREATE INDEX IF NOT EXISTS idx_codex_requests_pending ON codex_api_requests(session_id, model, input_tokens, output_tokens, id);
+	`)
+	if err != nil {
+		return fmt.Errorf("codex indexes: %w", err)
+	}
+
+	// 5) Codex sub-event tables — populated in Task 5 + Task 10.
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS codex_user_prompt_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp INTEGER NOT NULL,
+			session_id TEXT DEFAULT '',
+			conversation_id TEXT DEFAULT '',
+			prompt_text TEXT DEFAULT '',
+			prompt_length INTEGER DEFAULT 0,
+			event_sequence INTEGER DEFAULT 0,
+			terminal_type TEXT DEFAULT '',
+			service_name TEXT DEFAULT '',
+			service_version TEXT DEFAULT ''
+		);
+
+		CREATE TABLE IF NOT EXISTS codex_tool_decision_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp INTEGER NOT NULL,
+			session_id TEXT DEFAULT '',
+			conversation_id TEXT DEFAULT '',
+			tool_name TEXT DEFAULT '',
+			call_id TEXT DEFAULT '',
+			decision TEXT DEFAULT '',
+			source TEXT DEFAULT '',
+			event_sequence INTEGER DEFAULT 0,
+			terminal_type TEXT DEFAULT ''
+		);
+
+		CREATE TABLE IF NOT EXISTS codex_tool_result_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp INTEGER NOT NULL,
+			session_id TEXT DEFAULT '',
+			conversation_id TEXT DEFAULT '',
+			tool_name TEXT DEFAULT '',
+			call_id TEXT DEFAULT '',
+			success INTEGER DEFAULT 0,
+			duration_ms INTEGER DEFAULT 0,
+			arguments_length INTEGER DEFAULT 0,
+			output_length INTEGER DEFAULT 0,
+			tool_origin TEXT DEFAULT '',
+			mcp_server TEXT DEFAULT '',
+			error_message TEXT DEFAULT '',
+			event_sequence INTEGER DEFAULT 0,
+			terminal_type TEXT DEFAULT ''
+		);
+
+		CREATE TABLE IF NOT EXISTS codex_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp INTEGER NOT NULL,
+			session_id TEXT DEFAULT '',
+			conversation_id TEXT DEFAULT '',
+			event_name TEXT DEFAULT '',
+			event_kind TEXT DEFAULT '',
+			model TEXT DEFAULT '',
+			duration_ms INTEGER DEFAULT 0,
+			error_message TEXT DEFAULT '',
+			raw_attrs_json TEXT DEFAULT ''
+		);
+
+		CREATE TABLE IF NOT EXISTS codex_raw_otlp_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp INTEGER NOT NULL,
+			event_type TEXT NOT NULL,
+			raw_json TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("codex sub-event tables: %w", err)
+	}
+
+	// 6) Codex sub-event indexes.
+	_, err = db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_codex_user_prompt_time ON codex_user_prompt_events(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_codex_tool_dec_time    ON codex_tool_decision_events(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_codex_tool_res_time    ON codex_tool_result_events(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_codex_events_time      ON codex_events(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_codex_events_session   ON codex_events(session_id);
+		CREATE INDEX IF NOT EXISTS idx_codex_events_name      ON codex_events(event_name);
+		CREATE INDEX IF NOT EXISTS idx_codex_raw_time         ON codex_raw_otlp_events(timestamp);
+	`)
+	if err != nil {
+		return fmt.Errorf("codex sub-event indexes: %w", err)
+	}
 
 	return nil
+}
+
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	exists, err := columnExists(db, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
+}
+
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
