@@ -206,8 +206,8 @@ Add to `~/.codex/config.toml` (backup first, then append — do not overwrite ex
 [otel]
 environment = "dev"
 exporter.otlp-grpc.endpoint = "http://localhost:4317"
-trace_exporter.otlp-grpc.endpoint = "http://localhost:4317"
-metrics_exporter.otlp-grpc.endpoint = "http://localhost:4317"
+trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
+metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
 Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source=codex`) to view Codex usage data. Note: Codex does not report cost (`cost_usd`), so the Cost KPI displays `—` on the Codex tab.

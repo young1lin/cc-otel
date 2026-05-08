@@ -206,8 +206,8 @@ cc-otel 也支持接收 OpenAI Codex CLI 的 OTEL 遥测数据。Codex 与 Claud
 [otel]
 environment = "dev"
 exporter.otlp-grpc.endpoint = "http://localhost:4317"
-trace_exporter.otlp-grpc.endpoint = "http://localhost:4317"
-metrics_exporter.otlp-grpc.endpoint = "http://localhost:4317"
+trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
+metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
 启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。注意：Codex 不上报费用 (`cost_usd`)，Cost KPI 在 Codex 视图下显示 `—`。
