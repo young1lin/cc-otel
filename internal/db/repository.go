@@ -221,13 +221,14 @@ func NewRepository(db *sql.DB) *Repository {
 	r.stmtUpsCodexAggToks, _ = db.Prepare(`
 		INSERT INTO codex_daily_model_agg (date, model, input_tokens, output_tokens,
 			cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens, cost_usd, request_count)
-		VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0, 0)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 0)
 		ON CONFLICT(date, model) DO UPDATE SET
 			input_tokens          = input_tokens + excluded.input_tokens,
 			output_tokens         = output_tokens + excluded.output_tokens,
 			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
 			reasoning_tokens      = reasoning_tokens + excluded.reasoning_tokens,
-			total_tokens          = total_tokens + excluded.total_tokens`)
+			total_tokens          = total_tokens + excluded.total_tokens,
+			cost_usd              = cost_usd + excluded.cost_usd`)
 
 	return r
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/young1lin/cc-otel/internal/config"
 	"github.com/young1lin/cc-otel/internal/db"
 	"github.com/young1lin/cc-otel/internal/logrotate"
+	"github.com/young1lin/cc-otel/internal/pricing"
 	"github.com/young1lin/cc-otel/internal/receiver"
 
 	"google.golang.org/grpc"
@@ -452,8 +453,31 @@ func cmdServe() {
 
 	broker := api.NewBroker()
 
+	// Pricing registry: layered lookup (user YAML → model_pricing table →
+	// embedded seed). Initialised before the receiver so non-Claude
+	// cost_usd recompute kicks in on the very first event we accept.
+	priceReg, err := pricing.NewRegistry(ctx, database, cfg)
+	if err != nil {
+		log.Fatalf("failed to init pricing registry: %v", err)
+	}
+
+	// Daily upstream refresh of model_pricing (LiteLLM + OpenRouter).
+	// Runs in the background and only writes diffs; first tick fires
+	// immediately so a long-stopped daemon picks up overnight changes
+	// on restart.
+	if cfg.PricingRefresh.PricingRefreshEnabled() {
+		if reloader, ok := priceReg.(pricing.Reloader); ok {
+			refresher := pricing.NewRefresher(database, reloader, cfg.PricingRefresh, log.Default())
+			go refresher.Run(ctx)
+		} else {
+			log.Print("pricing refresh disabled: registry does not implement Reloader")
+		}
+	} else {
+		log.Print("pricing refresh disabled by config")
+	}
+
 	grpcSrv := grpc.NewServer()
-	otelReceiver := receiver.New(repo, cfg, broker)
+	otelReceiver := receiver.New(repo, cfg, broker, priceReg)
 	otelReceiver.Register(grpcSrv)
 
 	grpcLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.OTELPort))
@@ -469,6 +493,7 @@ func cmdServe() {
 
 	absCfgPath, _ := filepath.Abs(*cfgPath)
 	handler := api.NewHandler(repo, broker, cfg, absCfgPath)
+	handler.SetPricer(priceReg)
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	webSrv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.WebPort), Handler: loggingMiddleware(api.GzipMiddleware(mux))}
@@ -697,4 +722,3 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
 }
-

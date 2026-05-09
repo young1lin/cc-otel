@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/young1lin/cc-otel/internal/db"
+	"github.com/young1lin/cc-otel/internal/pricing"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -34,11 +35,21 @@ type Notifier interface {
 	NotifySource(source string)
 }
 
+// Pricer is the subset of pricing.Registry the receiver needs to recompute
+// cost_usd for non-Claude models. Defined here (rather than importing the
+// concrete *sqlRegistry) so tests can supply a stub without spinning up
+// SQLite. May be nil — the receiver then skips recompute and trusts the
+// upstream-reported cost (legacy behaviour).
+type Pricer interface {
+	Calc(ctx context.Context, model string, input, output, cacheRead, cacheCreate int64) float64
+}
+
 type logsServiceServer struct {
 	collogspb.UnimplementedLogsServiceServer
 	repo         *db.Repository
 	cfg          ModelResolver
 	notifier     Notifier
+	pricer       Pricer
 	codexTracker *codexSpanTracker
 }
 
@@ -52,7 +63,7 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 				// Claude path for backward compatibility.
 				svc := serviceNameFromResource(rl.Resource)
 				if isCodexService(svc) {
-					dispatchCodexLog(ctx, s.repo, lr, rl.Resource, s.notifier, s.codexTracker)
+					dispatchCodexLog(ctx, s.repo, lr, rl.Resource, s.notifier, s.codexTracker, s.pricer)
 					continue
 				}
 
@@ -62,7 +73,20 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 					continue
 				}
 
-				// 2. Route by Claude Code event.name (not by model presence)
+				// 2. Recompute cost for non-Claude models. Claude (claude-* prefix,
+				// case-insensitive) is left as reported because Anthropic
+				// computes cost_usd from canonical Claude prices itself.
+				// Everything else (GLM/DeepSeek/Kimi via reverse proxy, etc.)
+				// gets recomputed against the local pricing table.
+				if s.pricer != nil && !pricing.IsClaudeModel(event.Model) {
+					if c := s.pricer.Calc(ctx, event.Model,
+						event.InputTokens, event.OutputTokens,
+						event.CacheReadTokens, event.CacheCreationTokens); c > 0 {
+						event.CostUSD = c
+					}
+				}
+
+				// 3. Route by Claude Code event.name (not by model presence)
 				switch event.EventName {
 				case "api_request":
 					apiReq := apiRequestFromEvent(event)
@@ -121,10 +145,15 @@ type Receiver struct {
 	traces  *tracesServiceServer
 }
 
-// New creates a Receiver that stores parsed OTEL data via repo and resolves model names via cfg.
-func New(repo *db.Repository, cfg ModelResolver, notifier Notifier) *Receiver {
+// New creates a Receiver that stores parsed OTEL data via repo and resolves
+// model names via cfg.
+//
+// pricer (optional) drives the non-Claude cost_usd recompute. Pass nil to
+// trust whatever cost the upstream sent (used by older tests that don't
+// care about pricing).
+func New(repo *db.Repository, cfg ModelResolver, notifier Notifier, pricer Pricer) *Receiver {
 	return &Receiver{
-		logs:    &logsServiceServer{repo: repo, cfg: cfg, notifier: notifier, codexTracker: newCodexSpanTracker()},
+		logs:    &logsServiceServer{repo: repo, cfg: cfg, notifier: notifier, pricer: pricer, codexTracker: newCodexSpanTracker()},
 		metrics: &metricsServiceServer{repo: repo},
 		traces:  &tracesServiceServer{repo: repo, notifier: notifier},
 	}
@@ -167,41 +196,41 @@ func parseEventFromOTLP(lr *logspb.LogRecord, resource *resourcepb.Resource) *db
 	}
 
 	return &db.Event{
-		Timestamp:            ts,
-		SessionID:            attrs["session.id"],
-		UserID:               attrs["user.id"],
-		PromptID:             attrs["prompt.id"],
-		PromptText:           attrs["prompt"],
-		PromptLength:         parseAttrInt(attrs, "prompt_length"),
-		EventName:            eventName,
-		EventSequence:        parseAttrInt(attrs, "event.sequence"),
-		Model:                attrs["model"],
-		InputTokens:          parseAttrInt(attrs, "input_tokens"),
-		OutputTokens:         parseAttrInt(attrs, "output_tokens"),
-		CacheReadTokens:      parseAttrInt(attrs, "cache_read_tokens"),
-		CacheCreationTokens:  parseAttrInt(attrs, "cache_creation_tokens"),
-		CostUSD:              parseAttrFloat(attrs, "cost_usd"),
-		DurationMs:           parseAttrInt(attrs, "duration_ms"),
-		TTFTMs:               parseAttrInt(attrs, "ttft_ms"),
-		Speed:                attrs["speed"],
-		TerminalType:         attrs["terminal.type"],
-		ToolName:             attrs["tool_name"],
-		Decision:             attrs["decision"],
-		Source:               attrs["source"],
-		DecisionSource:       attrs["decision_source"],
-		DecisionType:         attrs["decision_type"],
-		Success:              success,
-		ToolResultSizeBytes:  parseAttrInt(attrs, "tool_result_size_bytes"),
-		ServiceName:          attrs["service.name"],
-		ServiceVersion:       attrs["service.version"],
-		HostArch:             attrs["host.arch"],
-		OSType:               attrs["os.type"],
-		OSVersion:            attrs["os.version"],
-		RequestID:            attrs["request_id"],
-		ErrorType:            attrs["error.type"],
-		ErrorMessage:         attrs["error.message"],
-		ErrorCode:            parseAttrInt(attrs, "error.code"),
-		ErrorRetryable:       int(parseAttrInt(attrs, "error.retryable")),
+		Timestamp:           ts,
+		SessionID:           attrs["session.id"],
+		UserID:              attrs["user.id"],
+		PromptID:            attrs["prompt.id"],
+		PromptText:          attrs["prompt"],
+		PromptLength:        parseAttrInt(attrs, "prompt_length"),
+		EventName:           eventName,
+		EventSequence:       parseAttrInt(attrs, "event.sequence"),
+		Model:               attrs["model"],
+		InputTokens:         parseAttrInt(attrs, "input_tokens"),
+		OutputTokens:        parseAttrInt(attrs, "output_tokens"),
+		CacheReadTokens:     parseAttrInt(attrs, "cache_read_tokens"),
+		CacheCreationTokens: parseAttrInt(attrs, "cache_creation_tokens"),
+		CostUSD:             parseAttrFloat(attrs, "cost_usd"),
+		DurationMs:          parseAttrInt(attrs, "duration_ms"),
+		TTFTMs:              parseAttrInt(attrs, "ttft_ms"),
+		Speed:               attrs["speed"],
+		TerminalType:        attrs["terminal.type"],
+		ToolName:            attrs["tool_name"],
+		Decision:            attrs["decision"],
+		Source:              attrs["source"],
+		DecisionSource:      attrs["decision_source"],
+		DecisionType:        attrs["decision_type"],
+		Success:             success,
+		ToolResultSizeBytes: parseAttrInt(attrs, "tool_result_size_bytes"),
+		ServiceName:         attrs["service.name"],
+		ServiceVersion:      attrs["service.version"],
+		HostArch:            attrs["host.arch"],
+		OSType:              attrs["os.type"],
+		OSVersion:           attrs["os.version"],
+		RequestID:           attrs["request_id"],
+		ErrorType:           attrs["error.type"],
+		ErrorMessage:        attrs["error.message"],
+		ErrorCode:           parseAttrInt(attrs, "error.code"),
+		ErrorRetryable:      int(parseAttrInt(attrs, "error.retryable")),
 	}
 }
 

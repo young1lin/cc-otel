@@ -210,7 +210,40 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。注意：Codex 不上报费用 (`cost_usd`)，Cost KPI 在 Codex 视图下显示 `—`。
+启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入 `codex_api_requests.cost_usd`，Cost KPI 与 Claude 视图等同。
+
+## 价格表与非 Claude 模型重算
+
+cc-otel 内嵌了从 [BerriAI/litellm](https://github.com/BerriAI/litellm) 派生的价格快照（GPT / GLM / DeepSeek / Kimi / Qwen / Gemini …），首次启动会写入 `model_pricing` 表。运行时按以下顺序选价：
+
+1. **`cc-otel.yaml` 的 `pricing:`**（用户覆盖，最高优先级）
+2. **SQLite `model_pricing` 表**（长期存储 + 跨重启）
+3. **每天一次的远端拉取**（LiteLLM + OpenRouter，仅 diff 写入）
+
+写入逻辑只有一条规则：
+
+- `model` 以 `claude-` 开头（大小写不敏感）→ 信任 Claude Code 上报的 `cost_usd`，不动。
+- 其他全部模型 → 按本地价目表用 token 数重算并覆盖。
+
+派生效果：Codex (`gpt-5-codex` 等)、GLM/DeepSeek/Kimi 走 Anthropic 兼容反代时上报的 `cost_usd` 都会被纠正。
+
+调试：访问 `GET /api/pricing/lookup?model=glm-4.6` 查看命中策略与价格；右上角 `live` 弹窗有 Pricing Table 行（绿/黄/红代表上次刷新时间窗）。
+
+历史回填：
+
+```bash
+# dry-run
+go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both
+# 确认 diff 合理后再 --apply
+go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both --apply
+```
+
+要禁用每日远端刷新，在 `cc-otel.yaml` 加：
+
+```yaml
+pricing_refresh:
+  enabled: false
+```
 
 ## 配置文件
 

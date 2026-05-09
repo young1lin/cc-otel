@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/young1lin/cc-otel/internal/db"
+	"github.com/young1lin/cc-otel/internal/pricing"
 
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -122,7 +123,11 @@ func (t *codexSpanTracker) popRequest(spanID string) (spanInfo, bool) {
 
 // dispatchCodexLog handles a single Codex log record. Returns true when the
 // record produced a side effect that should trigger SSE notification.
-func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRecord, res *resourcepb.Resource, notifier Notifier, tracker *codexSpanTracker) bool {
+//
+// pricer (optional) supplies recomputed cost_usd at the moment tokens are
+// known (codex.sse_event with kind=response.completed). Codex never reports
+// cost_usd itself, so without pricer the row stays at cost=0.
+func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRecord, res *resourcepb.Resource, notifier Notifier, tracker *codexSpanTracker, pricer Pricer) bool {
 	if lr == nil || repo == nil {
 		return false
 	}
@@ -145,7 +150,6 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 	if nanos := codexLogUnixNanos(lr); nanos > 0 {
 		ts = time.Unix(0, nanos)
 	}
-
 
 	eventName := eventNameFromCodexLog(lr, attrs)
 	switch eventName {
@@ -187,6 +191,20 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				CacheReadTokens: parseAttrInt(attrs, "cached_token_count"),
 				ReasoningTokens: parseAttrInt(attrs, "reasoning_token_count"),
 				TotalTokens:     parseAttrInt(attrs, "tool_token_count"),
+			}
+			// Compute cost from the local pricing table — Codex never reports
+			// cost_usd. OpenAI's Responses API reports input_token_count as the
+			// TOTAL input including cached tokens (cached_token_count ⊆
+			// input_token_count). pricing.Calc expects uncached input only
+			// (Anthropic convention), so subtract before pricing — otherwise
+			// cached tokens get charged twice (full input rate + cache rate).
+			if pricer != nil && !pricing.IsClaudeModel(upd.Model) {
+				uncachedInput := upd.InputTokens - upd.CacheReadTokens
+				if uncachedInput < 0 {
+					uncachedInput = 0
+				}
+				upd.CostUSD = pricer.Calc(ctx, upd.Model,
+					uncachedInput, upd.OutputTokens, upd.CacheReadTokens, 0)
 			}
 			if _, err := repo.UpdateCodexAPIRequestTokens(ctx, upd); err == nil {
 				notify()

@@ -48,7 +48,7 @@ func TestDispatchCodexLog_APIRequest(t *testing.T) {
 		attr("service.name", "codex-cli"),
 	}}
 
-	ok := dispatchCodexLog(context.Background(), repo, lr, res, nil, nil)
+	ok := dispatchCodexLog(context.Background(), repo, lr, res, nil, nil, nil)
 	if !ok {
 		t.Fatal("expected dispatch to return true (insert happened)")
 	}
@@ -74,7 +74,7 @@ func TestDispatchCodexLog_SSECompletedUpdatesTokens(t *testing.T) {
 			attr("model", "gpt-5.1"),
 			attrInt("duration_ms", 555),
 		},
-	}, res, nil, nil)
+	}, res, nil, nil, nil)
 
 	// 2. sse_event response.completed second
 	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
@@ -90,7 +90,7 @@ func TestDispatchCodexLog_SSECompletedUpdatesTokens(t *testing.T) {
 			attrInt("reasoning_token_count", 42),
 			attrInt("tool_token_count", 13),
 		},
-	}, res, nil, nil)
+	}, res, nil, nil, nil)
 
 	var n, input, total int64
 	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_api_requests WHERE input_tokens > 0`).Scan(&n)
@@ -122,7 +122,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 			attr("conversation.id", "conv-duration"),
 			attr("model", "gpt-5.5"),
 		},
-	}, res, nil, tracker)
+	}, res, nil, tracker, nil)
 
 	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
 		ObservedTimeUnixNano: uint64(start.Add(2408 * time.Millisecond).UnixNano()),
@@ -133,7 +133,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 			attr("conversation.id", "conv-duration"),
 			attr("model", "gpt-5.5"),
 		},
-	}, res, nil, tracker)
+	}, res, nil, tracker, nil)
 
 	var rows, duration int64
 	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM codex_api_requests`).Scan(&rows, &duration); err != nil {
@@ -153,7 +153,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 			attrInt("input_token_count", 1234),
 			attrInt("output_token_count", 567),
 		},
-	}, res, nil, tracker)
+	}, res, nil, tracker, nil)
 
 	var input, output int64
 	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM codex_api_requests`).Scan(&rows, &input, &output, &duration); err != nil {
@@ -233,7 +233,7 @@ func TestDispatchCodexLog_OtherEvents(t *testing.T) {
 			dispatchCodexLog(ctx, repo, &logspb.LogRecord{
 				TimeUnixNano: uint64(1700000000) * 1e9,
 				Attributes:   c.attrs,
-			}, res, nil, nil)
+			}, res, nil, nil, nil)
 			after := readCount(t, repo, c.countSQL)
 			if after != before+1 {
 				t.Errorf("expected count to increase by 1; before=%d after=%d", before, after)

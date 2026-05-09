@@ -392,9 +392,9 @@ func TestDurationsEndpoint(t *testing.T) {
 		UserID:      "user-dur",
 		Model:       "m1",
 		InputTokens: 10, OutputTokens: 5,
-		CostUSD:     0.01,
-		DurationMs:  1000,
-		TTFTMs:      120,
+		CostUSD:    0.01,
+		DurationMs: 1000,
+		TTFTMs:     120,
 	})
 	if err != nil {
 		t.Fatalf("InsertRequest m1: %v", err)
@@ -405,9 +405,9 @@ func TestDurationsEndpoint(t *testing.T) {
 		UserID:      "user-dur",
 		Model:       "m2",
 		InputTokens: 10, OutputTokens: 5,
-		CostUSD:     0.01,
-		DurationMs:  500,
-		TTFTMs:      80,
+		CostUSD:    0.01,
+		DurationMs: 500,
+		TTFTMs:     80,
 	})
 	if err != nil {
 		t.Fatalf("InsertRequest m2: %v", err)
@@ -446,13 +446,13 @@ func TestModelsEndpoint(t *testing.T) {
 
 	// Insert a second request with a different model (need unique request_id or empty).
 	_, err := repo.InsertRequest(context.Background(), &db.APIRequest{
-		Timestamp:   time.Now(),
-		SessionID:   "sess-002",
-		UserID:      "user-002",
-		Model:       "claude-sonnet-4-20250514",
-		InputTokens: 200,
+		Timestamp:    time.Now(),
+		SessionID:    "sess-002",
+		UserID:       "user-002",
+		Model:        "claude-sonnet-4-20250514",
+		InputTokens:  200,
 		OutputTokens: 100,
-		CostUSD:     0.005,
+		CostUSD:      0.005,
 	})
 	if err != nil {
 		t.Fatalf("InsertRequest: %v", err)
@@ -615,12 +615,12 @@ func TestRequestsEndpointModelFilter(t *testing.T) {
 
 	insertTestRequest(t, repo, "claude-opus-4-6")
 	_, err := repo.InsertRequest(context.Background(), &db.APIRequest{
-		Timestamp:   time.Now(),
-		SessionID:   "sess-filter",
-		Model:       "claude-sonnet-4-20250514",
-		InputTokens: 999,
+		Timestamp:    time.Now(),
+		SessionID:    "sess-filter",
+		Model:        "claude-sonnet-4-20250514",
+		InputTokens:  999,
 		OutputTokens: 111,
-		CostUSD:     0.05,
+		CostUSD:      0.05,
 	})
 	if err != nil {
 		t.Fatalf("InsertRequest: %v", err)

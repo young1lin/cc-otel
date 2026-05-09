@@ -424,6 +424,22 @@ func runMigrations(db *sql.DB) error {
 			event_type TEXT NOT NULL,
 			raw_json TEXT NOT NULL
 		);
+
+		-- Per-token pricing for non-Claude models. Claude entries are intentionally
+		-- absent: cost_usd from Claude Code is authoritative and never recomputed.
+		-- Seeded from internal/pricing/embed/seed.json on first boot; refreshed
+		-- daily from LiteLLM + OpenRouter via the pricing.Refresher (diff-only writes).
+		CREATE TABLE IF NOT EXISTS model_pricing (
+			model             TEXT PRIMARY KEY,
+			input_cost        REAL NOT NULL,
+			output_cost       REAL NOT NULL,
+			cache_read_cost   REAL NOT NULL DEFAULT 0,
+			cache_create_cost REAL NOT NULL DEFAULT 0,
+			aliases           TEXT NOT NULL DEFAULT '[]',
+			source            TEXT NOT NULL,
+			fetched_at        INTEGER NOT NULL,
+			updated_at        INTEGER NOT NULL
+		) WITHOUT ROWID;
 	`)
 	if err != nil {
 		return fmt.Errorf("codex sub-event tables: %w", err)
@@ -438,6 +454,7 @@ func runMigrations(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_codex_events_session   ON codex_events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_codex_events_name      ON codex_events(event_name);
 		CREATE INDEX IF NOT EXISTS idx_codex_raw_time         ON codex_raw_otlp_events(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_model_pricing_source   ON model_pricing(source);
 	`)
 	if err != nil {
 		return fmt.Errorf("codex sub-event indexes: %w", err)

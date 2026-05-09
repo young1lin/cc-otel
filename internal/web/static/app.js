@@ -163,7 +163,7 @@ async function loadDashboard() {
     try {
         const { from, to } = rangeToFromTo(state.currentRange);
         const d = await loadDashboardData(from, to);
-        document.getElementById('h-cost').textContent   = state.source === 'codex' ? '—' : '$' + (d.total_cost_usd ?? 0).toFixed(4);
+        document.getElementById('h-cost').textContent   = '$' + (d.total_cost_usd ?? 0).toFixed(4);
         document.getElementById('h-input').textContent  = fmtNum(d.total_input_tokens);
         document.getElementById('h-output').textContent = fmtNum(d.total_output_tokens);
         document.getElementById('h-cache').textContent  = ((d.cache_hit_rate ?? 0) * 100).toFixed(1) + '%';
