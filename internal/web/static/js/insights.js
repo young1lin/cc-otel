@@ -1,10 +1,11 @@
 import { state } from './state.js';
 import { fmtNum, fmtUSD, escapeHtml } from './utils.js';
-import { loadDailyData } from './api.js';
+import { loadCalendarData, loadDailyData } from './api.js';
 import { tokenParts } from './token-math.js';
 
 let openPopoverFn = () => {};
 let closePopoverFn = () => {};
+let selectDateFn = () => {};
 
 export function ensureInsightsBar() {
     if (document.getElementById('insights-bar')) return;
@@ -15,19 +16,39 @@ export function ensureInsightsBar() {
     bar.className = 'insights-bar';
     bar.style.display = 'none';
     bar.innerHTML = `
-        <button type="button" class="insights-main" id="insights-toggle" title="Show details">
-            <span class="insights-k">Avg/day</span>
-            <span class="insights-v mono" id="ins-avg-summary">—</span>
-            <span class="insights-tail mono" id="ins-days">—</span>
-        </button>
+        <div class="insights-main">
+            <div class="usage-calendar-visual">
+                <div class="usage-calendar-visual-head">
+                    <div class="usage-calendar-headline mono" id="usage-calendar-headline">Usage Calendar</div>
+                    <div class="usage-calendar-legend" aria-hidden="true">
+                        <span>Less</span>
+                        <span class="usage-calendar-swatch level-0"></span>
+                        <span class="usage-calendar-swatch level-1"></span>
+                        <span class="usage-calendar-swatch level-2"></span>
+                        <span class="usage-calendar-swatch level-3"></span>
+                        <span class="usage-calendar-swatch level-4"></span>
+                        <span class="usage-calendar-swatch level-5"></span>
+                        <span>More</span>
+                    </div>
+                </div>
+                <div class="usage-calendar-body">
+                    <div class="usage-calendar-weekdays" aria-hidden="true">
+                        <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+                    </div>
+                    <div class="usage-calendar-scroll">
+                        <div class="usage-calendar-months" id="usage-calendar-months" aria-hidden="true"></div>
+                        <div class="usage-calendar-grid" id="usage-calendar-grid" aria-label="Daily usage calendar"></div>
+                        <div class="usage-calendar-dates mono" id="usage-calendar-dates" aria-hidden="true"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
         <button type="button" class="insights-details-btn" id="insights-details-btn" title="Show details">Details</button>
     `;
     anchor.insertAdjacentElement('afterend', bar);
 
     ensureInsightsModal();
-    const open = () => openInsightsModal();
-    document.getElementById('insights-toggle')?.addEventListener('click', open);
-    document.getElementById('insights-details-btn')?.addEventListener('click', open);
+    document.getElementById('insights-details-btn')?.addEventListener('click', () => openInsightsModal());
 }
 
 export function setInsightsVisible(show) {
@@ -143,15 +164,167 @@ export function insightMetricScalar(v, key) {
 export function fmtMetricValue(metric, v) {
     const n = Number(v);
     const safe = Number.isFinite(n) ? n : 0;
-    if (metric === 'cost') return fmtUSD(safe);
-    if (metric === 'reqs') return String(Math.round(safe));
+    const key = metricKey(metric);
+    if (key === 'cost') return fmtUSD(safe);
+    if (key === 'reqs') return String(Math.round(safe));
     return fmtNum(Math.round(safe));
+}
+
+export function formatCalendarHeadline(metric, value, activeDays, from, to) {
+    const key = metricKey(metric);
+    const suffix = key === 'reqs' ? 'requests' : key;
+    const days = Math.max(0, Math.round(Number(activeDays) || 0));
+    return `Usage Calendar · avg/day ${fmtMetricValue(key, value)} ${suffix} · active days ${days} · ${from} → ${to}`;
 }
 
 export function metricKey(metric) {
     if (metric === 'cost') return 'cost';
     if (metric === 'reqs' || metric === 'requests') return 'reqs';
     return 'tokens';
+}
+
+function parseYMDLocal(date) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ''));
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0, 0);
+}
+
+function ymdFromLocalDate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+export function calendarMetricValue(row, metric) {
+    if (row == null || typeof row !== 'object') return 0;
+    const key = metricKey(metric);
+    if (key === 'cost') {
+        const n = Number(row.cost_usd ?? row.cost ?? 0);
+        return Number.isFinite(n) ? n : 0;
+    }
+    if (key === 'reqs') {
+        const n = Number(row.request_count ?? row.reqs ?? 0);
+        return Number.isFinite(n) ? n : 0;
+    }
+    const reported = Number(row.total_tokens || 0);
+    if (Number.isFinite(reported) && reported > 0) return reported;
+    const total = Number(row.input_tokens || 0)
+        + Number(row.output_tokens || 0)
+        + Number(row.cache_read_tokens || 0)
+        + Number(row.cache_creation_tokens || 0);
+    return Number.isFinite(total) ? total : 0;
+}
+
+export function calendarIntensityLevel(value, values) {
+    const v = Number(value);
+    if (!Number.isFinite(v) || v <= 0) return 0;
+    const positives = (Array.isArray(values) ? values : [])
+        .map(Number)
+        .filter(n => Number.isFinite(n) && n > 0)
+        .sort((a, b) => a - b);
+    if (!positives.length) return 0;
+    const max = positives[positives.length - 1];
+    if (v >= max) return 5;
+    const level = Math.ceil((Math.log1p(v) / Math.log1p(max)) * 5);
+    return Math.max(1, Math.min(5, level));
+}
+
+export function buildCalendarGrid(days, from, to) {
+    const byDate = new Map((days || []).map(d => [d.date, d]));
+    const start = parseYMDLocal(from);
+    const end = parseYMDLocal(to);
+    if (!start || !end || end < start) {
+        return { cells: [], weekCount: 0 };
+    }
+
+    const gridStart = new Date(start);
+    gridStart.setDate(start.getDate() - start.getDay());
+
+    const cells = [];
+    const cur = new Date(gridStart);
+    let i = 0;
+    while (cur <= end) {
+        const date = ymdFromLocalDate(cur);
+        cells.push({
+            date,
+            row: cur.getDay(),
+            col: Math.floor(i / 7),
+            data: byDate.get(date) || null,
+            isPadding: cur < start,
+        });
+        cur.setDate(cur.getDate() + 1);
+        i++;
+    }
+    const weekCount = cells.length ? Math.max(...cells.map(c => c.col)) + 1 : 0;
+    return { cells, weekCount };
+}
+
+function calendarSpanDays(from, to) {
+    const start = parseYMDLocal(from);
+    const end = parseYMDLocal(to);
+    if (!start || !end || end < start) return 0;
+    return Math.floor((end - start) / 86400000) + 1;
+}
+
+function buildCalendarStrip(days, from, to) {
+    const byDate = new Map((days || []).map(d => [d.date, d]));
+    const start = parseYMDLocal(from);
+    const end = parseYMDLocal(to);
+    if (!start || !end || end < start) return [];
+
+    const cells = [];
+    const cur = new Date(start);
+    let col = 0;
+    while (cur <= end) {
+        const date = ymdFromLocalDate(cur);
+        cells.push({
+            date,
+            row: 0,
+            col,
+            data: byDate.get(date) || null,
+            isPadding: false,
+        });
+        cur.setDate(cur.getDate() + 1);
+        col++;
+    }
+    return cells;
+}
+
+function shortDate(date) {
+    const d = parseYMDLocal(date);
+    if (!d) return date;
+    return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function weekdayShort(date) {
+    const d = parseYMDLocal(date);
+    return d ? d.toLocaleString('en-US', { weekday: 'short' }) : '';
+}
+
+export function calendarLayoutMode(weekCount, spanDays = Number.POSITIVE_INFINITY, range = '') {
+    const span = Number(spanDays);
+    if (Number.isFinite(span) && span > 0 && span <= 10) return 'strip';
+    const n = Number(weekCount);
+    if (!Number.isFinite(n) || n <= 8) return 'short';
+    if (n <= 18) return 'medium';
+    return 'long';
+}
+
+export function calendarMonthLabels(cells) {
+    const labels = [];
+    let lastMonth = '';
+    for (const cell of cells || []) {
+        if (!cell || cell.isPadding) continue;
+        const d = parseYMDLocal(cell.date);
+        if (!d) continue;
+        const month = d.toLocaleString('en-US', { month: 'short' });
+        if (!lastMonth || month !== lastMonth) {
+            labels.push({ col: cell.col, label: month });
+            lastMonth = month;
+        }
+    }
+    return labels;
 }
 
 export function topEntry(map, key) {
@@ -165,6 +338,94 @@ export function topEntry(map, key) {
         return { model: '—', value: 0 };
     }
     return { model: bestM, value: bestV };
+}
+
+function renderUsageCalendar(days, from, to) {
+    const gridEl = document.getElementById('usage-calendar-grid');
+    if (!gridEl) return;
+
+    const rows = Array.isArray(days) ? [...days].sort((a, b) => String(a.date).localeCompare(String(b.date))) : [];
+    const metric = state.chartMetric || 'tokens';
+    const values = rows.map(r => calendarMetricValue(r, metric));
+    const activeRows = rows.filter(r => calendarMetricValue(r, metric) > 0);
+    const activeDays = activeRows.length || rows.length;
+    const total = values.reduce((sum, v) => sum + v, 0);
+    const avg = activeDays > 0 ? total / activeDays : 0;
+
+    const gridFrom = (state.currentRange === 'all' && rows[0]?.date) ? rows[0].date : from;
+    const grid = buildCalendarGrid(rows, gridFrom, to);
+    const spanDays = calendarSpanDays(gridFrom, to);
+    const mode = calendarLayoutMode(grid.weekCount, spanDays, state.currentRange);
+    const renderCells = mode === 'strip' ? buildCalendarStrip(rows, gridFrom, to) : grid.cells;
+    const renderCols = mode === 'strip' ? renderCells.length : grid.weekCount;
+    const bodyEl = document.querySelector('.usage-calendar-body');
+    bodyEl?.classList.toggle('usage-calendar-body-strip', mode === 'strip');
+    bodyEl?.classList.toggle('usage-calendar-body-short', mode === 'short');
+    bodyEl?.classList.toggle('usage-calendar-body-medium', mode === 'medium');
+    bodyEl?.classList.toggle('usage-calendar-body-long', mode === 'long');
+    gridEl.classList.toggle('usage-calendar-grid-strip', mode === 'strip');
+    gridEl.classList.toggle('usage-calendar-grid-short', mode === 'short');
+    gridEl.classList.toggle('usage-calendar-grid-medium', mode === 'medium');
+    gridEl.classList.toggle('usage-calendar-grid-long', mode === 'long');
+    gridEl.style.gridTemplateColumns = `repeat(${Math.max(renderCols, 1)}, var(--usage-cell-size, 12px))`;
+
+    const headlineEl = document.getElementById('usage-calendar-headline');
+    if (headlineEl) headlineEl.textContent = formatCalendarHeadline(metric, avg, activeDays, gridFrom, to);
+
+    const monthEl = document.getElementById('usage-calendar-months');
+    if (monthEl) {
+        monthEl.style.gridTemplateColumns = gridEl.style.gridTemplateColumns;
+        if (mode === 'strip') {
+            monthEl.innerHTML = renderCells
+                .map(cell => `<span style="grid-column:${cell.col + 1}">${escapeHtml(weekdayShort(cell.date))}</span>`)
+                .join('');
+        } else {
+            monthEl.innerHTML = calendarMonthLabels(grid.cells)
+                .map(m => `<span style="grid-column:${m.col + 1}">${escapeHtml(m.label)}</span>`)
+                .join('');
+        }
+    }
+
+    const datesEl = document.getElementById('usage-calendar-dates');
+    if (datesEl) {
+        datesEl.classList.toggle('usage-calendar-dates-strip', mode === 'strip');
+        if (mode === 'strip') {
+            datesEl.style.gridTemplateColumns = gridEl.style.gridTemplateColumns;
+            datesEl.innerHTML = renderCells
+                .map(cell => `<span style="grid-column:${cell.col + 1}">${escapeHtml(shortDate(cell.date))}</span>`)
+                .join('');
+        } else {
+            datesEl.style.gridTemplateColumns = '';
+            datesEl.innerHTML = `<span>${escapeHtml(gridFrom)}</span><span>${escapeHtml(to)}</span>`;
+        }
+    }
+
+    gridEl.innerHTML = renderCells.map(cell => {
+        const row = cell.data || { date: cell.date };
+        const value = calendarMetricValue(row, metric);
+        const level = cell.isPadding ? 0 : calendarIntensityLevel(value, values);
+        const isActive = Boolean(cell.data);
+        const label = [
+            cell.date,
+            `Tokens ${fmtMetricValue('tokens', calendarMetricValue(row, 'tokens'))}`,
+            `Cost ${fmtMetricValue('cost', calendarMetricValue(row, 'cost'))}`,
+            `Requests ${fmtMetricValue('requests', calendarMetricValue(row, 'requests'))}`,
+            `Top ${row.top_model || '—'}`,
+        ].join('\n');
+        return `<button type="button"
+            class="usage-calendar-cell level-${level}${isActive ? ' has-data' : ''}${cell.isPadding ? ' is-padding' : ''}"
+            style="grid-column:${cell.col + 1};grid-row:${cell.row + 1}"
+            data-date="${escapeHtml(cell.date)}"
+            title="${escapeHtml(label)}"
+            aria-label="${escapeHtml(label)}"></button>`;
+    }).join('');
+
+    gridEl.querySelectorAll('.usage-calendar-cell:not(.is-padding)').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const date = btn.getAttribute('data-date');
+            if (date) selectDateFn(date);
+        });
+    });
 }
 
 function renderInsightsDetails() {
@@ -268,14 +529,20 @@ export async function loadInsights(from, to) {
     ensureInsightsBar();
     const myId = ++state.insightsReqId;
     try {
-        const json = await loadDailyData({ from, to, page: 1, pageSize: 2000, granularity: 'day' });
+        const [calendarJson, json] = await Promise.all([
+            loadCalendarData({ from, to }),
+            loadDailyData({ from, to, page: 1, pageSize: 2000, granularity: 'day' }),
+        ]);
+        const calendarRows = (calendarJson.data || calendarJson) || [];
         const rows = (json.data || json) || [];
         if (myId !== state.insightsReqId) return;
 
-        if (!rows.length) {
+        if (!calendarRows.length && !rows.length) {
             setInsightsVisible(false);
             return;
         }
+
+        renderUsageCalendar(calendarRows, from, to);
 
         const byDate = new Map();
         const byModel = new Map();
@@ -319,22 +586,6 @@ export async function loadInsights(from, to) {
             totalCost += v.cost;
             totalReqs += v.reqs;
         }
-
-        const avgTokens = Math.round(totalTokens / activeDays);
-        const avgCost = totalCost / activeDays;
-        const avgReqs = Math.round(totalReqs / activeDays);
-
-        const metric = state.chartMetric;
-        let avgText = '';
-        if (metric === 'cost') avgText = `cost ${fmtUSD(avgCost)}`;
-        else if (metric === 'requests') avgText = `reqs ${avgReqs}`;
-        else avgText = `tokens ${fmtNum(avgTokens)}`;
-
-        const avgEl = document.getElementById('ins-avg-summary');
-        if (avgEl) avgEl.textContent = avgText;
-
-        const daysEl = document.getElementById('ins-days');
-        if (daysEl) daysEl.textContent = `· active days ${activeDays}`;
 
         const models = [...byModel.keys()].sort();
         const dates = [...byDayModel.keys()].sort().reverse();
@@ -382,6 +633,7 @@ export async function loadInsights(from, to) {
 export function initInsightsModal(opts = {}) {
     openPopoverFn  = opts.openPopover  || (() => {});
     closePopoverFn = opts.closePopover || (() => {});
+    selectDateFn   = opts.onSelectDate || (() => {});
     ensureInsightsBar();
     ensureInsightsModal();
 }

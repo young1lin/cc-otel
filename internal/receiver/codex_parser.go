@@ -25,6 +25,9 @@ func eventNameFromCodexLog(lr *logspb.LogRecord, attrs map[string]string) string
 		if strings.HasPrefix(s, "codex.") {
 			return s
 		}
+		if strings.HasPrefix(s, "response.") || s == "error" {
+			return "codex.websocket_event"
+		}
 		if strings.HasPrefix(s, "claude_code.") {
 			return strings.TrimPrefix(s, "claude_code.")
 		}
@@ -121,6 +124,35 @@ func (t *codexSpanTracker) popRequest(spanID string) (spanInfo, bool) {
 	return info, ok
 }
 
+func (t *codexSpanTracker) popLatestRequest(sessionID, model string, observedNanos int64, maxAge time.Duration) (spanInfo, bool) {
+	if sessionID == "" || model == "" || observedNanos <= 0 {
+		return spanInfo{}, false
+	}
+	cutoff := observedNanos - int64(maxAge)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	var bestKey string
+	var best spanInfo
+	for k, v := range t.spans {
+		if v.sessionID != sessionID || v.model != model {
+			continue
+		}
+		if v.startNanos <= 0 || v.startNanos > observedNanos || v.startNanos < cutoff {
+			continue
+		}
+		if bestKey == "" || v.startNanos > best.startNanos {
+			bestKey = k
+			best = v
+		}
+	}
+	if bestKey == "" {
+		return spanInfo{}, false
+	}
+	delete(t.spans, bestKey)
+	return best, true
+}
+
 // dispatchCodexLog handles a single Codex log record. Returns true when the
 // record produced a side effect that should trigger SSE notification.
 //
@@ -205,6 +237,26 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				}
 				upd.CostUSD = pricer.Calc(ctx, upd.Model,
 					uncachedInput, upd.OutputTokens, upd.CacheReadTokens, 0)
+			}
+			if tracker != nil {
+				obsNano := codexLogUnixNanos(lr)
+				if obsNano == 0 {
+					obsNano = ts.UnixNano()
+				}
+				var info spanInfo
+				var ok bool
+				if spanID := spanIDFromLog(lr); spanID != "" {
+					info, ok = tracker.popRequest(spanID)
+				}
+				if !ok {
+					info, ok = tracker.popLatestRequest(upd.SessionID, upd.Model, obsNano, 10*time.Minute)
+				}
+				if ok {
+					durationMs := (obsNano - info.startNanos) / 1e6
+					if durationMs > 0 {
+						upd.DurationMs = durationMs
+					}
+				}
 			}
 			if _, err := repo.UpdateCodexAPIRequestTokens(ctx, upd); err == nil {
 				notify()
