@@ -22,7 +22,9 @@
   - 从 OTLP trace spans 提取 `ttft_ms` 并回填 `api_requests.ttft_ms` / `codex_api_requests.ttft_ms`。
   - 内置 pending 队列：trace 先到、`api_request` log 后到的乱序场景也能正确回填。
   - 历史数据回填工具：`tools/backfill_claude_ttft`。
-- **Codex 耗时回填**：`tools/backfill_codex_duration`，扫描 `codex_raw_otlp_events` 表里的 `codex.websocket_request` / `codex.websocket_event` span 配对，推导 `duration_ms` 写回 `codex_api_requests`。
+- **Codex 耗时回填**（双路）：
+  - **在线**（接收端）：log 入库时若没有匹配的 span ID，按 `(sessionID, model)` 在 10 分钟窗口内回退匹配最近的 `codex.websocket_request` span，直接补 `duration_ms`。
+  - **离线**：`tools/backfill_codex_duration`，扫描 `codex_raw_otlp_events` 表里的 `codex.websocket_request` / `codex.websocket_event` span 配对，推导 `duration_ms` 写回 `codex_api_requests`。
 - **实时推送**：`/api/events` SSE，接收器入库成功后调用 `Broker.Notify()` 通知所有浏览器自动刷新。
 
 ### 成本与定价（`internal/pricing`）
