@@ -225,6 +225,44 @@ func TestDailyModelEndpoint(t *testing.T) {
 	}
 }
 
+func TestCalendarEndpointAggregatesDays(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	day := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	for _, req := range []db.APIRequest{
+		{Timestamp: day, RequestID: "api-cal-1", Model: "glm-5-turbo", InputTokens: 100, OutputTokens: 40, CacheReadTokens: 200, CostUSD: 0.01},
+		{Timestamp: day.Add(time.Hour), RequestID: "api-cal-2", Model: "glm-5-turbo", InputTokens: 300, OutputTokens: 20, CacheReadTokens: 100, CostUSD: 0.02},
+		{Timestamp: day.Add(2 * time.Hour), RequestID: "api-cal-3", Model: "claude-opus-4-7", InputTokens: 10, OutputTokens: 10, CostUSD: 0.03},
+	} {
+		if _, err := repo.InsertRequest(context.Background(), &req); err != nil {
+			t.Fatalf("InsertRequest: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/api/calendar?from=2026-05-09&to=2026-05-09", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data []db.CalendarDay `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected 1 day, got %d: %+v", len(resp.Data), resp.Data)
+	}
+	if resp.Data[0].TopModel != "glm-5-turbo" || resp.Data[0].RequestCount != 3 {
+		t.Fatalf("unexpected calendar row: %+v", resp.Data[0])
+	}
+}
+
 func TestDailyModelEndpointPagination(t *testing.T) {
 	h, repo, cleanup := setupTestHandler(t)
 	defer cleanup()

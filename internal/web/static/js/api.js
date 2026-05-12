@@ -23,7 +23,7 @@ function qs(params) {
 
 // Routes that have a Codex mirror at /api/codex/<name>.
 const CODEX_ROUTES = new Set([
-    'dashboard', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
+    'dashboard', 'calendar', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
 ]);
 
 function apiPath(name) {
@@ -42,6 +42,9 @@ export const loadDashboardData = (from, to) =>
 
 export const loadDailyData = ({ from, to, page = 1, pageSize = 20, granularity = 'day' }) =>
     fetchJSON(apiPath('daily') + qs({ from, to, page, page_size: pageSize, granularity }));
+
+export const loadCalendarData = ({ from, to }) =>
+    fetchJSON(apiPath('calendar') + qs({ from, to }));
 
 export const loadHourlyData = (date) =>
     fetchJSON('/api/hourly' + qs({ date }));

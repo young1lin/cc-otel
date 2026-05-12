@@ -139,6 +139,7 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 			ReasoningTokens: u.ReasoningTokens,
 			TotalTokens:     u.TotalTokens,
 			CostUSD:         u.CostUSD,
+			DurationMs:      u.DurationMs,
 			EventName:       "codex.sse_event:response.completed",
 		})
 		if ierr != nil {
@@ -153,10 +154,12 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE codex_api_requests
 		SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-		    reasoning_tokens = ?, total_tokens = ?, cost_usd = ?
+		    reasoning_tokens = ?, total_tokens = ?, cost_usd = ?,
+		    duration_ms = CASE WHEN duration_ms = 0 AND ? > 0 THEN ? ELSE duration_ms END
 		WHERE id = ?`,
 		u.InputTokens, u.OutputTokens, u.CacheReadTokens,
-		u.ReasoningTokens, u.TotalTokens, costToInt64(u.CostUSD), rowID,
+		u.ReasoningTokens, u.TotalTokens, costToInt64(u.CostUSD),
+		u.DurationMs, u.DurationMs, rowID,
 	); err != nil {
 		return false, fmt.Errorf("update codex tokens: %w", err)
 	}
@@ -372,6 +375,76 @@ func (r *Repository) GetCodexDailyStatsByModel(ctx context.Context, from, to str
 		out = append(out, s)
 	}
 	return out, total, rows.Err()
+}
+
+// GetCodexCalendarDays returns compact per-day aggregates for the Codex usage calendar.
+func (r *Repository) GetCodexCalendarDays(ctx context.Context, from, to string) ([]CalendarDay, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			date,
+			model,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0),
+			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(cost_usd), 0),
+			COALESCE(SUM(request_count), 0)
+		FROM codex_daily_model_agg
+		WHERE date >= ? AND date <= ?
+		GROUP BY date, model
+		ORDER BY date ASC, model ASC`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("codex calendar days query: %w", err)
+	}
+	defer rows.Close()
+
+	byDate := make(map[string]*CalendarDay)
+	var dates []string
+	topTokens := make(map[string]int64)
+	for rows.Next() {
+		var date, model string
+		var input, output, cacheRead, cacheCreate, reportedTotal, costUnits, reqs int64
+		if err := rows.Scan(&date, &model, &input, &output, &cacheRead, &cacheCreate, &reportedTotal, &costUnits, &reqs); err != nil {
+			return nil, err
+		}
+
+		day := byDate[date]
+		if day == nil {
+			day = &CalendarDay{Date: date}
+			byDate[date] = day
+			dates = append(dates, date)
+			topTokens[date] = -1
+		}
+		// Codex `input_tokens` already includes cached input (cache_read is a subset),
+		// so summing input+cache_read would double-count. Prefer the reported
+		// total_tokens when present, fall back to input+output otherwise.
+		// This diverges intentionally from the Claude side (Repository.GetCalendarDays).
+		modelTokens := reportedTotal
+		if modelTokens <= 0 {
+			modelTokens = input + output
+		}
+		day.TotalTokens += modelTokens
+		day.InputTokens += input
+		day.OutputTokens += output
+		day.CacheReadTokens += cacheRead
+		day.CacheCreationTokens += cacheCreate
+		day.CostUSD += costToFloat64(costUnits)
+		day.RequestCount += reqs
+		if modelTokens > topTokens[date] || (modelTokens == topTokens[date] && (day.TopModel == "" || model < day.TopModel)) {
+			topTokens[date] = modelTokens
+			day.TopModel = model
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]CalendarDay, 0, len(dates))
+	for _, date := range dates {
+		out = append(out, *byDate[date])
+	}
+	return out, nil
 }
 
 // GetCodexIntradayStatsByModel returns per-(bucket, model) Codex stats. Codex

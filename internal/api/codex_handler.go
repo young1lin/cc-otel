@@ -44,6 +44,31 @@ func (h *Handler) CodexDashboard(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(d)
 }
 
+// CodexCalendar returns compact per-day aggregates for the Codex usage calendar.
+func (h *Handler) CodexCalendar(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.repo == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(CalendarResponse{Data: []db.CalendarDay{}})
+		return
+	}
+	from, to, ok := codexResolveRange(r)
+	if !ok {
+		http.Error(w, "invalid date", http.StatusBadRequest)
+		return
+	}
+	rows, err := h.repo.GetCodexCalendarDays(r.Context(), from, to)
+	if err != nil {
+		log.Printf("codex calendar error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if rows == nil {
+		rows = []db.CalendarDay{}
+	}
+	json.NewEncoder(w).Encode(CalendarResponse{Data: rows})
+}
+
 // CodexDaily returns paged per-(date, model) rollup rows for the Codex tab.
 func (h *Handler) CodexDaily(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

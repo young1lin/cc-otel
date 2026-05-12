@@ -123,16 +123,16 @@ Claude Code ships an embedded OTEL SDK and exports these signals over **OTLP** (
 ### Data Flow
 
 ```
-┌─────────────────┐    OTLP/gRPC     ┌──────────────────────┐    ┌─────────────┐
-│  Claude Code    │ ───────────────▶ │  cc-otel (:4317)     │───▶│  SQLite     │
-│  (OTEL SDK)     │    :4317         │  · LogsService       │    │  · raw      │
-│                 │                  │  · MetricsService    │    │  · requests │
-│  metrics+logs   │                  │                      │    │  · daily    │
-└─────────────────┘                  └──────────┬───────────┘    └──────┬──────┘
-                                                │ Notify()              │
-                                                ▼                       │
-                                     ┌──────────────────────┐           │
-                                     │  Web UI (:8899)      │◀──────────┘
+┌─────────────────┐    OTLP/gRPC     ┌──────────────────────┐    ┌────────────────────────┐
+│  Claude Code    │ ───────────────▶ │  cc-otel (:4317)     │───▶│  SQLite                │
+│  Codex CLI      │    :4317         │  · LogsService       │    │  · api_requests        │
+│  (OTEL SDK)     │                  │  · MetricsService    │    │  · codex_api_requests  │
+│  logs + traces  │                  │  · TraceService      │    │  · daily_model_agg     │
+└─────────────────┘                  └──────────┬───────────┘    │  · codex_daily_model…  │
+                                                │ Notify()       └──────────┬─────────────┘
+                                                ▼                           │
+                                     ┌──────────────────────┐               │
+                                     │  Web UI (:8899)      │◀──────────────┘
                                      │  · REST API          │   query
                                      │  · SSE /api/events   │───┐
                                      └──────────────────────┘   │ push
@@ -146,19 +146,20 @@ Claude Code ships an embedded OTEL SDK and exports these signals over **OTLP** (
 
 **1. Receive (`internal/receiver/`)**
 
-An embedded gRPC server implementing the official OTLP `LogsService` and `MetricsService`:
+An embedded gRPC server implementing the official OTLP `LogsService`, `MetricsService`, and `TraceService`:
 
 - Each `claude_code.api_request` log event carries the full detail of one API call (model, tokens, cost, duration, `session.id`, `user.id`, etc. as resource + record attributes) and is written to the `api_requests` table.
-- `claude_code.token.usage`, `claude_code.cost.usage` and other metrics are ingested for cross-checking.
-- Every log record's raw protobuf → JSON is also stored in `raw_events` for replay and field-drift debugging.
+- `claude_code.token.usage`, `claude_code.cost.usage` and other metrics are intentionally **not persisted** (redundant with the `api_request` log); the gRPC call is still accepted so clients don't error out.
+- Trace spans are mined for `ttft_ms` and back-filled into the matching `api_requests` / `codex_api_requests` rows.
+- The `raw_otlp_events` / `codex_raw_otlp_events` tables remain in the schema for compatibility with existing backfill tools but **no new rows are written**.
 
 **2. Store (`internal/db/`)**
 
 A single-file SQLite database (WAL mode + `busy_timeout`):
 
-- `api_requests` -- one row per API call, the finest-grained fact table
-- `events_daily` -- pre-aggregated by (date × model × session); all chart / Daily Detail queries hit this table, latency < 3 ms
-- `raw_events` -- raw event backup, auto-pruned after `retention_days` (default 90)
+- `api_requests` / `codex_api_requests` -- one row per API call, the finest-grained fact table.
+- `daily_model_agg` / `codex_daily_model_agg` -- pre-aggregated on the insert path by (date × model); all chart / Daily Detail queries hit these tables (latency < 3 ms).
+- `raw_otlp_events` / `codex_raw_otlp_events` -- legacy raw-event tables (now write-frozen) + background sweepers: `raw_ttl_days` (default 5d) prunes raw tables hourly; the rest of the detail tables are governed by `retention_days` (default 90d).
 
 Token accounting follows Anthropic's [Prompt caching spec](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) precisely: total input side = `input_tokens` + `cache_read_tokens` + `cache_creation_tokens`, surfaced in the UI as three columns (Uncached / Cache Read / Cache Create).
 
@@ -247,11 +248,13 @@ pricing_refresh:
 
 ## Configuration
 
-CC-OTEL looks for config/data in this order:
+CC-OTEL resolves its data directory in this order (see `defaultDataDir` in `internal/config/config.go`):
 
-1. **`./bin/`** -- if the executable is in a `bin/` directory (dev mode)
-2. **`~/.claude/`** -- if `cc-otel.yaml` or `cc-otel.db` already exists there (legacy)
-3. **`~/.claude/cc-otel/`** -- default for new installs (all platforms)
+1. **`./bin/`** -- if the executable lives in a directory named `bin` (dev mode).
+2. **`~/.claude/cc-otel/`** -- otherwise this directory is used (auto-created if missing).
+3. **`.`** -- final fallback, used only when the home directory can't be resolved.
+
+> Note: `~/.claude/` itself is **not** an intermediate lookup step. Older docs implied it was, but the code never inspects `~/.claude/` without the `cc-otel/` suffix.
 
 All files (binary, config, DB, PID, log) live in the same directory:
 
@@ -274,13 +277,15 @@ Environment variable overrides (highest priority):
 
 ### Data Retention
 
-By default, raw event data older than 90 days is cleaned up on startup. Configure in `cc-otel.yaml`:
+cc-otel runs two independent cleanups:
 
 ```yaml
-retention_days: 90   # 0 = keep forever
+retention_days: 90    # cap on full-detail tables (api_requests / events / *_events / *_agg etc.) in days; 0 = keep forever
+raw_ttl_days: 5       # cap on raw_otlp_events / codex_raw_otlp_events in days (now write-frozen, this just trims old rows); 0 = keep forever
 ```
 
-Or run manually: `cc-otel cleanup`
+- `retention_days` (default 90) is consumed by `cc-otel cleanup` and the periodic prune.
+- `raw_ttl_days` (default 5) is consumed by a separate hourly sweeper, because the raw tables dominate disk usage.
 
 ## Web UI
 

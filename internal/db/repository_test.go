@@ -85,6 +85,60 @@ func TestDailyStats(t *testing.T) {
 	}
 }
 
+func TestGetCalendarDaysAggregatesByDateAndTopModel(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	repo := NewRepository(database)
+	ctx := context.Background()
+
+	day1 := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	day2 := time.Date(2026, 5, 10, 10, 0, 0, 0, time.Local)
+	fixtures := []APIRequest{
+		{Timestamp: day1, RequestID: "cal-1", Model: "glm-5-turbo", InputTokens: 100, OutputTokens: 50, CacheReadTokens: 300, CacheCreationTokens: 20, CostUSD: 0.011},
+		{Timestamp: day1.Add(time.Hour), RequestID: "cal-2", Model: "glm-5-turbo", InputTokens: 200, OutputTokens: 70, CacheReadTokens: 400, CacheCreationTokens: 30, CostUSD: 0.012},
+		{Timestamp: day1.Add(2 * time.Hour), RequestID: "cal-3", Model: "claude-opus-4-7", InputTokens: 900, OutputTokens: 10, CacheReadTokens: 0, CacheCreationTokens: 0, CostUSD: 0.02},
+		{Timestamp: day2, RequestID: "cal-4", Model: "glm-5.1", InputTokens: 10, OutputTokens: 5, CacheReadTokens: 20, CacheCreationTokens: 0, CostUSD: 0.001},
+	}
+	for i := range fixtures {
+		if _, err := repo.InsertRequest(ctx, &fixtures[i]); err != nil {
+			t.Fatalf("insert fixture %d: %v", i, err)
+		}
+	}
+
+	got, err := repo.GetCalendarDays(ctx, "2026-05-09", "2026-05-10")
+	if err != nil {
+		t.Fatalf("GetCalendarDays: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 days, got %d: %+v", len(got), got)
+	}
+
+	if got[0].Date != "2026-05-09" {
+		t.Fatalf("expected first date 2026-05-09, got %s", got[0].Date)
+	}
+	if got[0].TopModel != "glm-5-turbo" {
+		t.Fatalf("expected top model glm-5-turbo, got %s", got[0].TopModel)
+	}
+	if got[0].InputTokens != 1200 || got[0].OutputTokens != 130 || got[0].CacheReadTokens != 700 || got[0].CacheCreationTokens != 50 {
+		t.Fatalf("unexpected day1 token totals: %+v", got[0])
+	}
+	if got[0].RequestCount != 3 {
+		t.Fatalf("expected day1 request_count=3, got %d", got[0].RequestCount)
+	}
+	if math.Abs(got[0].CostUSD-0.043) > 0.000001 {
+		t.Fatalf("expected day1 cost 0.043, got %.8f", got[0].CostUSD)
+	}
+
+	if got[1].Date != "2026-05-10" || got[1].TopModel != "glm-5.1" {
+		t.Fatalf("unexpected second day: %+v", got[1])
+	}
+}
+
 func TestCleanup(t *testing.T) {
 	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
 	database, err := Init(cfg)
