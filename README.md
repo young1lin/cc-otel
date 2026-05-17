@@ -190,12 +190,15 @@ Claude Code 需要通过 gRPC 导出 OTLP 数据到 CC-OTEL。在 `~/.claude/set
     "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
     "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
     "OTEL_METRICS_EXPORTER": "otlp",
-    "OTEL_LOGS_EXPORTER": "otlp"
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "no_proxy": "localhost,127.0.0.1"
   }
 }
 ```
 
 > **注意**: 只添加/更新以上 OTEL 相关的 key，不要覆盖已有配置。端口号应与 `cc-otel.yaml` 中的 `otel_port` 一致。
+
+> **⚠️ 代理用户必看**: 如果你设置了 `http_proxy` / `https_proxy`（如 Clash、V2Ray 等代理工具），**必须**同时设置 `no_proxy` 排除 localhost，**否则遥测数据完全收不到**。OTEL gRPC SDK 会把发往 `localhost:4317` 的流量也走代理，代理无法处理 gRPC 导致连接静默失败，cc-otel 收不到任何数据。设置 `"no_proxy": "localhost,127.0.0.1"` 即可让 OTEL exporter 直连本地。`/cc-otel:setup` 会自动添加此项。
 
 ### Codex CLI 接入
 
