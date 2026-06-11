@@ -9,7 +9,7 @@
 ## [Unreleased] · 0.1.0 Preview
 
 > **状态：Preview，尚未正式发布。** 本节描述主分支当前已具备的全部功能，
-> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.7`，对应
+> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.10`，对应
 > GoReleaser 流水线自动出包）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
 ### 代理兼容性修复
@@ -19,8 +19,9 @@
 ### 数据源与接收
 
 - **OTLP gRPC 接收器**：通过 OTLP/gRPC 接收 logs / metrics / traces。代码默认端口 `4317`（详见下面 Daemon / CLI 段的端口说明）。
-- **Claude Code + Codex CLI 双源**：按 OTLP Resource 的 `service.name` 路由 ——
+- **Claude Code + Codex + Gemini CLI 三源**：按 OTLP Resource 的 `service.name` 路由 ——
   - 名称包含 `codex`（不区分大小写）→ 写入 `codex_*` 表，前端通过 `?source=codex` 切换视图，`/api/codex/*` 暴露。
+  - 名称等于 `gemini-cli` → 写入 `gemini_*` 表（独立 schema：`thoughts_tokens` / `tool_tokens` / `total_tokens`），前端 `?source=gemini`，`/api/gemini/*` 暴露，配置见 `skills/otel-setup/gemini-setup.md`。
   - 其余（含缺省 `service.name`）→ 写入既有 Claude 表 / 走原有接口（向后兼容）。
 - **TTFT（首 Token 时间）**：
   - 从 OTLP trace spans 提取 `ttft_ms` 并回填 `api_requests.ttft_ms` / `codex_api_requests.ttft_ms`。
@@ -62,6 +63,7 @@
   - 按模型汇总表：**Avg Duration**、**Out tok/s**、**Avg TTFT**（有数据才显示）、**Min**、**Max**，列可点击排序。
   - 单条请求列表：含 **TTFT** 列与单元格悬浮详情；含分页。
 - **耗时统计 API**：`/api/durations` 提供按模型 duration / 吞吐量统计；**Out tok/s** 由 `output_tokens` / `duration` 推导。
+- **时间格式统一 24 小时制**（preview.10 修复）：新增 `fmtDate24` / `fmtDateTime`，替换 `toLocaleString()`，午夜不再按 12 小时制显示为 "12:xx AM"，全部渲染为本地时区 `YYYY-MM-DD HH:mm:ss`。
 
 ### Web UI · 交互与控件
 
@@ -127,6 +129,8 @@
 - **历史回算工具**：`tools/recompute_cost`（按表回写 cost_usd）/ `tools/backfill_claude_ttft` / `tools/backfill_codex_duration` / `tools/prune_before`（按日期裁剪）/ `tools/migrate_codex_data`。
 - **价目表快照工具**：`tools/dump_pricing_snapshot`（发布前从 BerriAI/litellm 重新生成 seed.json）。
 - **流程文档**：`docs/MERGE_AND_RECOMPUTE.md`（合并 + 重算的标准动作，含 `--config` 必填这类易错点）。
+- **合并防丢数据修复**（preview.10）：`import_global` 此前 ledger UUID 命中即跳过、不检查数据行是否真的存在 —— 目标库 ledger 有残留（行被 prune 后）会静默丢行。现在 ledger 只记账，按自然键（`api_requests` 优先 `request_id`；codex/gemini 排除会被 recompute 改写的 `cost_usd`）判存在性。`verify_merge` 同步改为三张 request 表逐行 NOT EXISTS 包含性校验：源库自身重复被去重打 NOTE，cost 总和不对称打 WARN，真缺行才 FAIL。
+- **在线快照工具**：`tools/snapshot_db`（`VACUUM INTO`，不停进程复制 WAL 库）；`tools/otlp_dump`（OTLP 流量调试落盘）。
 
 ### 分发
 

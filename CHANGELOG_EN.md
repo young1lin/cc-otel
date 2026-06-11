@@ -10,7 +10,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 > **Status: preview, not yet released.** This section describes the full set
 > of features on the main branch today. Iterations ship as `v0.1.0-preview.N`
-> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.7`). Once behavior
+> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.10`). Once behavior
 > stabilizes, the contents below will fold into `v0.1.0`.
 
 ### Proxy compatibility fix
@@ -20,8 +20,9 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 ### Sources & ingestion
 
 - **OTLP gRPC receiver**: ingest logs / metrics / traces over OTLP/gRPC. Code default port is `4317` (see the Daemon / CLI section below for port details).
-- **Claude Code + Codex CLI as dual sources**: routed by the OTLP Resource attribute `service.name` —
+- **Claude Code + Codex + Gemini CLI as three sources**: routed by the OTLP Resource attribute `service.name` —
   - Names containing `codex` (case-insensitive) → `codex_*` tables, exposed via `/api/codex/*`; the frontend switches views with `?source=codex`.
+  - Name equal to `gemini-cli` → `gemini_*` tables (independent schema: `thoughts_tokens` / `tool_tokens` / `total_tokens`), exposed via `/api/gemini/*`; frontend `?source=gemini`. Setup guide: `skills/otel-setup/gemini-setup.md`.
   - Everything else (including missing `service.name`) → the existing Claude tables / routes for back-compat.
 - **TTFT (Time To First Token)**:
   - Extracted from OTLP trace spans and back-filled into `api_requests.ttft_ms` / `codex_api_requests.ttft_ms`.
@@ -63,6 +64,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
   - Per-model summary table: **Avg Duration**, **Out tok/s**, **Avg TTFT** (only when data exists), **Min**, **Max**; sortable columns.
   - Per-request list with a **TTFT** column and hover detail; paginated.
 - **Latency API**: `/api/durations` returns per-model duration / throughput; **Out tok/s** is derived from `output_tokens` and duration.
+- **Uniform 24-hour timestamps** (preview.10 fix): new `fmtDate24` / `fmtDateTime` replace `toLocaleString()`; midnight no longer renders as the 12-hour "12:xx AM" — everything is local-time `YYYY-MM-DD HH:mm:ss`.
 
 ### Web UI · interaction & controls
 
@@ -128,6 +130,8 @@ Ships as a marketplace plugin with slash commands:
 - **Historical backfill tools**: `tools/recompute_cost` (rewrite `cost_usd` per table) / `tools/backfill_claude_ttft` / `tools/backfill_codex_duration` / `tools/prune_before` (date-bounded prune) / `tools/migrate_codex_data`.
 - **Pricing snapshot tool**: `tools/dump_pricing_snapshot` regenerates `seed.json` from BerriAI/litellm before a release.
 - **Process docs**: `docs/MERGE_AND_RECOMPUTE.md` — the canonical merge + recompute flow with load-bearing details (e.g. `--config` is mandatory).
+- **Merge data-loss fix** (preview.10): `import_global` used to skip a row on a ledger UUID hit without checking the actual table — stale ledger entries (rows pruned after an earlier merge) silently dropped data. The ledger now only records; existence is decided by a natural key (`request_id` for api_requests; codex/gemini keys exclude `cost_usd`, which recompute rewrites). `verify_merge` now does per-row NOT EXISTS containment on the request tables: source-side duplicates deduped by the merge print a NOTE, cost-sum asymmetry prints a WARN, and only genuinely missing rows FAIL.
+- **Online snapshot tooling**: `tools/snapshot_db` (`VACUUM INTO` copy of a live WAL db without stopping the daemon); `tools/otlp_dump` (OTLP traffic debugging).
 
 ### Distribution
 
