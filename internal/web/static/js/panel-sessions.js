@@ -1,5 +1,5 @@
 import { state, paging } from './state.js';
-import { fmtNum, escapeHtml, truncate, formatUserCell, rangeToFromTo } from './utils.js';
+import { fmtNum, fmtDateTime, escapeHtml, truncate, formatUserCell, rangeToFromTo } from './utils.js';
 import { loadSessionsData } from './api.js';
 import { renderPagination } from './pagination.js';
 
@@ -19,7 +19,7 @@ export async function loadSessions() {
         tbody.innerHTML = rows.map(s => `<tr>
             <td><span class="badge">${escapeHtml(truncate(s.session_id, 16))}</span></td>
             <td class="mono">${formatUserCell(s.user_id)}</td>
-            <td class="mono">${new Date(s.start_time).toLocaleString()}</td>
+            <td class="mono">${fmtDateTime(s.start_time)}</td>
             <td class="mono">${s.request_count}</td>
             <td class="mono">${fmtNum(s.input_tokens)}</td>
             <td class="mono">${fmtNum(s.output_tokens)}</td>

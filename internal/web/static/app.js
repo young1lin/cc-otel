@@ -106,13 +106,25 @@ function closePopover(backdropEl) {
 function applySourceFromURL() {
     const sp = new URLSearchParams(location.search);
     const src = sp.get('source');
-    if (src === 'codex' || src === 'claude') state.source = src;
+    if (src === 'codex' || src === 'gemini' || src === 'claude') state.source = src;
     else state.source = 'claude';
 }
 
 function syncSourceTabsUI() {
     document.querySelectorAll('.source-tab').forEach(btn => {
         btn.classList.toggle('is-active', btn.dataset.source === state.source);
+    });
+    // Hide Cache Create header cells for sources that don't have it (Codex, Gemini).
+    // Data rows are handled at render time (they skip the <td> entirely).
+    const hide = state.source === 'codex' || state.source === 'gemini';
+    document.querySelectorAll('.col-cache-create').forEach(el => {
+        el.style.display = hide ? 'none' : '';
+    });
+    // Adjust Input colspan to match: 3 (Claude) or 2 (Codex/Gemini — no Cache Create).
+    document.querySelectorAll('.th-group').forEach(el => {
+        if (el.textContent.trim() === 'Input') {
+            el.setAttribute('colspan', hide ? '2' : '3');
+        }
     });
 }
 

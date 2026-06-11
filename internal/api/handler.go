@@ -124,6 +124,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/codex/models", h.CodexModels)
 	mux.HandleFunc("/api/codex/intraday", h.CodexIntraday)
 
+	// Gemini CLI telemetry routes.
+	mux.HandleFunc("/api/gemini/dashboard", h.GeminiDashboard)
+	mux.HandleFunc("/api/gemini/calendar", h.GeminiCalendar)
+	mux.HandleFunc("/api/gemini/daily", h.GeminiDaily)
+	mux.HandleFunc("/api/gemini/intraday", h.GeminiIntraday)
+	mux.HandleFunc("/api/gemini/requests", h.GeminiRequests)
+	mux.HandleFunc("/api/gemini/sessions", h.GeminiSessions)
+	mux.HandleFunc("/api/gemini/durations", h.GeminiDurations)
+	mux.HandleFunc("/api/gemini/models", h.GeminiModels)
+
 	// Embedded static files reflect the tree at compile time. For local UI edits without
 	// rebuilding, set CC_OTEL_STATIC_DIR to the static folder (e.g. internal/web/static).
 	if dir := strings.TrimSpace(os.Getenv("CC_OTEL_STATIC_DIR")); dir != "" {

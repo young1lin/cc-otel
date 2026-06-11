@@ -84,7 +84,7 @@ function intradayLineTooltip(params, c) {
     const cost = Number(raw.cost_usd || 0);
     const reqs = Number(raw.request_count || 0);
     const sub = 'padding:2px 0 2px 16px;font-size:11px';
-    const cacheCreateRow = state.source === 'codex'
+    const cacheCreateRow = (state.source === 'codex' || state.source === 'gemini')
         ? ''
         : `<tr><td style="color:${c.mutedText};${sub}">Cache Create</td><td style="font-family:var(--font-mono);text-align:right;${sub}">${fmtNum(parts.cacheCreate)}</td></tr>`;
     const header = escapeHtml(String(raw.bucket_label || ''));
@@ -142,6 +142,7 @@ export async function loadIntraday() {
                 if (ts !== 0) return ts;
                 return metricValueFromRow(b) - metricValueFromRow(a);
             });
+            const hideCC = state.source === 'codex' || state.source === 'gemini';
             tbody.innerHTML = sortedRows.map(r => {
                 const parts = tokenParts(r);
                 return `<tr>
@@ -151,7 +152,7 @@ export async function loadIntraday() {
                     <td class="mono">${fmtNum(parts.inputSide)}</td>
                     <td class="mono">${fmtNum(parts.uncachedInput)}</td>
                     <td class="mono">${fmtNum(parts.cacheRead)}</td>
-                    <td class="mono">${fmtNum(parts.cacheCreate)}</td>
+                    ${hideCC ? '' : `<td class="mono">${fmtNum(parts.cacheCreate)}</td>`}
                     <td class="mono">${fmtNum(parts.output)}</td>
                     <td class="cost-val">$${Number(r.cost_usd || 0).toFixed(4)}</td>
                     <td class="mono">${r.request_count || 0}</td>
@@ -418,13 +419,14 @@ export async function loadDailyTable() {
             renderPagination('daily-pagination', paging.daily, loadDailyTable);
             return;
         }
+        const hideCC = state.source === 'codex' || state.source === 'gemini';
         tbody.innerHTML = rows.map(r => `<tr>
             <td class="mono">${escapeHtml(r.date)}</td>
             <td><span class="badge">${escapeHtml(r.model)}</span></td>
             <td class="mono">${r.request_count}</td>
             <td class="mono">${fmtNum(r.input_tokens)}</td>
             <td class="mono">${fmtNum(r.cache_read_tokens)}</td>
-            <td class="mono">${fmtNum(r.cache_creation_tokens)}</td>
+            ${hideCC ? '' : `<td class="mono">${fmtNum(r.cache_creation_tokens)}</td>`}
             <td class="mono">${fmtNum(r.output_tokens)}</td>
             <td class="cost-val">$${r.cost_usd.toFixed(4)}</td>
         </tr>`).join('');

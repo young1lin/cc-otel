@@ -205,8 +205,33 @@ The web UI will then read static files directly from the disk directory (only fo
 
 | Port | Service |
 |------|---------|
-| 4317 | OTLP gRPC Receiver |
-| 8899 | Web UI + REST API |
+| 4317 | OTLP gRPC Receiver (production) |
+| 8899 | Web UI + REST API (production) |
+
+### Development / Testing Ports (bin/ directory)
+
+**NEVER use production ports (4317 / 8899) for testing.** The production instance at `~/.claude/cc-otel/` must stay running. Always use separate ports for the bin development instance:
+
+| Port | Service |
+|------|---------|
+| 14317 | OTLP gRPC Receiver (development) |
+| 18899 | Web UI + REST API (development) |
+
+To start the dev instance with separate ports, create a temp config:
+```bash
+cat > bin/cc-otel-dev.yaml << 'EOF'
+otel_port: 14317
+web_port: 18899
+db_path: ./bin/cc-otel-dev.db
+model_mapping: {}
+EOF
+
+./bin/cc-otel.exe start -config bin/cc-otel-dev.yaml
+```
+
+When sending Gemini/Codex test telemetry to the dev instance, use `http://localhost:14317` as the OTLP endpoint.
+
+All build artifacts (`make build`) go to `./bin/` — binary, config, database, logs. Never write test data to the production directory `~/.claude/cc-otel/`.
 
 ## Frontend Development Rules
 
@@ -319,3 +344,7 @@ go run ./tools/recompute_cost --db bin/cc-otel.db --config bin/cc-otel.yaml --ta
 - `run_merge` direction is fixed: `~/.claude/cc-otel` → `bin/`. Result lands in `bin/cc-otel.db`.
 - Both tools auto-create timestamped backups in `bin/`. The merge tool also auto-stops the bin daemon (PID-checked against `bin/cc-otel.exe` to avoid killing unrelated processes).
 - For interactive verification after a clean: `go run bin/tmp/verify.go` prints the per-model cost rollup.
+
+### Iron rule: copying the DB must not stop a running process
+
+Copying / snapshotting `cc-otel.db` **must never stop the running daemon — the global instance at `~/.claude/cc-otel/` in particular is never stopped just to copy its DB.** The DB is WAL-mode, so a plain `cp` of the `.db` alone is inconsistent. Use the online snapshot `VACUUM INTO` (`go run ./tools/snapshot_db <src> <dst>`), which only read-locks the source. Only the **dev/bin daemon** (ports 14317/18899) may be stopped — and only because Windows can't replace a file it holds open. Full procedure: **`.claude/rules/db-copy-no-stop.md`**.
