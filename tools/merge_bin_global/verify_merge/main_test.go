@@ -32,6 +32,25 @@ func TestCountQueryEmitsCostSumOnlyWhenChecked(t *testing.T) {
 	}
 }
 
+func TestContainmentSQLCoversAllCostCheckedTables(t *testing.T) {
+	sqls := containmentSQL()
+	for _, c := range simpleTableChecks() {
+		if !c.CheckCost {
+			continue
+		}
+		q, ok := sqls[c.Name]
+		if !ok {
+			t.Fatalf("containmentSQL() missing %s: cost-checked request tables need per-row containment", c.Name)
+		}
+		if !strings.Contains(q, "NOT EXISTS") || !strings.Contains(q, "src."+c.Name) {
+			t.Fatalf("containmentSQL(%s) malformed: %q", c.Name, q)
+		}
+		if strings.Contains(q, "cost_usd") {
+			t.Fatalf("containmentSQL(%s) must not match on cost_usd (recompute_cost rewrites it)", c.Name)
+		}
+	}
+}
+
 func TestContainedAtLeast(t *testing.T) {
 	tests := []struct {
 		name string
@@ -52,23 +71,24 @@ func TestContainedAtLeast(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "global missing cost",
+			// Cost divergence is warn-only: recompute_cost can reprice one
+			// side without any rows being lost.
+			name: "global lower cost but counts ok",
 			bin:  tableStats{Count: 10, CostUnits: 100},
 			glob: tableStats{Count: 12, CostUnits: 90},
-			want: false,
+			want: true,
 		},
 		{
-			name: "cost check can be disabled",
-			bin:  tableStats{Count: 10, CostUnits: 100},
-			glob: tableStats{Count: 12, CostUnits: 0},
-			want: true,
+			name: "stat error fails",
+			bin:  tableStats{Count: 10},
+			glob: tableStats{Count: 12, Err: "boom"},
+			want: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			checkCost := tt.name != "cost check can be disabled"
-			got := containedAtLeast(tt.bin, tt.glob, checkCost)
+			got := containedAtLeast(tt.bin, tt.glob)
 			if got != tt.want {
 				t.Fatalf("containedAtLeast() = %v, want %v", got, tt.want)
 			}
