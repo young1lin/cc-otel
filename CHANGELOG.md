@@ -9,7 +9,7 @@
 ## [Unreleased] · 0.1.0 Preview
 
 > **状态：Preview，尚未正式发布。** 本节描述主分支当前已具备的全部功能，
-> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.10`，对应
+> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.11`，对应
 > GoReleaser 流水线自动出包）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
 ### 代理兼容性修复
@@ -64,6 +64,7 @@
   - 单条请求列表：含 **TTFT** 列与单元格悬浮详情；含分页。
 - **耗时统计 API**：`/api/durations` 提供按模型 duration / 吞吐量统计；**Out tok/s** 由 `output_tokens` / `duration` 推导。
 - **时间格式统一 24 小时制**（preview.10 修复）：新增 `fmtDate24` / `fmtDateTime`，替换 `toLocaleString()`，午夜不再按 12 小时制显示为 "12:xx AM"，全部渲染为本地时区 `YYYY-MM-DD HH:mm:ss`。
+- **Cache Hit Rate 口径修正**（preview.11 修复）：缓存命中率从 `cache_read / (cache_read + cache_creation)` 改为 `cache_read / 输入侧合计`（`input_tokens + cache_read + cache_creation`）。旧口径对只上报 `cache_read`、从不上报 `cache_creation` 的反代提供商（GLM、mimo）会塌缩成恒定 100%；改用完整输入侧作分母后修复，并与 Codex / Gemini 口径（`cache_read / input_tokens`，其 input 已含缓存部分）保持一致。后端 `GetDashboardForRange` / `GetDailyStats` 与前端 `token-math.js` 同步调整，配套新增 `token-math.test.mjs` 及 GLM 无 `cache_creation` 回归用例。
 
 ### Web UI · 交互与控件
 

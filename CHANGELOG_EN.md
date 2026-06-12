@@ -10,7 +10,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 > **Status: preview, not yet released.** This section describes the full set
 > of features on the main branch today. Iterations ship as `v0.1.0-preview.N`
-> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.10`). Once behavior
+> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.11`). Once behavior
 > stabilizes, the contents below will fold into `v0.1.0`.
 
 ### Proxy compatibility fix
@@ -65,6 +65,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
   - Per-request list with a **TTFT** column and hover detail; paginated.
 - **Latency API**: `/api/durations` returns per-model duration / throughput; **Out tok/s** is derived from `output_tokens` and duration.
 - **Uniform 24-hour timestamps** (preview.10 fix): new `fmtDate24` / `fmtDateTime` replace `toLocaleString()`; midnight no longer renders as the 12-hour "12:xx AM" — everything is local-time `YYYY-MM-DD HH:mm:ss`.
+- **Cache hit-rate redefinition** (preview.11 fix): the cache hit rate changed from `cache_read / (cache_read + cache_creation)` to `cache_read / input-side total` (`input_tokens + cache_read + cache_creation`). The old formula collapsed to a constant 100% for reverse-proxied providers (GLM, mimo) that report `cache_read` but never `cache_creation`; using the full input side as the denominator fixes that and aligns with the Codex / Gemini definition (`cache_read / input_tokens`, where input already includes the cached portion). Backend `GetDashboardForRange` / `GetDailyStats` and frontend `token-math.js` are updated, with a new `token-math.test.mjs` and a GLM no-`cache_creation` regression test.
 
 ### Web UI · interaction & controls
 
