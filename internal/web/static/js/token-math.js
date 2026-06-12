@@ -33,10 +33,14 @@ export function tokenParts(row) {
 export function cacheHitParts(row) {
     const cacheRead = Number(row?.cache_read_tokens || 0);
     if (state.source === 'codex') {
+        // Codex input_tokens already includes the cached portion.
         return { numerator: cacheRead, denominator: Number(row?.input_tokens || 0) };
     }
+    // Claude path: denominator is the full input side (uncached + cache read + cache
+    // create). Using cache_read + cache_create alone would collapse to a constant 100%
+    // for reverse-proxied providers (GLM, mimo) that never report cache_creation.
     return {
         numerator: cacheRead,
-        denominator: cacheRead + Number(row?.cache_creation_tokens || 0),
+        denominator: Number(row?.input_tokens || 0) + cacheRead + Number(row?.cache_creation_tokens || 0),
     };
 }
