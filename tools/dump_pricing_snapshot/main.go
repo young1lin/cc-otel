@@ -9,6 +9,12 @@
 // Anthropic / Claude entries are unconditionally dropped — Claude Code
 // reports authoritative cost_usd and cc-otel never recomputes Claude.
 //
+// Hand-maintained entries for models NO upstream catalog carries (Xiaomi MiMo,
+// StepFun, not-yet-listed DeepSeek V4) live in embed/manual_seed.json, which
+// seed.go merges ON TOP of this file (manual wins on key conflict). This tool
+// does NOT touch manual_seed.json — add such models there, never here, or the
+// next run wipes them.
+//
 // Usage:
 //
 //	go run ./tools/dump_pricing_snapshot

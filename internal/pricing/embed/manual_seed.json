@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "currency": "USD",
+    "generator": "hand-maintained",
+    "note": "Hand-curated per-token prices for models NO upstream catalog (LiteLLM / OpenRouter) carries: Xiaomi MiMo, StepFun, and not-yet-listed DeepSeek V4 tiers. seed.go merges this with the auto-generated seed.json; entries here override auto on key conflict. tools/dump_pricing_snapshot only regenerates seed.json, so this file survives regen. Add glm-* here ONLY if you accept losing auto-refresh for them (they are normally fetched live from OpenRouter).",
+    "unit": "per token",
+    "version": "2026-06-20"
+  },
+  "entries": [
+    {
+      "model": "deepseek-v4-flash",
+      "input": 0.00000014,
+      "output": 0.00000028,
+      "cache_read": 0.0000000028
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "input": 0.00000174,
+      "output": 0.00000348,
+      "cache_read": 0.0000000145
+    },
+    {
+      "model": "mimo-v2.5-pro",
+      "input": 0.000000435,
+      "output": 0.00000087,
+      "cache_read": 0.0000000036
+    },
+    {
+      "model": "step-3.5-flash",
+      "input": 0.0000001,
+      "output": 0.0000003,
+      "cache_read": 0.00000002
+    }
+  ]
+}
