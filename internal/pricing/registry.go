@@ -153,6 +153,17 @@ func (r *sqlRegistry) rebuildIndexLocked() {
 	}
 }
 
+// keySourceRank resolves a registry key to its source rank for basename
+// tiebreaking. Caller must hold r.mu (read). A key absent from both layers
+// ranks 0 — but basename candidates always come from r.keys, so this is just
+// defensive.
+func (r *sqlRegistry) keySourceRank(key string) int {
+	if e, ok := r.resolveLocked(key); ok {
+		return SourceRank(e.Source)
+	}
+	return 0
+}
+
 // resolveLocked returns the Entry for a canonical key, applying user > table priority.
 func (r *sqlRegistry) resolveLocked(canonical string) (Entry, bool) {
 	if e, ok := r.userByKey[canonical]; ok {
@@ -174,6 +185,15 @@ func (r *sqlRegistry) Lookup(ctx context.Context, model string) LookupResult {
 
 	r.mu.RLock()
 	canonical, kind := matchKey(q, r.keys, r.aliasIndex)
+	if kind == MatchMiss {
+		// Last resort: a bare name may match a provider-prefixed key by
+		// basename (glm-5.2 -> z-ai/glm-5.2). Pick the best candidate; if
+		// none, it stays a miss.
+		if cands := basenameCandidates(q, r.keys); len(cands) > 0 {
+			canonical = pickBasenameWinner(cands, r.keySourceRank)
+			kind = MatchBasename
+		}
+	}
 	if kind == MatchMiss {
 		r.mu.RUnlock()
 		r.recordMiss(q)
