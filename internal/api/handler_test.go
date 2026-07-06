@@ -477,6 +477,148 @@ func TestDurationsEndpoint(t *testing.T) {
 	}
 }
 
+func TestRateEndpoint(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// Two requests for the same model in the same bucket, different sizes/durations.
+	now := time.Now()
+	if _, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp: now, SessionID: "s", UserID: "u", Model: "m1",
+		OutputTokens: 10, DurationMs: 1000,
+	}); err != nil {
+		t.Fatalf("InsertRequest 1: %v", err)
+	}
+	if _, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp: now, SessionID: "s", UserID: "u", Model: "m1", RequestID: "r2",
+		OutputTokens: 1000, DurationMs: 10000,
+	}); err != nil {
+		t.Fatalf("InsertRequest 2: %v", err)
+	}
+
+	today := now.Local().Format("2006-01-02")
+	req := httptest.NewRequest("GET", "/api/rate?from="+today+"&to="+today+"&bucket=60", nil)
+	w := httptest.NewRecorder()
+	h.Rate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp RateResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected 1 bucket row, got %d: %+v", len(resp.Data), resp.Data)
+	}
+	b := resp.Data[0]
+	if b.Model != "m1" || b.RequestCount != 2 {
+		t.Fatalf("unexpected bucket: %+v", b)
+	}
+	// avg-of-ratios: (10 + 100)/2 = 55
+	if int(b.AvgOutPerS+0.5) != 55 {
+		t.Fatalf("avg_out_per_s = %v, want ~55", b.AvgOutPerS)
+	}
+	// weighted: 1010*1000/11000 = 91.8
+	if int(b.WeightedOutPerS+0.5) != 92 {
+		t.Fatalf("weighted_out_per_s = %v, want ~91.8", b.WeightedOutPerS)
+	}
+}
+
+func TestSessionRateEndpoint(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	now := time.Now()
+	bucketStart := now.Unix() - (now.Unix() % 60)
+	// Older bucket — should not be returned.
+	if _, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp: time.Unix(bucketStart-120, 0), SessionID: "sess-rate", UserID: "u", Model: "m1",
+		OutputTokens: 1, DurationMs: 1000, RequestID: "old",
+	}); err != nil {
+		t.Fatalf("InsertRequest old: %v", err)
+	}
+	// Latest active minute: two requests.
+	if _, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp: time.Unix(bucketStart+10, 0), SessionID: "sess-rate", UserID: "u", Model: "m1",
+		OutputTokens: 10, DurationMs: 1000, RequestID: "a",
+	}); err != nil {
+		t.Fatalf("InsertRequest a: %v", err)
+	}
+	if _, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp: time.Unix(bucketStart+20, 0), SessionID: "sess-rate", UserID: "u", Model: "m1",
+		OutputTokens: 1000, DurationMs: 10000, RequestID: "b",
+	}); err != nil {
+		t.Fatalf("InsertRequest b: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/session/rate?session_id=sess-rate", nil)
+	w := httptest.NewRecorder()
+	h.SessionRate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var snap db.SessionRateSnapshot
+	if err := json.NewDecoder(w.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.SessionID != "sess-rate" || snap.BucketMinutes != 1 {
+		t.Fatalf("unexpected snapshot header: %+v", snap)
+	}
+	if snap.RequestCount != 2 {
+		t.Fatalf("request_count = %d, want 2", snap.RequestCount)
+	}
+	if int(snap.WeightedOutPerS+0.5) != 92 {
+		t.Fatalf("weighted_out_per_s = %v, want ~92", snap.WeightedOutPerS)
+	}
+
+	req404 := httptest.NewRequest("GET", "/api/session/rate?session_id=missing", nil)
+	w404 := httptest.NewRecorder()
+	h.SessionRate(w404, req404)
+	if w404.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing session, got %d", w404.Code)
+	}
+
+	req400 := httptest.NewRequest("GET", "/api/session/rate", nil)
+	w400 := httptest.NewRecorder()
+	h.SessionRate(w400, req400)
+	if w400.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without session_id, got %d", w400.Code)
+	}
+}
+
+func TestRateEndpoint5MinBucket(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	now := time.Now()
+	if _, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp: now, SessionID: "s", UserID: "u", Model: "m1",
+		OutputTokens: 100, DurationMs: 1000,
+	}); err != nil {
+		t.Fatalf("InsertRequest: %v", err)
+	}
+
+	today := now.Local().Format("2006-01-02")
+	req := httptest.NewRequest("GET", "/api/rate?from="+today+"&to="+today+"&bucket=5", nil)
+	w := httptest.NewRecorder()
+	h.Rate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp RateResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.BucketMinutes != 5 {
+		t.Fatalf("bucket_minutes = %d, want 5", resp.BucketMinutes)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected 1 bucket row, got %d", len(resp.Data))
+	}
+}
+
 func TestModelsEndpoint(t *testing.T) {
 	h, repo, cleanup := setupTestHandler(t)
 	defer cleanup()

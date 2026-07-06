@@ -1,0 +1,39 @@
+---
+description: 用户说「挪/同步全局 db 到 bin」时，自动执行全局→bin 数据库同步流程（全局 daemon 不停）
+alwaysApply: true
+---
+
+# 触发：全局 DB → bin
+
+当用户说类似下面的话时，**不要只解释步骤，直接执行**完整流程：
+
+- 挪全局 db 到 bin / 同步全局 db 到 bin / 复制全局 db 到 bin
+- 更新 bin 数据库 / 刷新 bin 数据 / 看看最新效果（且上下文是 bin 本地实例）
+- sync global db to bin / copy global db to bin
+
+详细铁律见 `.claude/rules/db-copy-no-stop.md`：**全局 `~/.claude/cc-otel/` daemon 永远不停**；只用 `snapshot_db`（VACUUM INTO），禁止直接 copy `.db` 文件。
+
+## 标准流程（Windows PowerShell，项目根目录）
+
+```powershell
+cd d:\goProject\cc-otel
+go run ./tools/snapshot_db "$env:USERPROFILE\.claude\cc-otel\cc-otel.db" bin\cc-otel.db.snap
+.\bin\cc-otel.exe stop -config bin\cc-otel.yaml
+if (Test-Path bin\cc-otel.db) { Remove-Item -Force bin\cc-otel.db }
+Remove-Item -Force bin\cc-otel.db-wal -ErrorAction SilentlyContinue
+Remove-Item -Force bin\cc-otel.db-shm -ErrorAction SilentlyContinue
+Move-Item -Force bin\cc-otel.db.snap bin\cc-otel.db
+.\bin\cc-otel.exe start -config bin\cc-otel.yaml
+```
+
+## 执行后汇报
+
+- 快照大小、停/启 PID
+- Web UI：`http://localhost:18899`
+- 提醒用户 Ctrl+F5 强刷（若在看 Rate 等前端）
+
+## 禁止
+
+- 停止全局 `~/.claude/cc-otel/` daemon
+- 用 `Copy-Item` / `cp` 直接复制 `cc-otel.db`（会丢 WAL 数据）
+- 跳过删除 `bin\cc-otel.db-wal` / `bin\cc-otel.db-shm`

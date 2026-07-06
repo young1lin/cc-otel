@@ -60,6 +60,14 @@ export const loadHourlyData = (date) =>
 export const loadIntradayData = ({ from, to, bucket = 30, model = '' } = {}) =>
     fetchJSON(apiPath('intraday') + qs({ from, to, bucket, model }));
 
+// Rate-over-time is Claude-only (no Codex/Gemini mirror), so it always hits /api/rate.
+export const loadRateData = ({ from, to, bucket = 30, model = '' } = {}) =>
+    fetchJSON('/api/rate' + qs({ from, to, bucket, model }));
+
+// Latest 1-minute throughput for a session's most recent active window (Claude only).
+export const loadSessionRateData = (sessionId) =>
+    fetchJSON('/api/session/rate' + qs({ session_id: sessionId }));
+
 export const loadSessionsData = ({ from, to, page = 1, pageSize = 20 }) =>
     fetchJSON(apiPath('sessions') + qs({ from, to, page, page_size: pageSize }));
 

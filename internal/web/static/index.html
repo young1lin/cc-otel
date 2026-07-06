@@ -103,6 +103,7 @@
             <button class="panel-btn active" data-panel="daily">Daily Detail</button>
             <button class="panel-btn" data-panel="sessions">Sessions</button>
             <button class="panel-btn" data-panel="requests">Request Log</button>
+            <button class="panel-btn" data-panel="rate">Rate</button>
         </div>
         <div class="panel-filter" id="request-filter">
             <select id="model-filter">
@@ -200,7 +201,8 @@
                         <th>Model</th>
                         <th>Requests</th>
                         <th class="sortable" data-sort-key="avg_duration_ms" data-sort-label="Avg Duration" title="Sort by average duration">Avg Duration</th>
-                        <th class="sortable" data-sort-key="avg_out_tokens_per_s" data-sort-label="Out tok/s" title="Sort by output tokens per second">Out tok/s</th>
+                        <th class="sortable" data-sort-key="avg_out_tokens_per_s" data-sort-label="Out tok/s (avg)" title="Out tokens/s — per-request average&#10;Formula: AVG(output_tokens × 1000 ÷ duration_ms)&#10;Arithmetic mean of each request's tok/s; every request weighted equally.&#10;Excludes local tool execution time (duration_ms is API request time only, tool_result time is separate).&#10;单请求速率的算术平均，每条请求等权重；不含工具执行时间。">Out tok/s (avg)</th>
+                        <th class="sortable" data-sort-key="weighted_out_tokens_per_s" data-sort-label="Out tok/s (wt)" title="Out tokens/s — weighted overall throughput&#10;Formula: SUM(output_tokens) × 1000 ÷ SUM(duration_ms)&#10;Total tokens ÷ total time; equivalent to a duration-weighted mean, so long/slow (queued) requests dominate.&#10;Excludes local tool execution time (duration_ms is API request time only, tool_result time is separate).&#10;总产出 ÷ 总耗时的加权吞吐，排队久的请求权重更大；不含工具执行时间。">Out tok/s (wt)</th>
                         <th class="sortable ttft-col" data-sort-key="avg_ttft_ms" data-sort-label="Avg TTFT" title="TTFT = Time To First Token (ms). How long it took to receive the first token after the request started. Click to sort." style="display:none">Avg TTFT</th>
                         <th class="sortable" data-sort-key="min_duration_ms" data-sort-label="Min" title="Sort by minimum duration">Min</th>
                         <th class="sortable" data-sort-key="max_duration_ms" data-sort-label="Max" title="Sort by maximum duration">Max</th>
@@ -229,6 +231,34 @@
             </table>
         </div>
         <div id="requests-pagination" class="pagination"></div>
+    </div>
+
+    <div id="panel-rate" class="panel">
+        <div class="chart-section">
+            <div class="chart-section-header">
+                <span class="chart-section-title">Token Rate over Time</span>
+                <span class="hourly-hint">One curve per model · click legend to solo · tok/s excludes tool time · max 7 days</span>
+            </div>
+            <div class="rate-controls" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 6px">
+                <div class="rate-seg" style="display:inline-flex">
+                    <button class="gran-btn active" data-method="weighted" title="Weighted overall throughput&#10;SUM(tokens) × 1000 ÷ SUM(duration_ms)&#10;Total tokens ÷ total time; long/slow (queued) requests dominate.&#10;Excludes local tool execution time.&#10;加权吞吐，排队久的请求权重更大；不含工具执行时间。">Weighted</button>
+                    <button class="gran-btn" data-method="avg" title="Per-request average&#10;AVG(tokens × 1000 ÷ duration_ms)&#10;Arithmetic mean of each request's tok/s; every request weighted equally.&#10;Excludes local tool execution time.&#10;单请求速率的算术平均，每条请求等权重；不含工具执行时间。">Avg</button>
+                </div>
+                <select id="rate-tokens" title="Which tokens to measure">
+                    <option value="out" selected>Output tok/s</option>
+                    <option value="total">Total tok/s</option>
+                </select>
+                <select id="rate-bucket" title="Time bucket size">
+                    <option value="5">5 min</option>
+                    <option value="15">15 min</option>
+                    <option value="30" selected>30 min</option>
+                    <option value="60">60 min</option>
+                </select>
+                <button id="rate-refresh-btn">Refresh</button>
+                <button type="button" id="rate-legend-all-btn" class="gran-btn" style="display:none" title="Show every model curve">All models</button>
+            </div>
+            <div class="chart-wrap" id="rate-chart" style="height:440px"></div>
+        </div>
     </div>
 
 </div>

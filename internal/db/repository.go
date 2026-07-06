@@ -133,17 +133,29 @@ type CalendarDay struct {
 	TopModel            string  `json:"top_model"`
 }
 
-// DurationStat holds per-model latency stats for a time range.
-// duration_ms is the end-to-end Claude API request latency reported by Claude Code (not "thinking-only" time).
+// DurationStat holds per-model latency and throughput stats for a time range.
+//
+// duration_ms is the end-to-end Claude API request latency reported by Claude Code:
+// it covers server-side queueing + TTFT + streaming generation, but NOT local tool
+// execution (Claude Code reports tool time on a separate tool_result event/table).
+// So every tokens/s figure below inherently EXCLUDES local tool execution time.
+//
+// Two throughput flavors are provided for the same output/total token counts:
+//   - Avg*TokensPS      = AVG(tokens*1000/duration_ms): arithmetic mean of each
+//     request's tok/s; every request weighted equally.
+//   - Weighted*TokensPS = SUM(tokens)*1000/SUM(duration_ms): overall throughput,
+//     i.e. total tokens / total time (long/slow queued requests dominate).
 type DurationStat struct {
-	Model          string  `json:"model"`
-	RequestCount   int64   `json:"request_count"`
-	AvgDurationMs  float64 `json:"avg_duration_ms"`
-	AvgTTFTMs      float64 `json:"avg_ttft_ms"`
-	AvgOutTokensPS float64 `json:"avg_out_tokens_per_s"`
-	AvgTotTokensPS float64 `json:"avg_total_tokens_per_s"`
-	MaxDurationMs  int64   `json:"max_duration_ms"`
-	MinDurationMs  int64   `json:"min_duration_ms"`
+	Model               string  `json:"model"`
+	RequestCount        int64   `json:"request_count"`
+	AvgDurationMs       float64 `json:"avg_duration_ms"`
+	AvgTTFTMs           float64 `json:"avg_ttft_ms"`
+	AvgOutTokensPS      float64 `json:"avg_out_tokens_per_s"`
+	AvgTotTokensPS      float64 `json:"avg_total_tokens_per_s"`
+	WeightedOutTokensPS float64 `json:"weighted_out_tokens_per_s"`
+	WeightedTotTokensPS float64 `json:"weighted_total_tokens_per_s"`
+	MaxDurationMs       int64   `json:"max_duration_ms"`
+	MinDurationMs       int64   `json:"min_duration_ms"`
 }
 
 // HourlyModelSummary holds per-(hour, model) aggregated token and cost statistics for a single local day.
@@ -1011,6 +1023,190 @@ func (r *Repository) GetIntradayStatsByModel(ctx context.Context, fromYMD, toYMD
 	return result, rows.Err()
 }
 
+// RateBucket holds per-(time-bucket, model) token throughput for the rate-over-time
+// line chart. Only requests with duration_ms > 0 are counted, matching the durations
+// table. duration_ms is the Claude API request latency (server queue + TTFT + streaming);
+// local tool execution is a separate event, so it is excluded from every rate here.
+//
+// Two flavors are provided for each of output/total tokens:
+//   - Avg*PerS      = AVG(tokens*1000/duration_ms) within the bucket: mean of each
+//     request's tok/s, every request weighted equally.
+//   - Weighted*PerS = SUM(tokens)*1000/SUM(duration_ms): the bucket's overall throughput.
+type RateBucket struct {
+	BucketStartUnix   int64   `json:"bucket_start_unix"`
+	BucketLabel       string  `json:"bucket_label"`
+	BucketMinutes     int     `json:"bucket_minutes"`
+	Model             string  `json:"model"`
+	RequestCount      int64   `json:"request_count"`
+	OutTokens         int64   `json:"out_tokens"`
+	TotalTokens       int64   `json:"total_tokens"`
+	DurationMsSum     int64   `json:"duration_ms_sum"`
+	AvgOutPerS        float64 `json:"avg_out_per_s"`
+	AvgTotalPerS      float64 `json:"avg_total_per_s"`
+	WeightedOutPerS   float64 `json:"weighted_out_per_s"`
+	WeightedTotalPerS float64 `json:"weighted_total_per_s"`
+}
+
+// ValidRateBucketMinutes reports whether n is an allowed rate-chart bucket size.
+func ValidRateBucketMinutes(n int) bool {
+	return n == 5 || n == 15 || n == 30 || n == 60
+}
+
+// GetRateOverTime returns per-(bucket, model) token throughput for [fromYMD, toYMD]
+// (inclusive local days) with a fixed bucket size in minutes (5, 15, 30, or 60).
+// Only requests with duration_ms > 0 participate. Empty buckets are omitted. If model
+// is non-empty, results are restricted to that model.
+func (r *Repository) GetRateOverTime(ctx context.Context, fromYMD, toYMD string, bucketMinutes int, model string) ([]RateBucket, error) {
+	if !ValidRateBucketMinutes(bucketMinutes) {
+		return nil, fmt.Errorf("bucket_minutes must be 5, 15, 30, or 60 (got %d)", bucketMinutes)
+	}
+	fromUnix, toExclusiveUnix, err := localDateRangeToUnix(fromYMD, toYMD)
+	if err != nil {
+		return nil, err
+	}
+	bucketSec := int64(bucketMinutes) * 60
+
+	query := `
+		SELECT
+			(timestamp - (timestamp % ?)) AS bucket_start,
+			model,
+			COUNT(*) AS request_count,
+			COALESCE(SUM(output_tokens), 0) AS out_tokens,
+			COALESCE(SUM(input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens), 0) AS total_tokens,
+			COALESCE(SUM(duration_ms), 0) AS duration_ms_sum,
+			AVG(CAST(output_tokens AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_out_per_s,
+			AVG(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_total_per_s
+		FROM api_requests
+		WHERE timestamp >= ? AND timestamp < ? AND duration_ms > 0
+	`
+	args := []any{bucketSec, fromUnix, toExclusiveUnix}
+	if strings.TrimSpace(model) != "" {
+		query += ` AND model = ?`
+		args = append(args, model)
+	}
+	query += `
+		GROUP BY bucket_start, model
+		ORDER BY bucket_start ASC, model ASC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rate over time query: %w", err)
+	}
+	defer rows.Close()
+
+	loc := time.Local
+	var result []RateBucket
+	for rows.Next() {
+		var s RateBucket
+		if err := rows.Scan(&s.BucketStartUnix, &s.Model, &s.RequestCount,
+			&s.OutTokens, &s.TotalTokens, &s.DurationMsSum,
+			&s.AvgOutPerS, &s.AvgTotalPerS); err != nil {
+			return nil, err
+		}
+		if s.DurationMsSum > 0 {
+			s.WeightedOutPerS = float64(s.OutTokens) * 1000.0 / float64(s.DurationMsSum)
+			s.WeightedTotalPerS = float64(s.TotalTokens) * 1000.0 / float64(s.DurationMsSum)
+		}
+		s.BucketMinutes = bucketMinutes
+		s.BucketLabel = time.Unix(s.BucketStartUnix, 0).In(loc).Format("01-02 15:04")
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
+// SessionRateSnapshot is the token throughput for a session's most recent 1-minute
+// window that had API activity (duration_ms > 0). Rates exclude local tool time,
+// matching GetRateOverTime / GetDurationStatsByModel semantics.
+type SessionRateSnapshot struct {
+	SessionID         string  `json:"session_id"`
+	BucketStartUnix   int64   `json:"bucket_start_unix"`
+	BucketLabel       string  `json:"bucket_label"`
+	BucketMinutes     int     `json:"bucket_minutes"`
+	LastActiveUnix    int64   `json:"last_active_unix"`
+	RequestCount      int64   `json:"request_count"`
+	OutTokens         int64   `json:"out_tokens"`
+	TotalTokens       int64   `json:"total_tokens"`
+	DurationMsSum     int64   `json:"duration_ms_sum"`
+	AvgOutPerS        float64 `json:"avg_out_per_s"`
+	AvgTotalPerS      float64 `json:"avg_total_per_s"`
+	WeightedOutPerS   float64 `json:"weighted_out_per_s"`
+	WeightedTotalPerS float64 `json:"weighted_total_per_s"`
+}
+
+// GetSessionRecentMinuteRate returns throughput for the latest 1-minute bucket in
+// which sessionID had at least one request with duration_ms > 0. Returns (nil, nil)
+// when the session has no qualifying activity.
+func (r *Repository) GetSessionRecentMinuteRate(ctx context.Context, sessionID string) (*SessionRateSnapshot, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id required")
+	}
+
+	const bucketSec int64 = 60
+	var lastActive sql.NullInt64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT MAX(timestamp) FROM api_requests
+		WHERE session_id = ? AND duration_ms > 0`, sessionID,
+	).Scan(&lastActive)
+	if err == sql.ErrNoRows || !lastActive.Valid {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("session recent minute rate: %w", err)
+	}
+
+	bucketStart := lastActive.Int64 - (lastActive.Int64 % bucketSec)
+	bucketEnd := bucketStart + bucketSec
+
+	query := `
+		SELECT
+			COUNT(*) AS request_count,
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens), 0),
+			COALESCE(SUM(duration_ms), 0),
+			AVG(CAST(output_tokens AS REAL) * 1000.0 / CAST(duration_ms AS REAL)),
+			AVG(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL) * 1000.0 / CAST(duration_ms AS REAL))
+		FROM api_requests
+		WHERE session_id = ? AND duration_ms > 0
+		  AND timestamp >= ? AND timestamp < ?
+	`
+
+	var s SessionRateSnapshot
+	var avgOut, avgTotal sql.NullFloat64
+	err = r.db.QueryRowContext(ctx, query, sessionID, bucketStart, bucketEnd).Scan(
+		&s.RequestCount, &s.OutTokens, &s.TotalTokens, &s.DurationMsSum,
+		&avgOut, &avgTotal,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("session recent minute rate: %w", err)
+	}
+	if s.RequestCount == 0 {
+		return nil, nil
+	}
+
+	s.SessionID = sessionID
+	s.BucketStartUnix = bucketStart
+	s.LastActiveUnix = lastActive.Int64
+	s.BucketMinutes = 1
+	loc := time.Local
+	s.BucketLabel = time.Unix(s.BucketStartUnix, 0).In(loc).Format("01-02 15:04")
+	if avgOut.Valid {
+		s.AvgOutPerS = avgOut.Float64
+	}
+	if avgTotal.Valid {
+		s.AvgTotalPerS = avgTotal.Float64
+	}
+	if s.DurationMsSum > 0 {
+		s.WeightedOutPerS = float64(s.OutTokens) * 1000.0 / float64(s.DurationMsSum)
+		s.WeightedTotalPerS = float64(s.TotalTokens) * 1000.0 / float64(s.DurationMsSum)
+	}
+	return &s, nil
+}
+
 // CountDailyStatsByModel returns the number of distinct (date, model) groups.
 func (r *Repository) CountDailyStatsByModel(ctx context.Context, from, to string, granularity string) (int64, error) {
 	dateExpr := aggDateExpr(granularity)
@@ -1147,6 +1343,8 @@ func (r *Repository) GetDurationStatsByModel(ctx context.Context, model, from, t
 			AVG(ttft_ms) AS avg_ttft_ms,
 			AVG(CAST(output_tokens AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_out_tokens_per_s,
 			AVG(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_total_tokens_per_s,
+			SUM(CAST(output_tokens AS REAL)) * 1000.0 / NULLIF(SUM(duration_ms), 0) AS weighted_out_tokens_per_s,
+			SUM(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL)) * 1000.0 / NULLIF(SUM(duration_ms), 0) AS weighted_total_tokens_per_s,
 			MAX(duration_ms) AS max_duration_ms,
 			MIN(duration_ms) AS min_duration_ms
 		FROM api_requests`+whereClause+`
@@ -1161,7 +1359,7 @@ func (r *Repository) GetDurationStatsByModel(ctx context.Context, model, from, t
 	var out []DurationStat
 	for rows.Next() {
 		var s DurationStat
-		if err := rows.Scan(&s.Model, &s.RequestCount, &s.AvgDurationMs, &s.AvgTTFTMs, &s.AvgOutTokensPS, &s.AvgTotTokensPS, &s.MaxDurationMs, &s.MinDurationMs); err != nil {
+		if err := rows.Scan(&s.Model, &s.RequestCount, &s.AvgDurationMs, &s.AvgTTFTMs, &s.AvgOutTokensPS, &s.AvgTotTokensPS, &s.WeightedOutTokensPS, &s.WeightedTotTokensPS, &s.MaxDurationMs, &s.MinDurationMs); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
