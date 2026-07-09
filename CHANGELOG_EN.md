@@ -6,12 +6,42 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.0-preview.15] - 2026-07-09
+
+> Summarizes the 4 commits after `v0.1.0-preview.14`: Gemini removal, repo hygiene, manual pricing + per-provider suggest, Token Rate control redesign.
+
+### Removed Gemini CLI source
+
+- Removed the full Gemini CLI integration: `gemini_*` tables and schema, `/api/gemini/*` routes, the frontend `?source=gemini` view, `skills/otel-setup/gemini-setup.md`, and its dedicated pricing.
+- **Why**: real usage is concentrated on Claude Code and Codex. Maintaining a separate schema / API / docs / pricing branch for a rarely-used source cost more than it returned. The project now converges on a clean two-source model (the stale "three sources" wording still lingering in `[Unreleased]` below is superseded by this section).
+
+### Repo hygiene
+
+- `.gitignore` ignores tool scratch dirs like `docs/superpowers/`; `.gitattributes` enforces LF line endings.
+- **Why**: keep tool-generated scratch out of git and remove line-ending churn between Windows and Linux contributors.
+
+### Pricing: manual management + per-provider suggest (enhanced)
+
+- **Manual management**: removed the 24h auto-refresher; Status popup → Pricing Table now CRUDs `model_pricing` (immediate effect), with 💡 on-demand OpenRouter suggest and ↻ server-side full recompute. The `pricing_refresh:` YAML key is retired.
+- **Official-provider price by default**: `/api/pricing/suggest` defaults to the model's first-party official quote (e.g. `z-ai/glm-5.2` → Z.AI official, not the cheapest blended promo); expand to see every provider (uncapped, official pinned first), including `cache_create`.
+- **Claude read-only reference price**: Claude models intentionally skip the local table (recompute short-circuits); they now show a read-only reference price pulled from the OpenRouter catalog on demand, so the table isn't blank.
+- **Why**: the auto-refresh was opaque and uncontrollable; manual management hands pricing authority back to the user (for uncatalogued models like glm-5.x, local is the only source of truth). The default is the official price because OpenRouter's blended price is often a discounted/quantized variant from the cheapest provider — not comparable to the official list price; we give a sensible default while still letting users pick between promo and official.
+
+### Token Rate control redesign (Apple style)
+
+- **Controls match the app's design language**: Weighted/Avg is now a segmented control (mirrors `.pf-seg`); the time bucket is a custom rounded dropdown (native `<select>` option popups can't be rounded on Windows Chromium, so it's a trigger + `.rate-menu` popover); buttons mirror `.pf-btn`.
+- **Dropped Total tok/s**: the Output/Total toggle wasn't meaningful (Total conflates cached and uncached); the chart is always Output tok/s.
+- **Added a 10-min bucket**: backend `ValidRateBucketMinutes` and frontend `BUCKET_CHOICES` / dropdown item now include 10 (5 / 10 / 15 / 30 / 60).
+- **Fixed segmented-control active loss**: `filters.js` `.gran-btn` queries are scoped to `#granularity-switch`, otherwise every date-range switch stripped the `.active` from Weighted/Avg (the class is shared with the toolbar Day/Month toggle).
+- **Why**: the controls were unstyled native OS widgets, clashing with the polished UI, and the open dropdown was square; the custom dropdown makes both the closed and open states consistent with the app.
+
 ## [Unreleased] · 0.1.0 Preview
 
-> **Status: preview, not yet released.** This section describes the full set
-> of features on the main branch today. Iterations ship as `v0.1.0-preview.N`
-> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.13`; **preview.14**
-> below is pending release). Once behavior stabilizes, the contents below will fold into `v0.1.0`.
+> **Status: preview, not yet released.** This section is the historical
+> accumulation of main-branch features; iterations ship as `v0.1.0-preview.N`
+> tags, latest **`v0.1.0-preview.15`** (see the top of this file). The most
+> recent release notes live in the versioned section at the top; once behavior
+> stabilizes, everything folds into `v0.1.0`.
 
 ### Manual pricing management
 
@@ -24,9 +54,8 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 ### Sources & ingestion
 
 - **OTLP gRPC receiver**: ingest logs / metrics / traces over OTLP/gRPC. Code default port is `4317` (see the Daemon / CLI section below for port details).
-- **Claude Code + Codex + Gemini CLI as three sources**: routed by the OTLP Resource attribute `service.name` —
+- **Claude Code + Codex as two sources** (Gemini CLI removed in preview.15 — see top): routed by the OTLP Resource attribute `service.name` —
   - Names containing `codex` (case-insensitive) → `codex_*` tables, exposed via `/api/codex/*`; the frontend switches views with `?source=codex`.
-  - Name equal to `gemini-cli` → `gemini_*` tables (independent schema: `thoughts_tokens` / `tool_tokens` / `total_tokens`), exposed via `/api/gemini/*`; frontend `?source=gemini`. Setup guide: `skills/otel-setup/gemini-setup.md`.
   - Everything else (including missing `service.name`) → the existing Claude tables / routes for back-compat.
 - **TTFT (Time To First Token)**:
   - Extracted from OTLP trace spans and back-filled into `api_requests.ttft_ms` / `codex_api_requests.ttft_ms`.

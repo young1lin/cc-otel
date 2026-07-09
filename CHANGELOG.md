@@ -6,11 +6,40 @@
 
 ---
 
+## [v0.1.0-preview.15] - 2026-07-09
+
+> 汇总 `v0.1.0-preview.14` 之后的 4 个提交：Gemini 移除、仓库整理、价目表手动管理 + 按 Provider 选价、Token Rate 控件重设计。
+
+### 移除 Gemini CLI 数据源
+
+- 删除 Gemini CLI 的完整集成：`gemini_*` 表与独立 schema、`/api/gemini/*` 路由、前端 `?source=gemini` 视图、`skills/otel-setup/gemini-setup.md` 及其专属定价。
+- **为什么**：实际使用集中在 Claude Code 与 Codex。为一个很少用的来源维护独立 schema / API / 文档 / 定价分支，成本高于收益。移除后收敛为干净的两源模型（下方 `[Unreleased]` 残留的「三源」描述以本节为准）。
+
+### 仓库整理
+
+- `.gitignore` 忽略 `docs/superpowers/` 等工具临时目录；`.gitattributes` 强制 LF 换行。
+- **为什么**：把工具生成的临时文件挡在仓库外，并消除 Windows / Linux 协作时的换行抖动。
+
+### 价目表：手动管理 + 按 Provider 选价（增强）
+
+- **手动管理**：移除 24h 自动拉取的 Refresher；状态弹窗 → Pricing Table 支持对 `model_pricing` 增删改查（即时生效）、「💡 从 OR 填」按需查价、「↻ 重算历史」服务端全量重算。`pricing_refresh:` 配置废弃。
+- **默认取直营 Provider 价**：`/api/pricing/suggest` 默认返回模型第一方直营报价（如 `z-ai/glm-5.2` 取 Z.AI 直营，而非最便宜的混合促销价）；展开可见全部 provider（不限数量、直营置顶），含 `cache_create`。
+- **Claude 只读参考价**：Claude 本不进本地价目表（重算短路），现从 OpenRouter 目录按需取参考价只读展示，避免整列空白。
+- **为什么**：自动刷新不透明且不可控；手动管理把定价权交还用户（glm-5.x 等未收录模型本地是唯一真值）。默认取直营价，是因为 OpenRouter 混合价常是最便宜 provider 的促销 / 量化版，与直营标价不可比——既给靠谱默认，又允许在促销价与直营价之间自选。
+
+### Token Rate 控件重设计（Apple 风格）
+
+- **控件统一为应用风格**：Weighted/Avg 改为分段控件（对齐 `.pf-seg`）；时间桶改为自绘圆角下拉（Windows Chromium 下原生 `<select>` 展开列表无法圆角，故用 trigger + `.rate-menu` 浮层）；按钮对齐 `.pf-btn`。
+- **去掉 Total tok/s**：Output/Total 切换意义不大（Total 混了缓存与未缓存），图表恒为 Output tok/s。
+- **新增 10 分钟桶**：后端 `ValidRateBucketMinutes` 与前端 `BUCKET_CHOICES` / 下拉项同步加入 10（5 / 10 / 15 / 30 / 60）。
+- **修复分段控件 active 丢失**：`filters.js` 的 `.gran-btn` 查询收窄到 `#granularity-switch`，否则每次切日期都会抹掉 Weighted/Avg 的 `.active`（该类与工具栏 Day/Month 共用）。
+- **为什么**：原控件是未加样的原生 OS 部件，与应用整体风格脱节，展开下拉还是直角；自绘下拉让收起 / 展开都与应用一致。
+
 ## [Unreleased] · 0.1.0 Preview
 
-> **状态：Preview，尚未正式发布。** 本节描述主分支当前已具备的全部功能，
-> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.13`，本节为
-> **preview.14** 待发布内容）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
+> **状态：Preview，尚未正式发布。** 本节为主分支历史功能累积；已通过
+> `v0.1.0-preview.N` 标签迭代发布到 **`v0.1.0-preview.15`**（见顶部）。最新发布
+> 内容以顶部对应版本小节为准；等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
 ### 价目表改为手动管理
 
@@ -23,9 +52,8 @@
 ### 数据源与接收
 
 - **OTLP gRPC 接收器**：通过 OTLP/gRPC 接收 logs / metrics / traces。代码默认端口 `4317`（详见下面 Daemon / CLI 段的端口说明）。
-- **Claude Code + Codex + Gemini CLI 三源**：按 OTLP Resource 的 `service.name` 路由 ——
+- **Claude Code + Codex 两源**（preview.15 起移除 Gemini CLI，见顶部）：按 OTLP Resource 的 `service.name` 路由 ——
   - 名称包含 `codex`（不区分大小写）→ 写入 `codex_*` 表，前端通过 `?source=codex` 切换视图，`/api/codex/*` 暴露。
-  - 名称等于 `gemini-cli` → 写入 `gemini_*` 表（独立 schema：`thoughts_tokens` / `tool_tokens` / `total_tokens`），前端 `?source=gemini`，`/api/gemini/*` 暴露，配置见 `skills/otel-setup/gemini-setup.md`。
   - 其余（含缺省 `service.name`）→ 写入既有 Claude 表 / 走原有接口（向后兼容）。
 - **TTFT（首 Token 时间）**：
   - 从 OTLP trace spans 提取 `ttft_ms` 并回填 `api_requests.ttft_ms` / `codex_api_requests.ttft_ms`。
