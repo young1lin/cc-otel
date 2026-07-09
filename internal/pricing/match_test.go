@@ -98,6 +98,83 @@ func TestMatchKey(t *testing.T) {
 	}
 }
 
+func TestBasenameCandidates(t *testing.T) {
+	keys := map[string]struct{}{
+		"z-ai/glm-5.1":                {},
+		"openrouter/z-ai/glm-5.1":     {},
+		"z-ai/glm-4.6":                {},
+		"openrouter/z-ai/glm-4.6":     {},
+		"together_ai/zai-org/glm-4.6": {},
+		"glm-4.6":                     {}, // bare key — never a basename candidate
+		"gpt-5":                       {},
+	}
+	tests := []struct {
+		q    string
+		want []string // sorted ascending
+	}{
+		{"glm-5.1", []string{"openrouter/z-ai/glm-5.1", "z-ai/glm-5.1"}},
+		{"glm-4.6", []string{"openrouter/z-ai/glm-4.6", "together_ai/zai-org/glm-4.6", "z-ai/glm-4.6"}},
+		{"glm-5", []string{}},        // tail must equal exactly (glm-5 != glm-5.1)
+		{"z-ai/glm-5.1", nil},        // provider-qualified query -> skip (exact/alias handle it)
+		{"gpt-5", nil},               // only bare key exists, no prefixed one -> none
+		{"unknown-model", nil},
+	}
+	for _, tc := range tests {
+		got := basenameCandidates(tc.q, keys)
+		if !equalSlice(got, tc.want) {
+			t.Errorf("basenameCandidates(%q) = %v, want %v", tc.q, got, tc.want)
+		}
+	}
+}
+
+func TestPickBasenameWinner(t *testing.T) {
+	// ranks mirror SourceRank (user>litellm>openrouter>seed) but are stubbed
+	// per key so the test stays independent of the registry.
+	ranks := map[string]int{
+		"z-ai/glm-4.6":                20, // openrouter
+		"openrouter/z-ai/glm-4.6":     10, // seed
+		"together_ai/zai-org/glm-4.6": 10, // seed
+		"litellm/x":                   30,
+		"seed/x":                      10,
+		"openrouter/x":                20,
+		"a/x":                         10,
+		"b/x":                         10,
+	}
+	rank := func(k string) int { return ranks[k] }
+	tests := []struct {
+		name  string
+		cands []string
+		want  string
+	}{
+		{"fewest segment wins", []string{"openrouter/z-ai/glm-4.6", "together_ai/zai-org/glm-4.6", "z-ai/glm-4.6"}, "z-ai/glm-4.6"},
+		{"tie segment, higher source wins", []string{"seed/x", "litellm/x"}, "litellm/x"},
+		{"full tie -> lexicographic", []string{"b/x", "a/x"}, "a/x"},
+		{"single candidate", []string{"z-ai/glm-5.2"}, "z-ai/glm-5.2"},
+		{"empty", nil, ""},
+	}
+	for _, tc := range tests {
+		if got := pickBasenameWinner(tc.cands, rank); got != tc.want {
+			t.Errorf("%s: pickBasenameWinner = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSourceRank(t *testing.T) {
+	cases := map[string]int{
+		"user":       40,
+		"litellm":    30,
+		"openrouter": 20,
+		"seed":       10,
+		"":           0,
+		"weird":      0,
+	}
+	for src, want := range cases {
+		if got := SourceRank(src); got != want {
+			t.Errorf("SourceRank(%q) = %d, want %d", src, got, want)
+		}
+	}
+}
+
 func equalSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

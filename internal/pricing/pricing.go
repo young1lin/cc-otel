@@ -36,10 +36,11 @@ type Entry struct {
 type MatchKind string
 
 const (
-	MatchExact  MatchKind = "exact"
-	MatchAlias  MatchKind = "alias"
-	MatchPrefix MatchKind = "prefix"
-	MatchMiss   MatchKind = "miss"
+	MatchExact   MatchKind = "exact"
+	MatchAlias   MatchKind = "alias"
+	MatchPrefix  MatchKind = "prefix"
+	MatchBasename MatchKind = "basename"
+	MatchMiss    MatchKind = "miss"
 )
 
 // LookupResult is what Registry.Lookup returns for callers that care about
@@ -105,4 +106,23 @@ func (e Entry) Calc(input, output, cacheRead, cacheCreate int64) float64 {
 // key and the lookup key, so writes and reads agree.
 func Normalize(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
+}
+
+// SourceRank ranks an entry's source for basename-candidate tiebreaking.
+// Higher wins. User overrides rank highest (a rare user-defined prefixed
+// entry should outrank refreshed ones); litellm outranks openrouter (it
+// carries cache_* fields) which outranks the offline seed snapshot.
+func SourceRank(source string) int {
+	switch source {
+	case "user":
+		return 40
+	case "litellm":
+		return 30
+	case "openrouter":
+		return 20
+	case "seed":
+		return 10
+	default:
+		return 0
+	}
 }

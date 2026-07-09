@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -114,4 +115,66 @@ func matchKey(query string, keys map[string]struct{}, aliasIndex map[string]stri
 	}
 
 	return "", MatchMiss
+}
+
+// basenameCandidates returns registry keys whose basename (the segment after
+// the last '/') equals q. It is the last-resort fallback for bare model names
+// that upstream sources store with a provider slug — a proxy reports
+// "glm-5.2" while OpenRouter/LiteLLM/seed key it "z-ai/glm-5.2".
+//
+// Only invoked for bare queries: q containing '/' is provider-qualified and
+// resolves via exact/alias first, so it is skipped here. Bare keys (no '/')
+// are never returned either, since those already matched exactly.
+//
+// Results are sorted for deterministic output; the source-aware winner is
+// chosen by pickBasenameWinner.
+func basenameCandidates(q string, keys map[string]struct{}) []string {
+	if strings.Contains(q, "/") {
+		return nil
+	}
+	out := make([]string, 0)
+	for k := range keys {
+		if k == "" {
+			continue
+		}
+		i := strings.LastIndex(k, "/")
+		if i < 0 {
+			continue // bare keys are handled by exact match
+		}
+		if k[i+1:] == q {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pickBasenameWinner selects one candidate by the documented tiebreak:
+//  1. fewest '/' segments (direct provider beats reseller wrappers),
+//  2. highest source rank (user > litellm > openrouter > seed),
+//  3. lexicographic.
+//
+// sourceRank resolves a candidate key to its source priority; the registry
+// supplies it from its entry table so this function stays pure and testable.
+func pickBasenameWinner(candidates []string, sourceRank func(string) int) string {
+	best := ""
+	for _, c := range candidates {
+		if best == "" || basenameCandidateLess(c, best, sourceRank) {
+			best = c
+		}
+	}
+	return best
+}
+
+// basenameCandidateLess reports whether a is strictly preferred over b.
+func basenameCandidateLess(a, b string, sourceRank func(string) int) bool {
+	sa, sb := strings.Count(a, "/"), strings.Count(b, "/")
+	if sa != sb {
+		return sa < sb
+	}
+	ra, rb := sourceRank(a), sourceRank(b)
+	if ra != rb {
+		return ra > rb
+	}
+	return a < b
 }
