@@ -9,7 +9,7 @@
 ## [Unreleased] · 0.1.0 Preview
 
 > **状态：Preview，尚未正式发布。** 本节描述主分支当前已具备的全部功能，
-> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.11`，对应
+> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.12`，对应
 > GoReleaser 流水线自动出包）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
 ### 代理兼容性修复
@@ -65,6 +65,7 @@
 - **耗时统计 API**：`/api/durations` 提供按模型 duration / 吞吐量统计；**Out tok/s** 由 `output_tokens` / `duration` 推导。
 - **时间格式统一 24 小时制**（preview.10 修复）：新增 `fmtDate24` / `fmtDateTime`，替换 `toLocaleString()`，午夜不再按 12 小时制显示为 "12:xx AM"，全部渲染为本地时区 `YYYY-MM-DD HH:mm:ss`。
 - **Cache Hit Rate 口径修正**（preview.11 修复）：缓存命中率从 `cache_read / (cache_read + cache_creation)` 改为 `cache_read / 输入侧合计`（`input_tokens + cache_read + cache_creation`）。旧口径对只上报 `cache_read`、从不上报 `cache_creation` 的反代提供商（GLM、mimo）会塌缩成恒定 100%；改用完整输入侧作分母后修复，并与 Codex / Gemini 口径（`cache_read / input_tokens`，其 input 已含缓存部分）保持一致。后端 `GetDashboardForRange` / `GetDailyStats` 与前端 `token-math.js` 同步调整，配套新增 `token-math.test.mjs` 及 GLM 无 `cache_creation` 回归用例。
+- **使用日历对齐修正**（preview.12 修复）：多周视图下，左侧 `Sun`–`Sat` 行标签未计入上方月份标签行的高度（16px + 4px margin），整体比真正的格子行高出约 20px，导致星期标签落在两行之间、最底行溢出到 "Sat" 之下。改为用 `--usage-months-h` 变量把星期列下移一个月份头高度，使 7 个星期标签与 7 行格子精确对齐；strip（单日横条）模式不受影响。
 
 ### Web UI · 交互与控件
 
