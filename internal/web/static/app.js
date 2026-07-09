@@ -125,8 +125,9 @@ function initSourceTabs() {
             const url = new URL(location.href);
             if (next === 'claude') url.searchParams.delete('source');
             else url.searchParams.set('source', next);
-            history.replaceState(null, '', url.toString());
+            history.pushState(null, '', url.toString());
             syncSourceTabsUI();
+            loadModelFilter({ preserveCurrent: false });
             resetPages();
             loadAll();
         });
@@ -196,6 +197,25 @@ function loadAll() {
     loadRequests();
 }
 
+function selectCalendarDate(date) {
+    if (!isValidYMD(date)) return;
+    state.currentRange = 'single-day';
+    state.customFrom = date;
+    state.customTo = date;
+    state.selectedDayDate = date === getTodayYMD() ? '' : date;
+    state.chartGranularity = 'day';
+    if (state.customRangeFlatpickr) {
+        try { state.customRangeFlatpickr.setDate([date, date], false); } catch (_) {}
+    }
+    const crw = document.getElementById('custom-range-wrap');
+    if (crw) crw.classList.remove('is-active');
+    syncRangeNavUIFromState();
+    buildDayDropdown();
+    syncURLFromState();
+    resetPages();
+    loadAll();
+}
+
 // ── Local day rollover auto-refresh ─────────────────────────────────────────
 let lastSeenTodayYMD = null;
 function startDayRolloverWatcher() {
@@ -216,6 +236,14 @@ function startDayRolloverWatcher() {
             state.currentRange === 'today' ||
             (state.currentRange === 'single-day' && !state.selectedDayDate);
         if (isTodayView) {
+            // A single-day view pinned to "today" stores the old date in customFrom/customTo;
+            // bump it forward so the URL (?range=day&date=...) and the data fetch follow the new day.
+            if (state.currentRange === 'single-day') {
+                state.customFrom = nowYMD;
+                state.customTo = nowYMD;
+            }
+            // Replace, not push: rollover isn't a user navigation.
+            syncURLFromState({ replace: true });
             resetPages();
             loadAll();
         }
@@ -233,11 +261,11 @@ initTheme({
 });
 initFilters({
     onChange: () => loadAll(),
-    onMetricChange: () => { loadChart(); refreshDailyPanel(); },
+    onMetricChange: () => { loadDashboard(); loadChart(); refreshDailyPanel(); },
     onResetPages: () => resetPages(),
 });
 initBreakdownModal({ openPopover, closePopover });
-initInsightsModal({ openPopover, closePopover });
+initInsightsModal({ openPopover, closePopover, onSelectDate: selectCalendarDate });
 initPanelDaily();
 initPanelRequests();
 initCustomRangePicker();
@@ -260,9 +288,11 @@ initSSE({
 });
 startDayRolloverWatcher();
 window.addEventListener('popstate', () => {
+    const oldSource = state.source;
     applySourceFromURL();
     syncSourceTabsUI();
     applyStateFromURL();
+    if (oldSource !== state.source) loadModelFilter({ preserveCurrent: false });
     loadAll();
 });
 

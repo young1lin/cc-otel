@@ -120,6 +120,19 @@ type DailyModelSummary struct {
 	RequestCount        int64   `json:"request_count"`
 }
 
+// CalendarDay holds one local-day aggregate for the usage calendar heatmap.
+type CalendarDay struct {
+	Date                string  `json:"date"`
+	TotalTokens         int64   `json:"total_tokens"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	CostUSD             float64 `json:"cost_usd"`
+	RequestCount        int64   `json:"request_count"`
+	TopModel            string  `json:"top_model"`
+}
+
 // DurationStat holds per-model latency stats for a time range.
 // duration_ms is the end-to-end Claude API request latency reported by Claude Code (not "thinking-only" time).
 type DurationStat struct {
@@ -796,6 +809,68 @@ func (r *Repository) GetDailyStatsByModel(ctx context.Context, from, to string, 
 		result = append(result, s)
 	}
 	return result, rows.Err()
+}
+
+// GetCalendarDays returns compact per-day aggregates for the dashboard usage calendar.
+func (r *Repository) GetCalendarDays(ctx context.Context, from, to string) ([]CalendarDay, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			date,
+			model,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0),
+			COALESCE(SUM(cost_usd), 0),
+			COALESCE(SUM(request_count), 0)
+		FROM daily_model_agg
+		WHERE date >= ? AND date <= ?
+		GROUP BY date, model
+		ORDER BY date ASC, model ASC`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("calendar days query: %w", err)
+	}
+	defer rows.Close()
+
+	byDate := make(map[string]*CalendarDay)
+	var dates []string
+	topTokens := make(map[string]int64)
+	for rows.Next() {
+		var date, model string
+		var input, output, cacheRead, cacheCreate, costUnits, reqs int64
+		if err := rows.Scan(&date, &model, &input, &output, &cacheRead, &cacheCreate, &costUnits, &reqs); err != nil {
+			return nil, err
+		}
+
+		day := byDate[date]
+		if day == nil {
+			day = &CalendarDay{Date: date}
+			byDate[date] = day
+			dates = append(dates, date)
+			topTokens[date] = -1
+		}
+		modelTokens := input + output + cacheRead + cacheCreate
+		day.TotalTokens += modelTokens
+		day.InputTokens += input
+		day.OutputTokens += output
+		day.CacheReadTokens += cacheRead
+		day.CacheCreationTokens += cacheCreate
+		day.CostUSD += costToFloat64(costUnits)
+		day.RequestCount += reqs
+		if modelTokens > topTokens[date] || (modelTokens == topTokens[date] && (day.TopModel == "" || model < day.TopModel)) {
+			topTokens[date] = modelTokens
+			day.TopModel = model
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]CalendarDay, 0, len(dates))
+	for _, date := range dates {
+		out = append(out, *byDate[date])
+	}
+	return out, nil
 }
 
 // GetHourlyStatsByModel returns per-(local-hour, model) aggregated stats for a single local day.

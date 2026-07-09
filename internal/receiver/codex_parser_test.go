@@ -164,6 +164,85 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 	}
 }
 
+func TestDispatchCodexLog_WebsocketEventNameCanComeFromBody(t *testing.T) {
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}}
+	tracker := newCodexSpanTracker()
+	spanID := []byte{8, 7, 6, 5, 4, 3, 2, 1}
+	start := time.Date(2026, 5, 12, 10, 9, 35, 0, time.UTC)
+
+	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		ObservedTimeUnixNano: uint64(start.UnixNano()),
+		SpanId:               spanID,
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.websocket_request"),
+			attr("conversation.id", "conv-body-kind"),
+			attr("model", "gpt-5.5"),
+		},
+	}, res, nil, tracker, nil)
+
+	// Current Codex websocket events may put response.completed in the body and
+	// omit event.name. The receiver still needs to treat this as a
+	// codex.websocket_event so the tracked span can backfill duration_ms.
+	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		ObservedTimeUnixNano: uint64(start.Add(4200 * time.Millisecond).UnixNano()),
+		SpanId:               spanID,
+		Body:                 &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "response.completed"}},
+		Attributes: []*commontpb.KeyValue{
+			attr("conversation.id", "conv-body-kind"),
+			attr("model", "gpt-5.5"),
+		},
+	}, res, nil, tracker, nil)
+
+	var rows, duration int64
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM codex_api_requests`).Scan(&rows, &duration); err != nil {
+		t.Fatalf("duration row query: %v", err)
+	}
+	if rows != 1 || duration != 4200 {
+		t.Fatalf("expected body-derived websocket duration row with 4200ms; rows=%d duration=%d", rows, duration)
+	}
+}
+
+func TestDispatchCodexLog_SSECompletedUsesTrackedWebsocketRequestDuration(t *testing.T) {
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}}
+	tracker := newCodexSpanTracker()
+	spanID := []byte{2, 4, 6, 8, 10, 12, 14, 16}
+	start := time.Date(2026, 5, 12, 10, 8, 25, 0, time.UTC)
+
+	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		ObservedTimeUnixNano: uint64(start.UnixNano()),
+		SpanId:               spanID,
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.websocket_request"),
+			attr("conversation.id", "conv-sse-duration"),
+			attr("model", "gpt-5.5"),
+		},
+	}, res, nil, tracker, nil)
+
+	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		ObservedTimeUnixNano: uint64(start.Add(3900 * time.Millisecond).UnixNano()),
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.sse_event"),
+			attr("event.kind", "response.completed"),
+			attr("conversation.id", "conv-sse-duration"),
+			attr("model", "gpt-5.5"),
+			attrInt("input_token_count", 1000),
+			attrInt("output_token_count", 50),
+		},
+	}, res, nil, tracker, nil)
+
+	var rows, input, output, duration int64
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM codex_api_requests`).Scan(&rows, &input, &output, &duration); err != nil {
+		t.Fatalf("merged row query: %v", err)
+	}
+	if rows != 1 || input != 1000 || output != 50 || duration != 3900 {
+		t.Fatalf("expected SSE completion row with tracked duration; rows=%d input=%d output=%d duration=%d", rows, input, output, duration)
+	}
+}
+
 func readCount(t *testing.T, repo *db.Repository, sqlStr string) int64 {
 	t.Helper()
 	var n int64

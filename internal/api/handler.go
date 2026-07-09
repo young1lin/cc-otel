@@ -104,6 +104,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", h.Status)
 	mux.HandleFunc("/api/pricing/lookup", h.PricingLookup)
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
+	mux.HandleFunc("/api/calendar", h.Calendar)
 	mux.HandleFunc("/api/daily", h.DailyModel)
 	mux.HandleFunc("/api/hourly", h.HourlyModel)
 	mux.HandleFunc("/api/intraday", h.Intraday)
@@ -115,6 +116,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Codex telemetry mirror routes (Task 11). Paths follow /api/codex/<name>.
 	mux.HandleFunc("/api/codex/dashboard", h.CodexDashboard)
+	mux.HandleFunc("/api/codex/calendar", h.CodexCalendar)
 	mux.HandleFunc("/api/codex/daily", h.CodexDaily)
 	mux.HandleFunc("/api/codex/requests", h.CodexRequests)
 	mux.HandleFunc("/api/codex/sessions", h.CodexSessions)
@@ -392,6 +394,47 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
+}
+
+type CalendarResponse struct {
+	Data []db.CalendarDay `json:"data"`
+}
+
+// Calendar returns compact per-day aggregates for the dashboard usage calendar.
+func (h *Handler) Calendar(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.repo == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(CalendarResponse{Data: []db.CalendarDay{}})
+		return
+	}
+
+	from, to := rangeToFromTo(r.URL.Query().Get("range"))
+	if v := r.URL.Query().Get("from"); v != "" {
+		if !isValidDate(v) {
+			http.Error(w, "invalid from date", http.StatusBadRequest)
+			return
+		}
+		from = v
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		if !isValidDate(v) {
+			http.Error(w, "invalid to date", http.StatusBadRequest)
+			return
+		}
+		to = v
+	}
+
+	data, err := h.repo.GetCalendarDays(r.Context(), from, to)
+	if err != nil {
+		log.Printf("calendar error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if data == nil {
+		data = []db.CalendarDay{}
+	}
+	json.NewEncoder(w).Encode(CalendarResponse{Data: data})
 }
 
 // DailyModel returns per-day, per-model token usage and cost with pagination.

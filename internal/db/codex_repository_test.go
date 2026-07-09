@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -50,6 +51,41 @@ func TestInsertCodexAPIRequest_RoundTrip(t *testing.T) {
 	}
 	if got.InputTokens != 0 || got.OutputTokens != 0 {
 		t.Fatalf("freshly-inserted row should have zero tokens, got input=%d output=%d", got.InputTokens, got.OutputTokens)
+	}
+}
+
+func TestGetCodexCalendarDaysAggregatesByDateAndTopModel(t *testing.T) {
+	repo := newCodexTestRepo(t)
+	ctx := context.Background()
+
+	day := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
+	fixtures := []CodexAPIRequest{
+		{Timestamp: day, SessionID: "codex-cal-1", Model: "gpt-5.5", InputTokens: 100, OutputTokens: 50, CacheReadTokens: 20, ReasoningTokens: 7, TotalTokens: 157, CostUSD: 0.11},
+		{Timestamp: day.Add(time.Hour), SessionID: "codex-cal-2", Model: "gpt-5.5", InputTokens: 200, OutputTokens: 25, CacheReadTokens: 30, ReasoningTokens: 3, TotalTokens: 228, CostUSD: 0.12},
+		{Timestamp: day.Add(2 * time.Hour), SessionID: "codex-cal-3", Model: "gpt-5.4-mini", InputTokens: 40, OutputTokens: 10, CacheReadTokens: 0, ReasoningTokens: 0, TotalTokens: 50, CostUSD: 0.01},
+	}
+	for i := range fixtures {
+		if _, err := repo.InsertCodexAPIRequest(ctx, &fixtures[i]); err != nil {
+			t.Fatalf("insert fixture %d: %v", i, err)
+		}
+	}
+
+	got, err := repo.GetCodexCalendarDays(ctx, "2026-05-09", "2026-05-09")
+	if err != nil {
+		t.Fatalf("GetCodexCalendarDays: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 day, got %d: %+v", len(got), got)
+	}
+	dayRow := got[0]
+	if dayRow.Date != "2026-05-09" || dayRow.TopModel != "gpt-5.5" {
+		t.Fatalf("unexpected date/top model: %+v", dayRow)
+	}
+	if dayRow.InputTokens != 340 || dayRow.OutputTokens != 85 || dayRow.CacheReadTokens != 50 || dayRow.RequestCount != 3 {
+		t.Fatalf("unexpected codex calendar totals: %+v", dayRow)
+	}
+	if math.Abs(dayRow.CostUSD-0.24) > 0.000001 {
+		t.Fatalf("expected cost 0.24, got %.8f", dayRow.CostUSD)
 	}
 }
 
