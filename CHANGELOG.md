@@ -12,6 +12,10 @@
 > 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.13`，本节为
 > **preview.14** 待发布内容）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
+### 价目表改为手动管理
+
+- **价目表改为手动管理**：移除 24h 自动从 LiteLLM/OpenRouter 拉取的 Refresher；Web UI（状态弹窗 → Pricing Table）支持增删改查 model_pricing，改完即时生效；新增「💡 从 OR 填」按需查 OpenRouter 单模型价格、「↻ 重算历史」服务端全量重算（状态留存、刷新页面不重算）。`pricing_refresh:` YAML 配置项随之废弃。
+
 ### 代理兼容性修复
 
 - **`no_proxy` 自动注入**：`/cc-otel:setup` 现在会在 `settings.json` 的 `env` 中自动添加 `"no_proxy": "localhost,127.0.0.1"`。当用户设置了 `http_proxy` / `https_proxy`（如 Clash、V2Ray、企业代理）时，OTEL gRPC 流量会错误地走代理，导致遥测数据静默丢失。`no_proxy` 确保 OTEL exporter 直连 localhost，绕过代理。README 和 setup 文档已同步更新，重点标注代理用户必须配置此项。

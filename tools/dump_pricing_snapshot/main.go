@@ -3,8 +3,10 @@
 // trimmed snapshot to internal/pricing/embed/seed.json.
 //
 // Run before each release to refresh the embedded fallback so first-boot
-// (or fully offline) installs have current prices. The runtime Refresher
-// (Phase 3) will keep the SQLite table fresh after that.
+// (or fully offline) installs have current prices. cc-otel no longer
+// fetches prices at runtime — this offline tool is the only way the
+// embedded seed is updated. After first boot the model_pricing table is
+// maintained manually via the Web UI (and backfilled with recompute_cost).
 //
 // Anthropic / Claude entries are unconditionally dropped — Claude Code
 // reports authoritative cost_usd and cc-otel never recomputes Claude.

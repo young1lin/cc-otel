@@ -45,39 +45,6 @@ export function setStatus(ok) {
     if (label) label.textContent = ok ? 'live' : 'offline';
 }
 
-// renderPricing fills the pricing row in the Server Status popup.
-//
-// Color rule (matches the docs in CLAUDE.md):
-//   green  = last refresh < 48h and no error
-//   yellow = 48h–7d (and no error)
-//   red    = > 7d, error present, or refresh never ran
-//
-// Hide the row entirely if the daemon doesn't expose a pricing block (older
-// build or pricer-less mode), so old screenshots / e2e tests stay valid.
-function renderPricing(p) {
-    const row = document.getElementById('st-pricing-row');
-    const valEl = document.getElementById('st-pricing');
-    if (!row || !valEl) return;
-    if (!p) { row.style.display = 'none'; return; }
-    row.style.display = '';
-
-    const now = Math.floor(Date.now() / 1000);
-    const ageSec = p.last_refresh_at > 0 ? (now - p.last_refresh_at) : Number.POSITIVE_INFINITY;
-    let dotClass = 'err';
-    if (!p.last_refresh_error) {
-        if (ageSec < 48 * 3600) dotClass = 'ok';
-        else if (ageSec < 7 * 86400) dotClass = 'warn';
-    }
-    const lastTxt = p.last_refresh_at > 0 ? fmtTime(p.last_refresh_at) : 'never';
-    const summary = `${p.table_size ?? 0} models · last ${lastTxt}` +
-                    (p.last_refresh_changed ? ` (Δ${p.last_refresh_changed})` : '') +
-                    (p.miss_count_24h ? ` · ${p.miss_count_24h} misses` : '') +
-                    (p.last_refresh_error ? ` · err: ${p.last_refresh_error}` : '');
-    valEl.innerHTML =
-        `<span class="status-dot ${dotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;margin-right:6px"></span>` +
-        summary.replace(/</g, '&lt;');
-}
-
 async function loadStatus() {
     document.getElementById('st-sse').textContent = state.sseConnected ? 'connected' : 'disconnected';
     try {
@@ -91,14 +58,11 @@ async function loadStatus() {
         document.getElementById('st-web-endpoint').textContent  = `http://localhost:${s.web_port}`;
         const sseLine = state.sseConnected ? `connected · ${s.sse_clients ?? 0} clients` : 'disconnected';
         document.getElementById('st-sse').textContent = sseLine;
-
-        renderPricing(s.pricing);
     } catch (e) {
         console.error('status:', e);
         document.getElementById('st-db').textContent = '—';
         document.getElementById('st-otel').textContent = '—';
         document.getElementById('st-last').textContent = '—';
-        renderPricing(null);
     }
 }
 

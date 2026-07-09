@@ -104,3 +104,24 @@ export function rangeToFromTo(range) {
         default:      return { from: today, to: today };
     }
 }
+
+// Pricing unit converters. The pricing API exchanges USD-per-million-tokens on
+// the wire; the DB stores USD-per-token. perMtokToToken divides by 1_000_000 to
+// reach the storage unit; tokenToPerMtok multiplies back. Pure (no DOM/fetch),
+// so they can be imported and exercised under Node directly.
+const PER_MTOK = 1_000_000;
+export const perMtokToToken = (v) => Number(v) / PER_MTOK;
+export const tokenToPerMtok = (v) => Number(v) * PER_MTOK;
+
+// quantBadge returns 'quantized' for aggressive low-bit quants (fp4/int4/...),
+// '' for full or unknown precision. Mirrors pricing.quantLabel on the backend;
+// used only for the OpenRouter provider-picker badge. Pure (no DOM/fetch), so
+// it runs under Node directly.
+export function quantBadge(q) {
+    q = String(q ?? '').toLowerCase().trim();
+    if (!q || q === 'unknown' || q === 'none') return '';
+    for (const p of ['fp4', 'fp6', 'int4', 'int3', 'int2', 'nf4', 'q4', 'q3', 'q2']) {
+        if (q.startsWith(p)) return 'quantized';
+    }
+    return '';
+}

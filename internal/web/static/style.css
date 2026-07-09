@@ -1361,3 +1361,114 @@ td.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: 
     color: var(--accent);
     border-color: var(--accent);
 }
+
+/* ── Pricing Table admin modal (panel-pricing.js) ───────────────────────── */
+/* Entry icon button — same chrome as .theme-toggle. */
+.pricing-toggle{display:flex;align-items:center;justify-content:center;background:none;border:none;color:var(--text-muted);padding:6px;border-radius:var(--radius-xs);cursor:pointer;transition:color .15s ease,background .15s ease}
+.pricing-toggle:hover{color:var(--text);background:var(--surface2)}
+.pricing-toggle:focus{outline:2px solid var(--accent-dim);outline-offset:2px}
+.pricing-toggle svg{width:16px;height:16px;display:block}
+
+/* Modal toolbar */
+.pf-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.pf-search{flex:1;min-width:160px;display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 10px;color:var(--text-muted);transition:border-color .15s}
+.pf-search:focus-within{border-color:var(--accent)}
+.pf-search svg{width:14px;height:14px;flex-shrink:0}
+.pf-search input{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:inherit;font-size:13px}
+.pf-search input::placeholder{color:var(--text-dim)}
+
+/* Source segmented control — reuses .breakdown-view values */
+.pf-seg{display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:2px;box-shadow:var(--shadow-sm)}
+.pf-seg button{background:transparent;border:none;color:var(--text-muted);padding:5px 11px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit;transition:background .15s,color .15s}
+.pf-seg button:hover{color:var(--text)}
+.pf-seg button.active{background:var(--surface2);color:var(--text)}
+
+.pf-btn{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:var(--radius-xs);font-size:12.5px;font-weight:500;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:6px;transition:border-color .15s}
+.pf-btn:hover{border-color:var(--border-hover)}
+.pf-btn svg{width:14px;height:14px}
+.pf-stlbl{color:var(--text-muted);font-size:12px}
+
+/* Table */
+.pf-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.pf-table thead th{color:var(--text-dim);font-size:11px;font-weight:600;letter-spacing:.02em;padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+.pf-table tbody td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--text);white-space:nowrap;vertical-align:middle}
+.pf-table tbody tr:last-child td{border-bottom:none}
+.pf-table tbody tr:hover td{background:var(--surface2)}
+/* Models that have reported telemetry data get a subtle green tint + green
+   stripe (green = "active / has data"), distinct from the blue accent reserved
+   for actions and Official badges. */
+.pf-table tbody tr.pf-local td{background:var(--green-dim)}
+.pf-table tbody tr.pf-local td:first-child{box-shadow:inset 2px 0 0 var(--green)}
+.pf-table tbody tr.pf-local:hover td{background:var(--surface2)}
+
+/* Folded-row expand affordance + indented provider-variant sub-rows. */
+.pf-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:0 3px;font-size:11px;line-height:1;border-radius:4px;margin-left:6px}
+.pf-toggle:hover{color:var(--text);background:var(--surface3)}
+.pf-vcount{font-size:10px;color:var(--text-dim);vertical-align:1px}
+.pf-variant td{background:var(--bg);padding:7px 10px 7px 30px;font-size:12px;color:var(--text-muted)}
+.pf-variant:hover td{background:var(--surface2)}
+.pf-vkey{font-family:var(--font-mono);font-size:11.5px;color:var(--text);margin-right:8px}
+.pf-vnums{font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-left:8px}
+.pf-model{font-weight:600;font-family:var(--font-mono);font-size:12px}
+.pf-num{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.pf-num.dim{color:var(--text-dim)}
+.pf-upd{color:var(--text-muted);font-size:11.5px}
+
+/* Source badges — .badge grammar, color-coded */
+.pf-badge{font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:100px;letter-spacing:.01em;white-space:nowrap;display:inline-block}
+.pf-badge.manual{background:var(--orange-dim);color:var(--orange)}
+.pf-badge.openrouter{background:var(--accent-dim);color:var(--accent)}
+.pf-badge.seed{background:var(--surface2);color:var(--text-muted)}
+.pf-badge.user{background:var(--green-dim);color:var(--green)}
+.pf-badge.upstream{background:var(--surface2);color:var(--text-muted);display:inline-flex;align-items:center;gap:4px}
+.pf-badge.upstream svg{width:11px;height:11px}
+
+/* Row action ghost icons */
+.pf-act{display:inline-flex;gap:1px;align-items:center}
+.pf-act button,.pf-ghost{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px;border-radius:5px;display:inline-flex;vertical-align:middle}
+.pf-act button:hover,.pf-ghost:hover{color:var(--text);background:var(--surface3)}
+.pf-act button.del:hover{color:var(--red)}
+.pf-act svg,.pf-ghost svg{width:15px;height:15px}
+
+/* Edit fields + primary action */
+.pf-input{background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-xs);padding:4px 7px;font-size:12px;font-family:var(--font-mono);width:100%;min-width:54px}
+.pf-input:focus{outline:none;border-color:var(--accent)}
+.pf-input.wide{min-width:120px}
+.pf-save{background:var(--accent);border:none;color:#fff;padding:5px 13px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+.pf-save:active{transform:scale(.95)}
+.pf-cancel{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:3px 5px}
+.pf-cancel:hover{color:var(--text)}
+.pf-stamp{color:var(--accent);font-size:11px;font-weight:600}
+.pf-lock{display:inline-flex;align-items:center;gap:5px;color:var(--text-muted);font-size:11px}
+.pf-lock svg{width:13px;height:13px;color:var(--text-dim)}
+.pf-foot{margin-top:10px;color:var(--text-muted);font-size:11.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pf-foot code{font-family:var(--font-mono);background:var(--surface2);padding:1px 5px;border-radius:4px;color:var(--text)}
+.pf-toast{margin-top:10px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:var(--radius-xs);font-size:12px;display:flex;align-items:center;gap:8px;opacity:0;transition:opacity .2s}
+.pf-toast .ok{color:var(--green)}
+/* Large admin modal: centered by .modal-backdrop flex (openPopover skips positioning for this id). */
+#pricing-modal .modal{position:relative;left:auto;top:auto;transform:none;max-height:calc(100vh - 48px)}
+
+/* Pricing provider picker (💡 expand): a grouped mini-table of EVERY provider
+   for the model (no cap). Prices are column-aligned so they scan vertically;
+   the Official row is tinted in accent. */
+.pf-pick{cursor:pointer}
+.pf-pick:hover{text-decoration:underline}
+.pf-pickrow>td{padding:4px 10px 10px 30px;background:var(--surface)}
+.pf-ptable{border:1px solid var(--border);border-radius:10px;overflow:hidden;max-width:640px}
+.pf-ph,.pf-pr{display:grid;grid-template-columns:1fr repeat(4,54px) 64px;align-items:center;gap:8px;padding:5px 12px}
+.pf-ph{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border)}
+.pf-pr{font-size:12px;cursor:pointer;border-bottom:1px solid var(--border)}
+.pf-pr:last-child{border-bottom:none}
+.pf-pr:nth-child(even){background:var(--surface2)}
+.pf-pr.is-off{background:var(--accent-dim);box-shadow:inset 2px 0 0 var(--accent)}
+.pf-pr:hover{background:color-mix(in srgb,var(--accent) 16%,var(--surface))}
+.pf-pc.num{font-variant-numeric:tabular-nums;text-align:right;color:var(--text)}
+.pf-pc-name{font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pf-pc-tag{text-align:right}
+.pf-off{font-size:10px;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:10px}
+.pf-disc{font-size:10px;font-weight:600;color:var(--orange);background:color-mix(in srgb,var(--orange) 16%,transparent);padding:1px 6px;border-radius:10px}
+.pf-quant{font-size:10px;font-weight:600;color:var(--text-dim);border:1px solid var(--border);padding:0 6px;border-radius:10px;text-transform:uppercase}
+/* Claude Cache Create cell: two stacked Anthropic tiers (5m / 1h). */
+.pf-cc{display:flex;flex-direction:column;gap:1px;line-height:1.2;align-items:flex-end}
+.pf-cc-row{display:flex;gap:4px;align-items:baseline}
+.pf-cc-k{font-size:9px;font-weight:600;color:var(--text-muted)}

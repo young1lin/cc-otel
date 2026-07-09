@@ -427,8 +427,8 @@ func runMigrations(db *sql.DB) error {
 
 		-- Per-token pricing for non-Claude models. Claude entries are intentionally
 		-- absent: cost_usd from Claude Code is authoritative and never recomputed.
-		-- Seeded from internal/pricing/embed/seed.json on first boot; refreshed
-		-- daily from LiteLLM + OpenRouter via the pricing.Refresher (diff-only writes).
+		-- Seeded from internal/pricing/embed/seed.json on first boot; edited via
+		-- the Web UI Pricing Table modal (no automatic refresh).
 		CREATE TABLE IF NOT EXISTS model_pricing (
 			model             TEXT PRIMARY KEY,
 			input_cost        REAL NOT NULL,

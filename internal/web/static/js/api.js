@@ -12,6 +12,21 @@ async function fetchJSON(url) {
     return res.json();
 }
 
+// Body-capable helper for POST/DELETE-with-body endpoints. When `body` is null
+// (e.g. DELETE) no Content-Type / body is sent. 204 is treated as "no content".
+async function sendJSON(url, method, body) {
+    const res = await fetch(url, {
+        method,
+        headers: body == null ? undefined : { 'Content-Type': 'application/json' },
+        body: body == null ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `HTTP ${res.status}`);
+    }
+    return res.status === 204 ? null : res.json();
+}
+
 function qs(params) {
     const sp = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
@@ -33,7 +48,7 @@ function apiPath(name) {
     return '/api/' + name;
 }
 
-export { fetchJSON };
+export { fetchJSON, sendJSON };
 
 export const loadStatusData = () => fetchJSON('/api/status');
 
@@ -70,3 +85,15 @@ export const loadDurationsData = ({ from, to, model = '' }) =>
     fetchJSON(apiPath('durations') + qs({ from, to, model }));
 
 export const loadModelsData = () => fetchJSON(apiPath('models'));
+
+// Pricing Table admin (manual entry CRUD + OpenRouter suggest + recompute).
+// The wire unit is USD/Mtok; the backend converts to/from USD/token.
+export const loadPricingPage = ({ q = '', source = '', page = 1, pageSize = 50 } = {}) =>
+    fetchJSON('/api/pricing' + qs({ q, source, page, page_size: pageSize }));
+export const upsertPricing = (entry) => sendJSON('/api/pricing', 'POST', entry);
+export const deletePricing = (model) =>
+    sendJSON('/api/pricing?model=' + encodeURIComponent(model), 'DELETE', null);
+export const suggestPricing = (model) =>
+    fetchJSON('/api/pricing/suggest' + qs({ model }));
+export const startRecompute = () => sendJSON('/api/pricing/recompute', 'POST', {});
+export const recomputeStatus = () => fetchJSON('/api/pricing/recompute');

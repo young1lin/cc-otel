@@ -2,6 +2,7 @@ package api
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,11 +14,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/young1lin/cc-otel/internal/config"
 	"github.com/young1lin/cc-otel/internal/db"
 	"github.com/young1lin/cc-otel/internal/pricing"
+	"github.com/young1lin/cc-otel/internal/recompute"
 	"github.com/young1lin/cc-otel/internal/web"
 )
 
@@ -78,6 +81,36 @@ func parsePage(r *http.Request) (page, pageSize int) {
 	return
 }
 
+// recomputeJob is the server-side state of a background cost recompute.
+// One at a time; started by POST /api/pricing/recompute, polled by GET.
+// Every field read/write is guarded by mu so concurrent GET/POST/snapshot
+// callers see a consistent picture.
+type recomputeJob struct {
+	mu         sync.Mutex
+	running    bool
+	startedAt  int64
+	finishedAt int64
+	table      string
+	total      int
+	scanned    int
+	changed    int
+	err        string
+	lastResult *recompute.Result
+}
+
+// recomputeStatus is the JSON shape returned by GET/POST /api/pricing/recompute.
+type recomputeStatus struct {
+	Running    bool              `json:"running"`
+	StartedAt  int64             `json:"started_at"`
+	FinishedAt int64             `json:"finished_at"`
+	Table      string            `json:"table,omitempty"`
+	Total      int               `json:"total,omitempty"`
+	Scanned    int               `json:"scanned,omitempty"`
+	Changed    int               `json:"changed,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	LastResult *recompute.Result `json:"last_result,omitempty"`
+}
+
 // Handler serves the REST API and SSE endpoints for the cc-otel web dashboard.
 type Handler struct {
 	repo       *db.Repository
@@ -85,12 +118,22 @@ type Handler struct {
 	cfg        *config.Config
 	configPath string
 	pricer     pricing.Registry // optional; nil disables /api/pricing/lookup and the pricing block in /api/status
+
+	pricingWriter pricing.Writer  // optional; nil disables /api/pricing CRUD
+	recompute     *recomputeJob   // singleton background recompute; never nil after NewHandler
+	shutdownCtx   context.Context // cancels the background recompute goroutine on shutdown
 }
 
 // NewHandler creates a Handler with the given database repository, SSE broker, config,
 // and the absolute path of the config file the daemon actually loaded.
 func NewHandler(repo *db.Repository, broker *Broker, cfg *config.Config, configPath string) *Handler {
-	return &Handler{repo: repo, broker: broker, cfg: cfg, configPath: configPath}
+	return &Handler{
+		repo:       repo,
+		broker:     broker,
+		cfg:        cfg,
+		configPath: configPath,
+		recompute:  &recomputeJob{},
+	}
 }
 
 // SetPricer injects the pricing registry used by /api/status and
@@ -98,11 +141,23 @@ func NewHandler(repo *db.Repository, broker *Broker, cfg *config.Config, configP
 // argument) to avoid churning every existing call site.
 func (h *Handler) SetPricer(p pricing.Registry) { h.pricer = p }
 
+// SetPricingWriter injects the pricing Writer used by /api/pricing CRUD.
+// nil (the default) makes the collection endpoint return 503.
+func (h *Handler) SetPricingWriter(w pricing.Writer) { h.pricingWriter = w }
+
+// SetShutdownContext supplies the context used to cancel a background
+// recompute goroutine when the daemon shuts down. If unset, the recompute
+// runs against context.Background.
+func (h *Handler) SetShutdownContext(ctx context.Context) { h.shutdownCtx = ctx }
+
 // Register wires all API and static-file routes onto the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", h.Health)
 	mux.HandleFunc("/api/status", h.Status)
 	mux.HandleFunc("/api/pricing/lookup", h.PricingLookup)
+	mux.HandleFunc("/api/pricing", h.PricingCollection)          // GET list / POST upsert / DELETE
+	mux.HandleFunc("/api/pricing/recompute", h.PricingRecompute) // GET status / POST start
+	mux.HandleFunc("/api/pricing/suggest", h.PricingSuggest)     // GET on-demand OpenRouter lookup
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
 	mux.HandleFunc("/api/calendar", h.Calendar)
 	mux.HandleFunc("/api/daily", h.DailyModel)
@@ -180,14 +235,11 @@ type StatusResponse struct {
 // PricingStatus mirrors pricing.Snapshot with JSON-friendly names. Kept
 // separate so the api package doesn't expose the internal struct directly.
 type PricingStatus struct {
-	TableSize       int      `json:"table_size"`
-	UserOverrides   int      `json:"user_overrides"`
-	LastRefreshAt   int64    `json:"last_refresh_at"`
-	LastRefreshMsg  string   `json:"last_refresh_status"`
-	LastRefreshErr  string   `json:"last_refresh_error,omitempty"`
-	LastChangedRows int      `json:"last_refresh_changed"`
-	MissCount24h    int      `json:"miss_count_24h"`
-	MissModelsTop   []string `json:"miss_models_top"`
+	TableSize     int      `json:"table_size"`
+	UserOverrides int      `json:"user_overrides"`
+	LastEditAt    int64    `json:"last_edit_at"`
+	MissCount24h  int      `json:"miss_count_24h"`
+	MissModelsTop []string `json:"miss_models_top"`
 }
 
 // Status returns server health details: DB, SSE, OTEL receiver, ports, and last update time.
@@ -235,14 +287,11 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	if h.pricer != nil {
 		s := h.pricer.Snapshot(r.Context())
 		pricingBlock = &PricingStatus{
-			TableSize:       s.TableSize,
-			UserOverrides:   s.UserOverrides,
-			LastRefreshAt:   s.LastRefreshAt,
-			LastRefreshMsg:  s.LastRefreshMsg,
-			LastRefreshErr:  s.LastRefreshErr,
-			LastChangedRows: s.LastChangedRows,
-			MissCount24h:    s.MissCount24h,
-			MissModelsTop:   s.MissModelsTop,
+			TableSize:     s.TableSize,
+			UserOverrides: s.UserOverrides,
+			LastEditAt:    s.LastEditAt,
+			MissCount24h:  s.MissCount24h,
+			MissModelsTop: s.MissModelsTop,
 		}
 	}
 
@@ -308,6 +357,297 @@ func (h *Handler) PricingLookup(w http.ResponseWriter, r *http.Request) {
 		out.CacheWrite = res.Entry.CacheCreation
 	}
 	json.NewEncoder(w).Encode(out)
+}
+
+// perMtokFactor converts between USD-per-token (storage unit) and the
+// USD-per-million-tokens unit the pricing UI/API exchanges on the wire.
+const perMtokFactor = 1_000_000.0
+
+// PricingCollection handles GET (list), POST (upsert), DELETE over model_pricing.
+// Prices are USD/Mtok on the wire and USD/token in storage, so POST divides by
+// perMtokFactor and GET multiplies back. Claude writes are rejected (400).
+func (h *Handler) PricingCollection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.pricingWriter == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "pricing writer not initialised"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		q := r.URL.Query()
+		page, _ := strconv.Atoi(q.Get("page"))
+		pageSize, _ := strconv.Atoi(q.Get("page_size"))
+		// Clamp page/pageSize so an adversarial request can't overflow the
+		// (page-1)*pageSize slice arithmetic or return a giant page.
+		if page < 1 {
+			page = 1
+		}
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		if pageSize > 200 {
+			pageSize = 200
+		}
+		// Local-seen models (from telemetry) boost to the top of the sort so
+		// the user's own models surface above the ~1000-row seed catalog.
+		local := map[string]bool{}
+		if h.repo != nil {
+			if ms, err := h.repo.GetDistinctModels(r.Context()); err == nil {
+				for _, m := range ms {
+					local[pricing.Normalize(m)] = true
+				}
+			}
+		}
+		// Warm the OpenRouter catalog so Claude reference prices populate on
+		// this load instead of appearing blank until a reload. Blocks only when
+		// the cache is cold (first load after restart / after the 10-min TTL);
+		// bounded to 8s so a slow OpenRouter can't hang the page.
+		if h.repo != nil {
+			wctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+			pricing.EnsureCatalogWarm(wctx)
+			cancel()
+		}
+		lr, err := h.pricingWriter.List(r.Context(), pricing.ListFilter{
+			Query:    q.Get("q"),
+			Source:   q.Get("source"),
+			Page:     page,
+			PageSize: pageSize,
+			Local:    local,
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		out := make([]map[string]any, 0, len(lr.Entries))
+		for _, e := range lr.Entries {
+			row := h.entryToWire(e)
+			row["is_local"] = pricing.EntryIsLocal(e, local)
+			out = append(out, row)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"entries": out, "total": lr.Total})
+
+	case http.MethodPost:
+		var body struct {
+			Model       string   `json:"model"`
+			Input       float64  `json:"input"`
+			Output      float64  `json:"output"`
+			CacheRead   float64  `json:"cache_read"`
+			CacheCreate float64  `json:"cache_create"`
+			Aliases     []string `json:"aliases"`
+			Source      string   `json:"source"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid json"})
+			return
+		}
+		// Claude is fixed-price and never recomputed; the save-side guard in
+		// Upsert is authoritative, but we reject early here for a clear 400.
+		if pricing.IsClaudeModel(pricing.Normalize(body.Model)) {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "claude models are fixed-price and not recomputed"})
+			return
+		}
+		saved, err := h.pricingWriter.Upsert(r.Context(), pricing.Entry{
+			Model:         body.Model,
+			Input:         body.Input / perMtokFactor,
+			Output:        body.Output / perMtokFactor,
+			CacheRead:     body.CacheRead / perMtokFactor,
+			CacheCreation: body.CacheCreate / perMtokFactor,
+			Aliases:       body.Aliases,
+			Source:        body.Source,
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(h.entryToWire(saved))
+
+	case http.MethodDelete:
+		model := r.URL.Query().Get("model")
+		if model == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "model query param required"})
+			return
+		}
+		if err := h.pricingWriter.Delete(r.Context(), model); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// entryToWire maps a stored Entry (USD/token) to the USD/Mtok wire shape and
+// flags entries whose price is overridden by the user's cc-otel.yaml pricing
+// block (so the UI can badge them as non-editable here).
+func (h *Handler) entryToWire(e pricing.Entry) map[string]any {
+	// DB row's e.Model is already normalized; YAML pricing map keys are
+	// case-preserving (e.g. "GLM-4.6"). Match the registry's behaviour by
+	// normalizing each YAML key before comparing. User pricing blocks are
+	// small, so O(n) here is fine.
+	overridden := false
+	if h.cfg != nil {
+		for name := range h.cfg.Pricing {
+			if pricing.Normalize(name) == e.Model {
+				overridden = true
+				break
+			}
+		}
+	}
+	wire := map[string]any{
+		"model":              e.Model,
+		"input":              e.Input * perMtokFactor,
+		"output":             e.Output * perMtokFactor,
+		"cache_read":         e.CacheRead * perMtokFactor,
+		"cache_create":       e.CacheCreation * perMtokFactor,
+		"aliases":            e.Aliases,
+		"source":             e.Source,
+		"updated_at":         e.UpdatedAt,
+		"overridden_by_yaml": overridden,
+	}
+	if len(e.Variants) > 0 {
+		vs := make([]map[string]any, 0, len(e.Variants))
+		for _, v := range e.Variants {
+			vs = append(vs, entryVariantToWire(v))
+		}
+		wire["variants"] = vs
+	}
+	return wire
+}
+
+// entryVariantToWire is a slimmed wire view of a folded variant (one of the
+// other provider-prefixed entries under a canonical row). Read-only display.
+func entryVariantToWire(e pricing.Entry) map[string]any {
+	return map[string]any{
+		"model":        e.Model,
+		"input":        e.Input * perMtokFactor,
+		"output":       e.Output * perMtokFactor,
+		"cache_read":   e.CacheRead * perMtokFactor,
+		"cache_create": e.CacheCreation * perMtokFactor,
+		"source":       e.Source,
+	}
+}
+
+// PricingSuggest handles GET /api/pricing/suggest — a user-initiated
+// OpenRouter price lookup used to prefill the manual-entry form. It never
+// writes. The response carries the default one-click price (first-party
+// "Official" provider when OpenRouter lists one, else the blended minimum)
+// plus a "providers" list + "providers_total" for the picker. A non-match
+// returns a zero-valued SuggestResult (Matched=false).
+func (h *Handler) PricingSuggest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	model := r.URL.Query().Get("model")
+	if pricing.Normalize(model) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "model query param required"})
+		return
+	}
+	sug, err := pricing.SuggestOpenRouter(r.Context(), model)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": "openrouter unreachable: " + err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(sug)
+}
+
+// PricingRecompute handles GET (status) / POST (start) for the background
+// full-table recompute. State is server-side and singleton: GET never starts a
+// job; POST while a job is already running is a no-op that returns the current
+// status. One job at a time.
+func (h *Handler) PricingRecompute(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(h.recompute.snapshot())
+
+	case http.MethodPost:
+		if h.pricer == nil || h.repo == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"error": "pricing registry or db not available"})
+			return
+		}
+		h.recompute.mu.Lock()
+		if h.recompute.running {
+			h.recompute.mu.Unlock()
+			json.NewEncoder(w).Encode(h.recompute.snapshot()) // already running — no-op
+			return
+		}
+		h.recompute.running = true
+		h.recompute.startedAt = time.Now().Unix()
+		h.recompute.finishedAt = 0
+		h.recompute.table = ""
+		h.recompute.total, h.recompute.scanned, h.recompute.changed = 0, 0, 0
+		h.recompute.err = ""
+		h.recompute.lastResult = nil
+		h.recompute.mu.Unlock()
+
+		go h.runRecompute()
+		json.NewEncoder(w).Encode(h.recompute.snapshot())
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// runRecompute is the background goroutine body. It uses the daemon shutdown
+// context (falling back to Background) so a SIGINT during a long recompute
+// cancels it. Progress is written back to the job under the mutex; the
+// terminal state always sets running=false and finishedAt so a later GET sees
+// completion.
+func (h *Handler) runRecompute() {
+	ctx := context.Background()
+	if h.shutdownCtx != nil {
+		ctx = h.shutdownCtx
+	}
+	progress := func(p recompute.Progress) {
+		h.recompute.mu.Lock()
+		h.recompute.table = p.Table
+		h.recompute.total = p.Total
+		h.recompute.scanned = p.Scanned
+		h.recompute.changed = p.Changed
+		h.recompute.mu.Unlock()
+	}
+	res, err := recompute.Run(ctx, h.repo.DB(), h.pricer, recompute.Options{}, true, progress)
+	h.recompute.mu.Lock()
+	h.recompute.running = false
+	h.recompute.finishedAt = time.Now().Unix()
+	if err != nil {
+		h.recompute.err = err.Error()
+	} else {
+		h.recompute.lastResult = &res
+	}
+	h.recompute.mu.Unlock()
+}
+
+// snapshot returns a consistent, lock-held copy of the job's state for JSON
+// serialisation. Callers must not mutate the returned LastResult pointer.
+func (j *recomputeJob) snapshot() recomputeStatus {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return recomputeStatus{
+		Running:    j.running,
+		StartedAt:  j.startedAt,
+		FinishedAt: j.finishedAt,
+		Table:      j.table,
+		Total:      j.total,
+		Scanned:    j.scanned,
+		Changed:    j.changed,
+		Error:      j.err,
+		LastResult: j.lastResult,
+	}
 }
 
 // rangeToFromTo converts a range name to (from, to) date strings in local time.

@@ -219,11 +219,12 @@ Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source
 
 ## Pricing table & non-Claude cost recompute
 
-cc-otel ships with a price snapshot derived from [BerriAI/litellm](https://github.com/BerriAI/litellm) (GPT / GLM / DeepSeek / Kimi / Qwen / …). The first start seeds it into the `model_pricing` table. Lookups follow this priority:
+cc-otel ships with a price snapshot derived from [BerriAI/litellm](https://github.com/BerriAI/litellm) (GPT / GLM / DeepSeek / Kimi / Qwen / …). The first start seeds it into the `model_pricing` table. **The price table is purely manual now — there is no scheduled remote refresh.** Lookups follow this priority:
 
 1. **`pricing:` in `cc-otel.yaml`** (user override, highest)
 2. **SQLite `model_pricing` table** (canonical store, survives restarts)
-3. **Daily upstream refresh** from LiteLLM + OpenRouter (diff-only writes)
+
+To change a price: open the Web UI (top-right `live` → Status popup → **Pricing Table**) and add/edit/delete rows directly — saves take effect immediately. Click the in-row 💡 to look up a single model on OpenRouter on demand and prefill its prices. After a price change, click ↻ 重算历史 to trigger a server-side full recompute (status tracked, survives page refresh).
 
 Recompute follows a single rule:
 
@@ -232,7 +233,7 @@ Recompute follows a single rule:
 
 This corrects two situations: Codex (`gpt-5-codex`, etc.) records that previously stored `cost_usd = 0`, and GLM/DeepSeek/Kimi traffic that flowed through an Anthropic-compatible reverse proxy and was therefore priced like Sonnet/Opus.
 
-Debug: `GET /api/pricing/lookup?model=glm-4.6` shows the resolved entry and match strategy. The top-right `live` popup has a **Pricing Table** row (green/yellow/red dot indicates last-refresh age).
+Debug: `GET /api/pricing/lookup?model=glm-4.6` shows the resolved entry and match strategy. The Status popup's **Pricing Table** row shows the last recompute result.
 
 Backfilling history:
 
@@ -241,13 +242,6 @@ Backfilling history:
 go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both
 # review the per-model delta, then apply
 go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both --apply
-```
-
-To disable the daily refresher, add this to `cc-otel.yaml`:
-
-```yaml
-pricing_refresh:
-  enabled: false
 ```
 
 ## Configuration

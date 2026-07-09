@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,22 +19,18 @@ import (
 //
 // DB rows are cached in memory because cost_usd recompute happens on every
 // log record — we don't want a SQL round-trip per request. The cache is
-// invalidated by the refresher (via Reload) when it writes new rows.
+// invalidated by Reload after the Web UI (or a tool) writes new rows.
 type sqlRegistry struct {
 	db *sql.DB
 
-	mu              sync.RWMutex
-	userByKey       map[string]Entry // YAML override layer (highest priority)
-	tableByKey      map[string]Entry // model_pricing snapshot
-	keys            map[string]struct{}
-	aliasIndex      map[string]string // alias-normalized -> canonical key
-	missCounts      map[string]int    // model -> miss count (24h, hand-trimmed)
-	missOrder       []string          // insertion order for "top miss" report
-	lastReload      time.Time
-	lastRefreshAt   int64
-	lastRefreshMsg  string
-	lastRefreshErr  string
-	lastChangedRows int
+	mu         sync.RWMutex
+	userByKey  map[string]Entry // YAML override layer (highest priority)
+	tableByKey map[string]Entry // model_pricing snapshot
+	keys       map[string]struct{}
+	aliasIndex map[string]string // alias-normalized -> canonical key
+	missCounts map[string]int    // model -> miss count (24h, hand-trimmed)
+	missOrder  []string          // insertion order for "top miss" report
+	lastReload time.Time
 }
 
 // NewRegistry constructs the production Registry. On first call it ensures
@@ -89,8 +88,8 @@ func (r *sqlRegistry) loadUserOverrides(cfg *config.Config) {
 	}
 }
 
-// Reload re-reads the model_pricing table into memory. Called by the
-// refresher after diff-writes; safe to call concurrently with Lookup.
+// Reload re-reads the model_pricing table into memory. Called after the Web
+// UI or a tool writes rows; safe to call concurrently with Lookup.
 func (r *sqlRegistry) Reload(ctx context.Context) error {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT model, input_cost, output_cost, cache_read_cost, cache_create_cost,
@@ -221,16 +220,19 @@ func (r *sqlRegistry) Calc(ctx context.Context, model string, input, output, cac
 func (r *sqlRegistry) Snapshot(ctx context.Context) Snapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	var lastEdit int64
+	for _, e := range r.tableByKey {
+		if e.UpdatedAt > lastEdit {
+			lastEdit = e.UpdatedAt
+		}
+	}
 	top := r.missTopLocked(5)
 	return Snapshot{
-		TableSize:       len(r.tableByKey),
-		UserOverrides:   len(r.userByKey),
-		MissCount24h:    sumMisses(r.missCounts),
-		MissModelsTop:   top,
-		LastRefreshAt:   r.lastRefreshAt,
-		LastRefreshMsg:  r.lastRefreshMsg,
-		LastRefreshErr:  r.lastRefreshErr,
-		LastChangedRows: r.lastChangedRows,
+		TableSize:     len(r.tableByKey),
+		UserOverrides: len(r.userByKey),
+		LastEditAt:    lastEdit,
+		MissCount24h:  sumMisses(r.missCounts),
+		MissModelsTop: top,
 	}
 }
 
@@ -289,26 +291,246 @@ func sumMisses(m map[string]int) int {
 	return s
 }
 
-// SetRefreshStatus is called by the refresher after each tick. Public on
-// the registry so the refresher can push its outcome into Snapshot without
-// coupling the two packages with a third channel.
-func (r *sqlRegistry) SetRefreshStatus(at int64, msg, errStr string, changed int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lastRefreshAt = at
-	r.lastRefreshMsg = msg
-	r.lastRefreshErr = errStr
-	r.lastChangedRows = changed
-}
-
-// Reloader is the subset of Registry the refresher needs to reload + report.
-// Defined here (vs. refresher.go in Phase 3) so callers don't need to type-
-// assert against the concrete struct.
+// Reloader is the subset of Registry the write path needs to reload after
+// mutating model_pricing. Defined here so callers don't type-assert against
+// the concrete struct.
 type Reloader interface {
 	Registry
 	Reload(ctx context.Context) error
-	SetRefreshStatus(at int64, msg, errStr string, changed int)
 }
 
 // Compile-time check.
 var _ Reloader = (*sqlRegistry)(nil)
+
+// List returns a filtered, paginated page of the merged user > table view.
+// Sort order: models seen in local telemetry (f.Local) first, then by display
+// source rank (manual > openrouter > litellm > seed), then by name. Pagination
+// is applied after the sort.
+func (r *sqlRegistry) List(ctx context.Context, f ListFilter) (ListResult, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	merged := make(map[string]Entry, len(r.tableByKey)+len(r.userByKey))
+	for k, e := range r.tableByKey {
+		merged[k] = e
+	}
+	for k, e := range r.userByKey {
+		merged[k] = e // user overrides win on key clash
+	}
+
+	// Claude is priced upstream (Anthropic reports cost_usd directly) and is
+	// intentionally absent from model_pricing, so it never appears above. But a
+	// model the user has actually run — including Claude — should be visible:
+	// inject a read-only row for each reported Claude model that has no entry,
+	// populated with its reference price from the cached OpenRouter catalog.
+	if len(f.Local) > 0 {
+		anyCold := false
+		for model := range f.Local {
+			if !IsClaudeModel(model) {
+				continue
+			}
+			if _, ok := merged[model]; ok {
+				continue
+			}
+			e := Entry{Model: model, Source: "upstream"}
+			if in, out, cr, ok := CachedCatalogPrice(model); ok {
+				// CachedCatalogPrice returns USD/Mtok; Entry stores USD/token.
+				e.Input, e.Output, e.CacheRead = in/perMtok, out/perMtok, cr/perMtok
+				// Anthropic prompt caching: a 5-min cache write costs 1.25x the
+				// input price (the 1-hour tier is 2x). OpenRouter publishes no
+				// cache-write field, so default to the 5-min tier.
+				e.CacheCreation = e.Input * 1.25
+			} else {
+				anyCold = true
+			}
+			merged[model] = e
+		}
+		if anyCold {
+			WarmCatalogInBackground() // populate the cache for the next request
+		}
+	}
+
+	q := strings.ToLower(strings.TrimSpace(f.Query))
+	entries := make([]Entry, 0, len(merged))
+	for k, e := range merged {
+		if f.Source != "" && e.Source != f.Source {
+			continue
+		}
+		if q != "" && !strings.Contains(k, q) {
+			continue
+		}
+		entries = append(entries, e)
+	}
+
+	// Fold duplicates: one representative per basename (model). The rep mirrors
+	// Lookup's resolution — exact bare key, else fewest segments, else display
+	// rank — so the price shown is the price actually applied. The other members
+	// are attached as Variants so the UI can expand the row to see them.
+	groups := make(map[string][]Entry, len(entries))
+	for _, e := range entries {
+		b := basenameOf(e.Model)
+		groups[b] = append(groups[b], e)
+	}
+	deduped := make([]Entry, 0, len(groups))
+	for _, members := range groups {
+		sort.Slice(members, func(i, j int) bool { return repBetter(members[i], members[j]) })
+		rep := members[0]
+		if len(members) > 1 {
+			rep.Variants = members[1:]
+		}
+		deduped = append(deduped, rep)
+	}
+	entries = deduped
+
+	sort.Slice(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		la, lb := EntryIsLocal(a, f.Local), EntryIsLocal(b, f.Local)
+		if la != lb {
+			return la // local-relevant entries sort first
+		}
+		ra, rb := DisplayRank(a.Source), DisplayRank(b.Source)
+		if ra != rb {
+			return ra > rb // higher display rank first
+		}
+		return a.Model < b.Model // stable alphabetical tiebreak
+	})
+
+	total := len(entries)
+	page, pageSize := f.Page, f.PageSize
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return ListResult{Entries: entries[start:end], Total: total}, nil
+}
+
+// EntryIsLocal reports whether a pricing entry corresponds to a model that has
+// appeared in local telemetry (local set, normalized). It matches on the entry
+// key, the key's basename (so "minimax/minimax-m3" counts when "minimax-m3" was
+// seen), or any alias. An empty/nil local set means "no local boost" → false.
+func EntryIsLocal(e Entry, local map[string]bool) bool {
+	if len(local) == 0 {
+		return false
+	}
+	k := Normalize(e.Model)
+	if local[k] {
+		return true
+	}
+	if b := basenameOf(e.Model); b != k && local[b] {
+		return true
+	}
+	for _, a := range e.Aliases {
+		if local[Normalize(a)] {
+			return true
+		}
+	}
+	return false
+}
+
+// repBetter reports whether a is a better dedup representative than b for the
+// same basename: a bare (un-prefixed) key wins (it's the exact match), else
+// fewer segments (more canonical), else higher display source rank.
+func repBetter(a, b Entry) bool {
+	ab := !strings.Contains(a.Model, "/")
+	bb := !strings.Contains(b.Model, "/")
+	if ab != bb {
+		return ab
+	}
+	sa, sb := strings.Count(a.Model, "/"), strings.Count(b.Model, "/")
+	if sa != sb {
+		return sa < sb
+	}
+	return DisplayRank(a.Source) > DisplayRank(b.Source)
+}
+
+// Upsert inserts or updates one model's price; source is "manual" (hand-typed)
+// or "openrouter" (accepted from the provider picker). Claude is rejected;
+// input/output must be > 0; cache_* >= 0. Reloads cache.
+func (r *sqlRegistry) Upsert(ctx context.Context, e Entry) (Entry, error) {
+	key := Normalize(e.Model)
+	if key == "" {
+		return Entry{}, fmt.Errorf("model name is required")
+	}
+	if IsClaudeModel(key) {
+		return Entry{}, fmt.Errorf("claude models are never recomputed; price is fixed")
+	}
+	if e.Input <= 0 || e.Output <= 0 {
+		return Entry{}, fmt.Errorf("input and output price must be > 0")
+	}
+	if e.CacheRead < 0 || e.CacheCreation < 0 {
+		return Entry{}, fmt.Errorf("cache prices must be >= 0")
+	}
+	// A saved price is either "manual" (hand-typed) or "openrouter" (accepted
+	// from the OpenRouter provider picker); anything else defaults to manual.
+	source := "manual"
+	if e.Source == "openrouter" {
+		source = "openrouter"
+	}
+
+	aliases := slices.Clone(e.Aliases)
+	clean := aliases[:0]
+	for _, a := range aliases {
+		na := Normalize(a)
+		if na == "" || na == key {
+			continue
+		}
+		clean = append(clean, na)
+	}
+	// Ensure empty aliases marshal to [] (not null): the column is
+	// TEXT NOT NULL DEFAULT '[]' and a literal "null" violates that intent.
+	if len(clean) == 0 {
+		clean = []string{}
+	}
+	aliasJSON, _ := json.Marshal(clean)
+
+	now := time.Now().Unix()
+	if _, err := r.db.ExecContext(ctx, `
+		INSERT INTO model_pricing
+			(model, input_cost, output_cost, cache_read_cost, cache_create_cost,
+			 aliases, source, fetched_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(model) DO UPDATE SET
+			input_cost        = excluded.input_cost,
+			output_cost       = excluded.output_cost,
+			cache_read_cost   = excluded.cache_read_cost,
+			cache_create_cost = excluded.cache_create_cost,
+			aliases           = excluded.aliases,
+			source            = excluded.source,
+			updated_at        = excluded.updated_at`,
+		key, e.Input, e.Output, e.CacheRead, e.CacheCreation,
+		string(aliasJSON), source, now, now,
+	); err != nil {
+		return Entry{}, fmt.Errorf("upsert %s: %w", key, err)
+	}
+
+	if err := r.Reload(ctx); err != nil {
+		return Entry{}, fmt.Errorf("reload after upsert: %w", err)
+	}
+	return Entry{
+		Model: key, Input: e.Input, Output: e.Output,
+		CacheRead: e.CacheRead, CacheCreation: e.CacheCreation,
+		Aliases: clean, Source: source, UpdatedAt: now,
+	}, nil
+}
+
+// Delete removes one model from model_pricing and reloads.
+func (r *sqlRegistry) Delete(ctx context.Context, model string) error {
+	key := Normalize(model)
+	if key == "" {
+		return fmt.Errorf("model name is required")
+	}
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM model_pricing WHERE model = ?`, key); err != nil {
+		return fmt.Errorf("delete %s: %w", key, err)
+	}
+	return r.Reload(ctx)
+}

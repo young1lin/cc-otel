@@ -4,8 +4,8 @@
 //
 // Layered lookup priority (highest first):
 //  1. user YAML overrides         (in-memory, from cc-otel.yaml `pricing:`)
-//  2. SQLite model_pricing table  (seeded from embed/seed.json on first boot,
-//     refreshed daily from LiteLLM + OpenRouter — diff-only writes)
+//  2. SQLite model_pricing table  (seeded from embed/seed.json on first boot;
+//     edited via the Web UI Pricing Table modal — no automatic refresh)
 //
 // The package is safe for concurrent use.
 package pricing
@@ -30,6 +30,10 @@ type Entry struct {
 	Source        string // "user" | "seed" | "litellm" | "openrouter"
 	FetchedAt     int64  // unix seconds; 0 for in-memory user overrides
 	UpdatedAt     int64
+	// Variants are the other provider-prefixed entries that fold into this one
+	// for display (same basename). Populated only by List for the admin table;
+	// never persisted, ignored by Calc/Upsert/Lookup.
+	Variants []Entry `json:"-"`
 }
 
 // MatchKind identifies how a model name resolved to an Entry.
@@ -65,16 +69,38 @@ type Registry interface {
 	Snapshot(ctx context.Context) Snapshot
 }
 
+// ListFilter narrows a Writer.List query.
+type ListFilter struct {
+	Query    string // substring match on model (case-insensitive); "" = all
+	Source   string // "manual" | "seed" | "user" | "" = all
+	Page     int
+	PageSize int
+	// Local is the set of normalized model names actually seen in local
+	// telemetry. List sorts these entries first. Nil/empty = no local boost.
+	Local map[string]bool
+}
+
+// ListResult is a page of entries plus the total match count.
+type ListResult struct {
+	Entries []Entry `json:"entries"`
+	Total   int     `json:"total"`
+}
+
+// Writer is the mutation API for the pricing admin UI. Implemented by
+// *sqlRegistry; injected into the HTTP handler alongside Registry.
+type Writer interface {
+	List(ctx context.Context, f ListFilter) (ListResult, error)
+	Upsert(ctx context.Context, e Entry) (Entry, error)
+	Delete(ctx context.Context, model string) error
+}
+
 // Snapshot exposes registry diagnostics.
 type Snapshot struct {
-	TableSize       int      `json:"table_size"`
-	UserOverrides   int      `json:"user_overrides"`
-	MissCount24h    int      `json:"miss_count_24h"`
-	MissModelsTop   []string `json:"miss_models_top"`
-	LastRefreshAt   int64    `json:"last_refresh_at"`
-	LastRefreshMsg  string   `json:"last_refresh_status"`
-	LastRefreshErr  string   `json:"last_refresh_error,omitempty"`
-	LastChangedRows int      `json:"last_refresh_changed"`
+	TableSize     int      `json:"table_size"`
+	UserOverrides int      `json:"user_overrides"`
+	LastEditAt    int64    `json:"last_edit_at"` // max(updated_at) over model_pricing
+	MissCount24h  int      `json:"miss_count_24h"`
+	MissModelsTop []string `json:"miss_models_top"`
 }
 
 // cacheReadFallback / cacheCreateFallback derive default rates from Input
@@ -122,6 +148,25 @@ func SourceRank(source string) int {
 		return 20
 	case "seed":
 		return 10
+	default:
+		return 0
+	}
+}
+
+// DisplayRank orders sources for the Pricing Table UI sort: hand-configured
+// prices first, then OpenRouter, then LiteLLM, then the offline seed snapshot.
+// This is a *display* preference for the admin table, distinct from SourceRank
+// (which ranks pricing correctness for basename tiebreaking in Lookup).
+func DisplayRank(source string) int {
+	switch source {
+	case "manual", "user": // hand-configured: UI manual entry or YAML override
+		return 100
+	case "openrouter":
+		return 80
+	case "litellm":
+		return 60
+	case "seed":
+		return 40
 	default:
 		return 0
 	}

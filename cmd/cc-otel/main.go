@@ -462,21 +462,6 @@ func cmdServe() {
 		log.Fatalf("failed to init pricing registry: %v", err)
 	}
 
-	// Daily upstream refresh of model_pricing (LiteLLM + OpenRouter).
-	// Runs in the background and only writes diffs; first tick fires
-	// immediately so a long-stopped daemon picks up overnight changes
-	// on restart.
-	if cfg.PricingRefresh.PricingRefreshEnabled() {
-		if reloader, ok := priceReg.(pricing.Reloader); ok {
-			refresher := pricing.NewRefresher(database, reloader, cfg.PricingRefresh, log.Default())
-			go refresher.Run(ctx)
-		} else {
-			log.Print("pricing refresh disabled: registry does not implement Reloader")
-		}
-	} else {
-		log.Print("pricing refresh disabled by config")
-	}
-
 	grpcSrv := grpc.NewServer()
 	otelReceiver := receiver.New(repo, cfg, broker, priceReg)
 	otelReceiver.Register(grpcSrv)
@@ -495,6 +480,14 @@ func cmdServe() {
 	absCfgPath, _ := filepath.Abs(*cfgPath)
 	handler := api.NewHandler(repo, broker, cfg, absCfgPath)
 	handler.SetPricer(priceReg)
+	handler.SetShutdownContext(ctx)
+	// The production registry implements pricing.Writer (List/Upsert/Delete);
+	// expose it to the HTTP layer so /api/pricing CRUD works. If a future
+	// registry impl skips the Writer interface, the collection endpoint
+	// simply returns 503 rather than crashing at startup.
+	if w, ok := priceReg.(pricing.Writer); ok {
+		handler.SetPricingWriter(w)
+	}
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	webSrv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.WebPort), Handler: loggingMiddleware(api.GzipMiddleware(mux))}
