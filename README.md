@@ -50,6 +50,7 @@ Claude Code ──OTLP gRPC(:4317)──> cc-otel ──> SQLite
 ```bash
 /plugin marketplace add young1lin/claude-token-monitor
 /plugin install cc-otel@claude-token-monitor
+/reload-plugins
 /cc-otel:setup
 ```
 
