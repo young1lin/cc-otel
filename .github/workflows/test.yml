@@ -1,0 +1,41 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        run: go build ./cmd/cc-otel/
+
+      - name: Test
+        run: go test ./... -v
+
+      - name: Test (race)
+        if: matrix.os != 'windows-latest'
+        run: CGO_ENABLED=1 go test ./... -race
+
+      - name: Coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: go test ./... -coverprofile=coverage.out
+
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

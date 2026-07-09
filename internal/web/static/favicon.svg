@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Favicon: simplified from logo.svg for small sizes -->
+  <defs>
+    <linearGradient id="signal" x1="175" y1="120" x2="262" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#73B8FF"/>
+      <stop offset="1" stop-color="#2F7BFF"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="292" y1="208" x2="366" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFB056"/>
+      <stop offset="1" stop-color="#E76B25"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="44" y="44" width="424" height="424" rx="108" fill="#F2F4F7"/>
+
+  <!-- Inner panel -->
+  <rect x="108" y="138" width="296" height="236" rx="40" fill="#EEF1F5" stroke="#E2E6EC" stroke-width="4"/>
+
+  <!-- Telemetry signal -->
+  <path d="M166 126C185 137 201 150 221 174" stroke="url(#signal)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M226 112C232 132 237 149 244 174" stroke="url(#signal)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M286 126C271 138 260 149 248 174" stroke="url(#signal)" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="166" cy="126" r="8" fill="#7BBEFF"/>
+  <circle cx="226" cy="112" r="8" fill="#58A6FF"/>
+  <circle cx="286" cy="126" r="8" fill="#3D8DFF"/>
+
+  <!-- Minimal code + bars -->
+  <path d="M154 229L192 258L154 287" stroke="#171922" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="286" y="246" width="18" height="58" rx="9" fill="#C7CED8"/>
+  <rect x="316" y="218" width="18" height="86" rx="9" fill="#171922"/>
+  <rect x="346" y="234" width="18" height="70" rx="9" fill="url(#accent)"/>
+</svg>

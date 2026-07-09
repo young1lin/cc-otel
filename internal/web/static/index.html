@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CC-OTEL — Token Monitor</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
+    <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
+    <link rel="shortcut icon" href="favicon.ico">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="vendor/flatpickr.min.css">
+    <script src="vendor/echarts.min.js"></script>
+    <script src="vendor/flatpickr.min.js"></script>
+</head>
+<body>
+
+<nav class="topnav">
+    <button type="button" class="logo" id="nav-logo" title="Reset to Today — Claude Code OTEL receiver">
+        <img class="logo-icon" src="logo.svg" alt="" decoding="async" />
+        <span class="logo-text">CC-OTEL</span>
+    </button>
+    <div class="toolbar-filters">
+        <div class="range-tabs">
+            <div class="day-dropdown-wrap">
+                <button class="range-btn active" id="day-dropdown-btn" data-range="today">Today <span class="dropdown-arrow">&#9662;</span></button>
+                <div class="day-dropdown" id="day-dropdown"></div>
+            </div>
+            <button class="range-btn" data-range="week">7 Days</button>
+            <button class="range-btn" data-range="month">30 Days</button>
+            <button class="range-btn" data-range="all">All Time</button>
+            <div class="granularity-sw" id="granularity-switch" style="display:none">
+                <button class="gran-btn active" data-gran="day">Day</button>
+                <button class="gran-btn" data-gran="month">Month</button>
+            </div>
+        </div>
+        <div class="custom-range" id="custom-range-wrap" title="Pick a date range">
+            <input type="text" id="custom-range-picker" class="range-date-pick" placeholder="Date range" autocomplete="off" spellcheck="false">
+        </div>
+    </div>
+    <div class="toolbar-right">
+        <button type="button" class="status-wrap" id="status-btn" title="Server status">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-label">connecting…</span>
+        </button>
+        <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+            <svg id="theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="5"/>
+                <path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+            </svg>
+            <svg id="theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+        </button>
+    </div>
+</nav>
+
+<div class="layout">
+
+    <div class="kpi-row">
+        <div class="hero-stats">
+            <button type="button" class="hero-stat kpi-btn" id="kpi-total-cost" title="Breakdown by model">
+                <div class="hero-stat-label">Total Cost</div>
+                <div class="hero-stat-value cost" id="h-cost">—</div>
+            </button>
+            <button type="button" class="hero-stat kpi-btn" id="kpi-input" title="Input-side total: uncached + cache read + cache create (same as chart). Click for breakdown by model.">
+                <div class="hero-stat-label">Input</div>
+                <div class="hero-stat-value" id="h-input">—</div>
+            </button>
+            <button type="button" class="hero-stat kpi-btn" id="kpi-output" title="Breakdown by model">
+                <div class="hero-stat-label">Output Tokens</div>
+                <div class="hero-stat-value" id="h-output">—</div>
+            </button>
+            <button type="button" class="hero-stat kpi-btn" id="kpi-cache-hit" title="Breakdown by model">
+                <div class="hero-stat-label">Cache Hit</div>
+                <div class="hero-stat-value saving" id="h-cache">—</div>
+            </button>
+            <button type="button" class="hero-stat kpi-btn" id="kpi-requests" title="Breakdown by model">
+                <div class="hero-stat-label">Requests</div>
+                <div class="hero-stat-value" id="h-reqs">—</div>
+            </button>
+        </div>
+    </div>
+
+    <div class="chart-section">
+        <div class="chart-section-header">
+            <span class="chart-section-title" id="chart-title">Token Usage</span>
+            <div class="metric-sw">
+                <button class="metric-sw-btn active" data-metric="tokens">Tokens</button>
+                <button class="metric-sw-btn" data-metric="cost">Cost</button>
+                <button class="metric-sw-btn" data-metric="requests">Requests</button>
+            </div>
+        </div>
+        <div class="chart-wrap" id="main-chart"></div>
+    </div>
+
+    <div class="panel-header">
+        <div class="panel-tabs">
+            <button class="panel-btn active" data-panel="daily">Daily Detail</button>
+            <button class="panel-btn" data-panel="sessions">Sessions</button>
+            <button class="panel-btn" data-panel="requests">Request Log</button>
+        </div>
+        <div class="panel-filter" id="request-filter">
+            <select id="model-filter" onchange="loadRequests()">
+                <option value="">All Models</option>
+            </select>
+            <button onclick="loadRequests()">Refresh</button>
+        </div>
+    </div>
+
+    <div id="panel-daily" class="panel active">
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th rowspan="2">Date</th>
+                        <th rowspan="2">Model</th>
+                        <th rowspan="2">Requests</th>
+                        <th colspan="3" class="th-group">Input</th>
+                        <th rowspan="2">Output</th>
+                        <th rowspan="2">Cost</th>
+                    </tr>
+                    <tr>
+                        <th>Uncached</th>
+                        <th>Cache Read</th>
+                        <th>Cache Create</th>
+                    </tr>
+                </thead>
+                <tbody id="daily-tbody"></tbody>
+            </table>
+        </div>
+        <div id="daily-pagination" class="pagination"></div>
+    </div>
+
+    <div id="panel-sessions" class="panel">
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Session</th>
+                        <th>User</th>
+                        <th>Started</th>
+                        <th>Requests</th>
+                        <th>Input</th>
+                        <th>Output</th>
+                        <th>Cost</th>
+                    </tr>
+                </thead>
+                <tbody id="sessions-tbody"></tbody>
+            </table>
+        </div>
+        <div id="sessions-pagination" class="pagination"></div>
+    </div>
+
+    <div id="panel-requests" class="panel">
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Model</th>
+                        <th>User</th>
+                        <th>Input</th>
+                        <th>Output</th>
+                        <th>Cache Read</th>
+                        <th>Cache Create</th>
+                        <th>Cost</th>
+                        <th>Duration</th>
+                    </tr>
+                </thead>
+                <tbody id="request-tbody"></tbody>
+            </table>
+        </div>
+        <div id="requests-pagination" class="pagination"></div>
+    </div>
+
+</div>
+
+
+<!-- Status modal -->
+<div class="modal-backdrop" id="status-modal" style="display:none" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="status-title">
+        <div class="modal-header">
+            <div class="modal-title" id="status-title">Server Status</div>
+            <button type="button" class="modal-close" id="status-close" title="Close">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="status-k">UI Stream (SSE)</div>
+                    <div class="status-v" id="st-sse">—</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-k">DB / API</div>
+                    <div class="status-v" id="st-db">—</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-k">OTLP gRPC Receiver</div>
+                    <div class="status-v" id="st-otel">—</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-k">Last Update</div>
+                    <div class="status-v" id="st-last">—</div>
+                </div>
+            </div>
+
+            <div class="status-endpoints">
+                <div class="status-endpoints-title">Endpoints</div>
+                <div class="endpoint-row">
+                    <div class="endpoint-label">OTLP gRPC</div>
+                    <div class="endpoint-value" id="st-otel-endpoint">—</div>
+                    <button type="button" class="endpoint-copy" data-copy-from="st-otel-endpoint">Copy</button>
+                </div>
+                <div class="endpoint-row">
+                    <div class="endpoint-label">Web UI</div>
+                    <div class="endpoint-value" id="st-web-endpoint">—</div>
+                    <button type="button" class="endpoint-copy" data-copy-from="st-web-endpoint">Copy</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Cost breakdown modal -->
+<div class="modal-backdrop" id="cost-modal" style="display:none" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cost-title">
+        <div class="modal-header">
+            <div class="modal-title" id="cost-title">Cost by Model</div>
+            <button type="button" class="modal-close" id="cost-close" title="Close">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="breakdown-toolbar">
+                <div class="breakdown-view" role="tablist" aria-label="Breakdown view">
+                    <button type="button" class="breakdown-view-btn active" id="breakdown-view-pie" data-view="pie" role="tab" aria-selected="true">Pie</button>
+                    <button type="button" class="breakdown-view-btn" id="breakdown-view-list" data-view="list" role="tab" aria-selected="false">List</button>
+                </div>
+                <div class="breakdown-selected mono" id="breakdown-selected"></div>
+            </div>
+            <div class="cost-meta" id="cost-meta">—</div>
+            <div class="breakdown-chart" id="breakdown-chart" aria-hidden="false"></div>
+            <div class="table-wrap breakdown-table" id="breakdown-table" style="margin-top:10px">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th id="cost-col-value">Cost</th>
+                            <th>Share</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cost-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
