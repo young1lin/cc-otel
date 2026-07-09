@@ -41,8 +41,7 @@ func exeDir() string {
 //
 // Priority:
 //  1. Dev mode: exe is in a bin/ directory → use bin/ (local builds self-contained)
-//  2. Legacy: ~/.claude/cc-otel.yaml or cc-otel.db exists → use ~/.claude/ (backward compat)
-//  3. Default: ~/.claude/cc-otel/ (clean subdirectory layout for new installs)
+//  2. Default: ~/.claude/cc-otel/ (clean subdirectory layout)
 func defaultDataDir() string {
 	// 1. Dev mode: exe in bin/ directory
 	exe := exeDir()
@@ -50,18 +49,8 @@ func defaultDataDir() string {
 		return exe
 	}
 
-	// 2. Legacy: flat files in ~/.claude/
+	// 2. Default: ~/.claude/cc-otel/
 	claude := claudeDir()
-	if claude != "" {
-		if _, err := os.Stat(filepath.Join(claude, "cc-otel.yaml")); err == nil {
-			return claude
-		}
-		if _, err := os.Stat(filepath.Join(claude, "cc-otel.db")); err == nil {
-			return claude
-		}
-	}
-
-	// 3. Default: ~/.claude/cc-otel/
 	if claude != "" {
 		dir := filepath.Join(claude, "cc-otel")
 		_ = os.MkdirAll(dir, 0o755)
