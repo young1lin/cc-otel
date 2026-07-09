@@ -10,8 +10,8 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 > **Status: preview, not yet released.** This section describes the full set
 > of features on the main branch today. Iterations ship as `v0.1.0-preview.N`
-> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.13`). Once behavior
-> stabilizes, the contents below will fold into `v0.1.0`.
+> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.13`; **preview.14**
+> below is pending release). Once behavior stabilizes, the contents below will fold into `v0.1.0`.
 
 ### Proxy compatibility fix
 
@@ -50,6 +50,18 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 - **Bare-name basename fallback** (preview.13): a bare model name reported by a reverse proxy (e.g. `glm-5.2`) didn't match the provider-prefixed key upstream catalogs use (`z-ai/glm-5.2`). Added a 5th match strategy: fall back to the basename (segment after the last `/`). Collision tiebreak: fewest segments (direct provider) → source rank (user>litellm>openrouter>seed) → lexicographic.
 - **OpenRouter first-party provider price** (preview.13): `/api/v1/models` returns the cheapest provider's blended price, frequently a lower-precision quantized variant (fp4) — not comparable to the first-party fp8 list price. For `z-ai/*` models we now also fetch `/endpoints` and override with the Z.AI first-party provider price (alnum-normalized: `Z.AI` ~ `z-ai`). glm-* no longer need manual YAML overrides.
 - **Split hand-maintained manual seed** (preview.13): curated prices for models no upstream catalog carries (Xiaomi MiMo / StepFun / not-yet-listed DeepSeek V4) moved from `seed.json` to `embed/manual_seed.json`; `seed.go` merges both (manual wins on conflict) and `dump_pricing_snapshot` only rewrites `seed.json`, so manual entries survive the pre-release regen.
+
+### Token throughput & Rate chart (preview.14)
+
+- **Rate panel (new)**: new **Rate** tab — per-model **Token Rate over Time** line chart (Claude source; up to 7 days). Controls: **Weighted / Avg**, **Output / Total tok/s**, **5 / 15 / 30 / 60 min** buckets. Switching the date range defaults the bucket to **Today → 5 min**, **multi-day → 30 min** (dropdown still allows 5 / 15 manually).
+- **Rate API**: `GET /api/rate?from=&to=&bucket=&model=` returns per-`(bucket, model)` throughput buckets. `duration_ms` is API request time only (excludes local tool execution). Each bucket exposes **weighted throughput** `SUM(tokens)×1000/SUM(duration_ms)` and **arithmetic mean** `AVG(per-request tok/s)`.
+- **Session recent-rate API**: `GET /api/session/rate?session_id=` returns the latest non-empty **1-minute** bucket for that session (weighted + average Out tok/s); 404 when no data.
+- **Request Log dual tok/s columns**: per-model summary adds sortable **Out tok/s (avg)** and **Out tok/s (wt)** with header tooltips documenting the formulas; same semantics as the Rate chart.
+- **Rate chart UX**:
+  - **Legend solo**: click a legend item to show only that model; click again or **All models** to restore all curves.
+  - **Whole-line hover**: tooltip follows the cursor along the line (bucket-scoped matching avoids wrong-model tips across idle gaps).
+  - **Line policy**: smooth continuous curves within a single day; **break at calendar-day boundaries** on multi-day ranges with straight intra-day segments — no overnight diagonal bridges (sparse-bucket Intraday style + Grafana-like day breaks).
+- **Dev rule**: `.cursor/rules/sync-global-db-to-bin.mdc` — phrases like “sync / copy global db to bin” trigger `snapshot_db` → stop bin daemon → replace DB → restart (global daemon stays up; see `.claude/rules/db-copy-no-stop.md`).
 
 ### Web UI · data presentation
 
@@ -94,7 +106,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 - **Modular ESM frontend, no build tools**: `app.js` is now a ~230-line thin entry; the rest is split into focused modules under `internal/web/static/js/`:
   - `state.js` / `utils.js` / `theme.js` / `api.js` / `filters.js` / `sse.js`
   - `breakdown.js` / `insights.js` / `chart-main.js`
-  - `panel-daily.js` / `panel-sessions.js` / `panel-requests.js` / `pagination.js`
+  - `panel-daily.js` / `panel-sessions.js` / `panel-requests.js` / `panel-rate.js` / `pagination.js`
 - **Pure-function unit tests**: `internal/web/static/tests/*.test.mjs`, run via the built-in `node --test` runner (Node ≥ 18, zero deps).
 - **Dev mode without rebuild**: set `CC_OTEL_STATIC_DIR=internal/web/static` and the web UI reads static files from disk; the default is `go:embed`-bundled.
 - **Hard chart rules** (never violated): `stack: 'total'`, `trigger: 'axis'`, and `emphasis: { focus: 'series' }` are all forbidden.
