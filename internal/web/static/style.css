@@ -334,6 +334,40 @@ body {
 }
 .insights-select:focus { border-color: var(--border-hover); }
 
+/* ── Token Rate panel controls ────────────────────────────────────
+   Apple-style segmented control, selects, and buttons. Mirrors the
+   .pf-seg / .insights-select design language used elsewhere so the row
+   reads as part of the app instead of a row of native OS widgets. */
+.rate-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 6px; }
+
+/* Segmented control (Weighted / Avg). .gran-btn is shared with the
+   Day/Month toggle in the toolbar, so scope the segment look to
+   .rate-seg only — the toolbar keeps its own treatment. */
+.rate-seg { display: inline-flex; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 2px; box-shadow: var(--shadow-sm); }
+.rate-seg .gran-btn { background: transparent; border: none; color: var(--text-muted); padding: 5px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: inherit; transition: background .15s, color .15s; }
+.rate-seg .gran-btn:hover { color: var(--text); }
+.rate-seg .gran-btn.active { background: var(--surface2); color: var(--text); }
+
+/* Custom dropdown — trigger button + .rate-menu popover. Native <select>
+   option popups can't be rounded on Windows Chromium, so the open menu is a
+   styled list. The closed control echoes .insights-select. */
+.select-wrap { position: relative; display: inline-flex; align-items: center; }
+.rate-select { appearance: none; -webkit-appearance: none; display: inline-flex; align-items: center; gap: 6px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 8px 6px 12px; border-radius: 10px; font-size: 12px; font-weight: 600; font-family: inherit; cursor: pointer; outline: none; transition: border-color .15s; }
+.rate-select:hover { border-color: var(--border-hover); }
+.rate-select:focus, .select-wrap.open .rate-select { border-color: var(--accent); }
+.rate-caret { width: 10px; height: 10px; flex-shrink: 0; background: var(--text-muted); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat; transition: transform .15s ease; }
+.select-wrap.open .rate-caret { transform: rotate(180deg); }
+.rate-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; min-width: 100%; list-style: none; margin: 0; padding: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-md); display: none; }
+.select-wrap.open .rate-menu { display: block; }
+.rate-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 10px; border-radius: 8px; cursor: pointer; color: var(--text-muted); font-size: 12px; font-weight: 600; white-space: nowrap; transition: background .12s, color .12s; }
+.rate-item:hover { background: var(--surface2); color: var(--text); }
+.rate-item[aria-selected="true"] { color: var(--accent); }
+.rate-item[aria-selected="true"]::after { content: "\2713"; font-weight: 700; }
+
+/* Action buttons (Refresh / All models) — echoes .pf-btn. */
+.rate-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 6px 12px; border-radius: var(--radius-xs); font-size: 12.5px; font-weight: 500; cursor: pointer; font-family: inherit; transition: border-color .15s; }
+.rate-btn:hover { border-color: var(--border-hover); }
+
 .insights-days-details {
     margin-top: 8px;
 }

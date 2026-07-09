@@ -1030,16 +1030,16 @@ type RateBucket struct {
 
 // ValidRateBucketMinutes reports whether n is an allowed rate-chart bucket size.
 func ValidRateBucketMinutes(n int) bool {
-	return n == 5 || n == 15 || n == 30 || n == 60
+	return n == 5 || n == 10 || n == 15 || n == 30 || n == 60
 }
 
 // GetRateOverTime returns per-(bucket, model) token throughput for [fromYMD, toYMD]
-// (inclusive local days) with a fixed bucket size in minutes (5, 15, 30, or 60).
+// (inclusive local days) with a fixed bucket size in minutes (5, 10, 15, 30, or 60).
 // Only requests with duration_ms > 0 participate. Empty buckets are omitted. If model
 // is non-empty, results are restricted to that model.
 func (r *Repository) GetRateOverTime(ctx context.Context, fromYMD, toYMD string, bucketMinutes int, model string) ([]RateBucket, error) {
 	if !ValidRateBucketMinutes(bucketMinutes) {
-		return nil, fmt.Errorf("bucket_minutes must be 5, 15, 30, or 60 (got %d)", bucketMinutes)
+		return nil, fmt.Errorf("bucket_minutes must be 5, 10, 15, 30, or 60 (got %d)", bucketMinutes)
 	}
 	fromUnix, toExclusiveUnix, err := localDateRangeToUnix(fromYMD, toYMD)
 	if err != nil {

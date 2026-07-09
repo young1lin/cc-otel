@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=21">
+    <link rel="stylesheet" href="style.css?v=23">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -241,23 +241,26 @@
                 <span class="chart-section-title">Token Rate over Time</span>
                 <span class="hourly-hint">One curve per model · click legend to solo · tok/s excludes tool time · max 7 days</span>
             </div>
-            <div class="rate-controls" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 6px">
-                <div class="rate-seg" style="display:inline-flex">
+            <div class="rate-controls">
+                <div class="rate-seg">
                     <button class="gran-btn active" data-method="weighted" title="Weighted overall throughput&#10;SUM(tokens) × 1000 ÷ SUM(duration_ms)&#10;Total tokens ÷ total time; long/slow (queued) requests dominate.&#10;Excludes local tool execution time.&#10;加权吞吐，排队久的请求权重更大；不含工具执行时间。">Weighted</button>
                     <button class="gran-btn" data-method="avg" title="Per-request average&#10;AVG(tokens × 1000 ÷ duration_ms)&#10;Arithmetic mean of each request's tok/s; every request weighted equally.&#10;Excludes local tool execution time.&#10;单请求速率的算术平均，每条请求等权重；不含工具执行时间。">Avg</button>
                 </div>
-                <select id="rate-tokens" title="Which tokens to measure">
-                    <option value="out" selected>Output tok/s</option>
-                    <option value="total">Total tok/s</option>
-                </select>
-                <select id="rate-bucket" title="Time bucket size">
-                    <option value="5">5 min</option>
-                    <option value="15">15 min</option>
-                    <option value="30" selected>30 min</option>
-                    <option value="60">60 min</option>
-                </select>
-                <button id="rate-refresh-btn">Refresh</button>
-                <button type="button" id="rate-legend-all-btn" class="gran-btn" style="display:none" title="Show every model curve">All models</button>
+                <div class="select-wrap" id="rate-bucket-dd" data-rate-dropdown>
+                    <button type="button" class="rate-select" data-trigger title="Time bucket size" aria-haspopup="listbox" aria-expanded="false">
+                        <span data-label>5 min</span>
+                        <span class="rate-caret" aria-hidden="true"></span>
+                    </button>
+                    <ul class="rate-menu" role="listbox">
+                        <li class="rate-item" role="option" data-value="5" aria-selected="true">5 min</li>
+                        <li class="rate-item" role="option" data-value="10">10 min</li>
+                        <li class="rate-item" role="option" data-value="15">15 min</li>
+                        <li class="rate-item" role="option" data-value="30">30 min</li>
+                        <li class="rate-item" role="option" data-value="60">60 min</li>
+                    </ul>
+                </div>
+                <button id="rate-refresh-btn" class="rate-btn">Refresh</button>
+                <button type="button" id="rate-legend-all-btn" class="rate-btn" style="display:none" title="Show every model curve">All models</button>
             </div>
             <div class="chart-wrap" id="rate-chart" style="height:440px"></div>
         </div>

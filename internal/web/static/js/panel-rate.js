@@ -9,6 +9,11 @@ const MAX_DAYS = 7;
 // The axis tooltip receives every series at the hovered x; we render only this one.
 let hoverModel = null;
 
+// Custom bucket dropdown instance (set in initPanelRate). syncBucketSelect
+// uses it to keep the control's label in step with state when loadRate
+// normalizes the bucket for the selected span.
+let bucketDropdown = null;
+
 function spanDaysInclusive(from, to) {
     if (!from || !to) return 1; // "today"/open range → treat as single day
     const f = Date.parse(from + 'T00:00:00');
@@ -17,7 +22,7 @@ function spanDaysInclusive(from, to) {
     return Math.round((t - f) / 86400000) + 1;
 }
 
-const BUCKET_CHOICES = new Set([5, 15, 30, 60]);
+const BUCKET_CHOICES = new Set([5, 10, 15, 30, 60]);
 
 function normalizeBucket(n) {
     return BUCKET_CHOICES.has(n) ? n : 30;
@@ -28,8 +33,52 @@ function recommendedBucketForSpan(spanDays) {
 }
 
 function syncBucketSelect(bucket) {
-    const sel = document.getElementById('rate-bucket');
-    if (sel && sel.value !== String(bucket)) sel.value = String(bucket);
+    bucketDropdown?.setValue(String(bucket));
+}
+
+// makeRateDropdown wires a custom .select-wrap dropdown — a trigger button
+// plus a .rate-menu popover — and returns { setValue, setOpen }. Native
+// <select> option popups can't be rounded on Windows Chromium, so the open
+// menu is a styled list. setValue updates the trigger label and the selected
+// item WITHOUT firing onPick (used to sync the control to state, e.g. when
+// loadRate normalizes the bucket). The output/total tok toggle was removed
+// as not meaningful; only the bucket dropdown remains.
+function makeRateDropdown(wrap, onPick) {
+    if (!wrap) return null;
+    const trigger = wrap.querySelector('[data-trigger]');
+    const label = wrap.querySelector('[data-label]');
+    const items = wrap.querySelectorAll('.rate-item');
+    if (!trigger || !label) return null;
+
+    const setOpen = (open) => {
+        wrap.classList.toggle('open', open);
+        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+
+    trigger.addEventListener('click', () => {
+        setOpen(!wrap.classList.contains('open'));
+    });
+    items.forEach((item) => {
+        item.addEventListener('click', () => {
+            setValue(item.dataset.value);
+            setOpen(false);
+            if (onPick) onPick(item.dataset.value);
+        });
+    });
+    // Close when clicking outside this dropdown, or on Escape.
+    document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) setOpen(false); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
+
+    function setValue(value) {
+        let matched = null;
+        items.forEach((item) => {
+            const sel = item.dataset.value === String(value);
+            item.setAttribute('aria-selected', sel ? 'true' : 'false');
+            if (sel) matched = item;
+        });
+        if (matched) label.textContent = matched.textContent;
+    }
+    return { setValue, setOpen };
 }
 
 // Which RateBucket field to plot, from the two toggles.
@@ -369,12 +418,8 @@ export function initPanelRate() {
             loadRate();
         });
     });
-    document.getElementById('rate-tokens')?.addEventListener('change', (e) => {
-        state.rateTokens = e.target.value === 'total' ? 'total' : 'out';
-        loadRate();
-    });
-    document.getElementById('rate-bucket')?.addEventListener('change', (e) => {
-        state.rateBucket = normalizeBucket(parseInt(e.target.value, 10));
+    bucketDropdown = makeRateDropdown(document.getElementById('rate-bucket-dd'), (value) => {
+        state.rateBucket = normalizeBucket(parseInt(value, 10));
         loadRate();
     });
     document.getElementById('rate-legend-all-btn')?.addEventListener('click', () => {

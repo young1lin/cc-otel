@@ -149,7 +149,7 @@ export function syncRangeNavUIFromState() {
         else crw.classList.remove('is-active');
     }
     const granSwitch = document.getElementById('granularity-switch');
-    document.querySelectorAll('.gran-btn').forEach(b => {
+    document.querySelectorAll('#granularity-switch .gran-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.gran === state.chartGranularity);
     });
     granSwitch.style.display = state.currentRange === 'all' ? '' : 'none';
@@ -326,7 +326,7 @@ export function initFilters(opts = {}) {
             state.selectedDayDate = '';
             if (state.currentRange !== 'all') {
                 state.chartGranularity = 'day';
-                document.querySelectorAll('.gran-btn').forEach(b => {
+                document.querySelectorAll('#granularity-switch .gran-btn').forEach(b => {
                     b.classList.toggle('active', b.dataset.gran === 'day');
                 });
             }
@@ -349,9 +349,9 @@ export function initFilters(opts = {}) {
         });
     });
 
-    document.querySelectorAll('.gran-btn').forEach(btn => {
+    document.querySelectorAll('#granularity-switch .gran-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            document.querySelectorAll('.gran-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#granularity-switch .gran-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             state.chartGranularity = btn.dataset.gran;
             onResetPages(); onChange();
