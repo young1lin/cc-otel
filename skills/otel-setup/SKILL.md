@@ -13,7 +13,7 @@ description: |
 ## What is CC-OTEL
 
 CC-OTEL is a self-hosted OTLP gRPC receiver + Web dashboard for token usage and cost tracking.
-Default source is **Claude Code**; also supports **Codex** and **Gemini CLI** (see below).
+Default source is **Claude Code**; also supports **Codex** (see below).
 
 Architecture:
 ```
@@ -92,10 +92,9 @@ CC-OTEL looks for `cc-otel.yaml` in order:
 
 ## Other Tool Sources
 
-cc-otel also receives telemetry from **Codex** and **Gemini CLI**.
-When the user asks about configuring these tools, read the corresponding guide in this folder:
+cc-otel also receives telemetry from **Codex**.
+When the user asks about configuring it, read the corresponding guide in this folder:
 
 | Tool | Setup Guide |
 |------|-------------|
 | Codex | [`codex-setup.md`](codex-setup.md) |
-| Gemini CLI | [`gemini-setup.md`](gemini-setup.md) |

@@ -396,7 +396,7 @@ func localDateRange(ctx context.Context, dbPath string) (string, string, error) 
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	// Union of Claude, Codex and Gemini api_requests date ranges
+	// Union of Claude and Codex api_requests date ranges
 	var minDay, maxDay sql.NullString
 	err = db.QueryRowContext(ctx, `
 		SELECT
@@ -406,8 +406,6 @@ func localDateRange(ctx context.Context, dbPath string) (string, string, error) 
 			SELECT date(timestamp, 'unixepoch', 'localtime') AS d FROM api_requests
 			UNION ALL
 			SELECT date(timestamp, 'unixepoch', 'localtime') AS d FROM codex_api_requests
-			UNION ALL
-			SELECT date(timestamp, 'unixepoch', 'localtime') AS d FROM gemini_api_requests
 		)
 	`).Scan(&minDay, &maxDay)
 	if err != nil {

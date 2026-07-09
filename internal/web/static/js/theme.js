@@ -5,7 +5,6 @@ const FAMILY_BASE_DARK = {
     claude: '#ff9f0a',
     glm: '#5e5ce6',
     step: '#30d158',
-    gemini: '#64d2ff',
     gpt: '#0a84ff',
     qwen: '#bf5af2',
     deepseek: '#ff375f',
@@ -16,7 +15,6 @@ const FAMILY_BASE_LIGHT = {
     claude: '#ff9500',
     glm: '#5856d6',
     step: '#34c759',
-    gemini: '#32ade6',
     gpt: '#007aff',
     qwen: '#af52de',
     deepseek: '#ff2d55',
@@ -71,7 +69,6 @@ export function getModelFamily(name) {
     if (s.startsWith('claude')) return 'claude';
     if (s.startsWith('glm')) return 'glm';
     if (s.startsWith('step')) return 'step';
-    if (s.startsWith('gemini')) return 'gemini';
     if (s.startsWith('gpt') || s.startsWith('o1') || s.startsWith('o3') || s.startsWith('o4')) return 'gpt';
     if (s.startsWith('qwen')) return 'qwen';
     if (s.startsWith('deepseek')) return 'deepseek';

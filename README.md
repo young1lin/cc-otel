@@ -219,7 +219,7 @@ metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 
 ## 价格表与非 Claude 模型重算
 
-cc-otel 内嵌了从 [BerriAI/litellm](https://github.com/BerriAI/litellm) 派生的价格快照（GPT / GLM / DeepSeek / Kimi / Qwen / Gemini …），首次启动会写入 `model_pricing` 表。运行时按以下顺序选价：
+cc-otel 内嵌了从 [BerriAI/litellm](https://github.com/BerriAI/litellm) 派生的价格快照（GPT / GLM / DeepSeek / Kimi / Qwen …），首次启动会写入 `model_pricing` 表。运行时按以下顺序选价：
 
 1. **`cc-otel.yaml` 的 `pricing:`**（用户覆盖，最高优先级）
 2. **SQLite `model_pricing` 表**（长期存储 + 跨重启）

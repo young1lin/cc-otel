@@ -84,7 +84,7 @@ function intradayLineTooltip(params, c) {
     const cost = Number(raw.cost_usd || 0);
     const reqs = Number(raw.request_count || 0);
     const sub = 'padding:2px 0 2px 16px;font-size:11px';
-    const cacheCreateRow = (state.source === 'codex' || state.source === 'gemini')
+    const cacheCreateRow = (state.source === 'codex')
         ? ''
         : `<tr><td style="color:${c.mutedText};${sub}">Cache Create</td><td style="font-family:var(--font-mono);text-align:right;${sub}">${fmtNum(parts.cacheCreate)}</td></tr>`;
     const header = escapeHtml(String(raw.bucket_label || ''));
@@ -142,7 +142,7 @@ export async function loadIntraday() {
                 if (ts !== 0) return ts;
                 return metricValueFromRow(b) - metricValueFromRow(a);
             });
-            const hideCC = state.source === 'codex' || state.source === 'gemini';
+            const hideCC = state.source === 'codex';
             tbody.innerHTML = sortedRows.map(r => {
                 const parts = tokenParts(r);
                 return `<tr>
@@ -419,7 +419,7 @@ export async function loadDailyTable() {
             renderPagination('daily-pagination', paging.daily, loadDailyTable);
             return;
         }
-        const hideCC = state.source === 'codex' || state.source === 'gemini';
+        const hideCC = state.source === 'codex';
         tbody.innerHTML = rows.map(r => `<tr>
             <td class="mono">${escapeHtml(r.date)}</td>
             <td><span class="badge">${escapeHtml(r.model)}</span></td>

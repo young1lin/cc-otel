@@ -219,7 +219,7 @@ Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source
 
 ## Pricing table & non-Claude cost recompute
 
-cc-otel ships with a price snapshot derived from [BerriAI/litellm](https://github.com/BerriAI/litellm) (GPT / GLM / DeepSeek / Kimi / Qwen / Gemini / …). The first start seeds it into the `model_pricing` table. Lookups follow this priority:
+cc-otel ships with a price snapshot derived from [BerriAI/litellm](https://github.com/BerriAI/litellm) (GPT / GLM / DeepSeek / Kimi / Qwen / …). The first start seeds it into the `model_pricing` table. Lookups follow this priority:
 
 1. **`pricing:` in `cc-otel.yaml`** (user override, highest)
 2. **SQLite `model_pricing` table** (canonical store, survives restarts)

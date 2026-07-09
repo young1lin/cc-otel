@@ -229,7 +229,7 @@ EOF
 ./bin/cc-otel.exe start -config bin/cc-otel-dev.yaml
 ```
 
-When sending Gemini/Codex test telemetry to the dev instance, use `http://localhost:14317` as the OTLP endpoint.
+When sending Codex test telemetry to the dev instance, use `http://localhost:14317` as the OTLP endpoint.
 
 All build artifacts (`make build`) go to `./bin/` — binary, config, database, logs. Never write test data to the production directory `~/.claude/cc-otel/`.
 

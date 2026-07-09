@@ -46,7 +46,6 @@ var allowedLiteLLMProviders = map[string]bool{
 	"cohere":       true,
 	"moonshot":     true,
 	"vertex_ai":    true,
-	"gemini":       true,
 }
 
 var anthropicProviders = map[string]bool{
@@ -128,6 +127,11 @@ func (s *LiteLLMSource) Fetch(ctx context.Context) (map[string]Entry, error) {
 		}
 		lower := strings.ToLower(name)
 		if strings.HasPrefix(lower, "claude-") || strings.Contains(lower, "/claude-") || strings.Contains(lower, "anthropic.claude") {
+			continue
+		}
+		// Gemini pricing is intentionally excluded: the Gemini CLI integration was
+		// removed, so cc-otel never recomputes cost for gemini-* models.
+		if strings.Contains(lower, "gemini") {
 			continue
 		}
 		if !allowedLiteLLMProviders[le.LiteLLMProvider] {
@@ -227,6 +231,10 @@ func (s *OpenRouterSource) Fetch(ctx context.Context) (map[string]Entry, error) 
 		// OpenRouter routes Anthropic models too — drop them so we don't
 		// accidentally win the merge for a Claude id.
 		if strings.HasPrefix(lower, "anthropic/") || strings.Contains(lower, "/claude-") {
+			continue
+		}
+		// Gemini pricing is intentionally excluded (Gemini CLI integration removed).
+		if strings.Contains(lower, "gemini") {
 			continue
 		}
 		input, errIn := parseORPrice(m.Pricing.Prompt)

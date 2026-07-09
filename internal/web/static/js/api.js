@@ -26,17 +26,9 @@ const CODEX_ROUTES = new Set([
     'dashboard', 'calendar', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
 ]);
 
-// Routes that have a Gemini mirror at /api/gemini/<name>.
-const GEMINI_ROUTES = new Set([
-    'dashboard', 'calendar', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
-]);
-
 function apiPath(name) {
     if (state.source === 'codex' && CODEX_ROUTES.has(name)) {
         return '/api/codex/' + name;
-    }
-    if (state.source === 'gemini' && GEMINI_ROUTES.has(name)) {
-        return '/api/gemini/' + name;
     }
     return '/api/' + name;
 }
@@ -60,7 +52,7 @@ export const loadHourlyData = (date) =>
 export const loadIntradayData = ({ from, to, bucket = 30, model = '' } = {}) =>
     fetchJSON(apiPath('intraday') + qs({ from, to, bucket, model }));
 
-// Rate-over-time is Claude-only (no Codex/Gemini mirror), so it always hits /api/rate.
+// Rate-over-time is Claude-only (no Codex mirror), so it always hits /api/rate.
 export const loadRateData = ({ from, to, bucket = 30, model = '' } = {}) =>
     fetchJSON('/api/rate' + qs({ from, to, bucket, model }));
 

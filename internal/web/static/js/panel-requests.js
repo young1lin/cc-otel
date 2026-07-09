@@ -118,7 +118,7 @@ export async function loadRequests() {
             renderPagination('requests-pagination', paging.requests, loadRequests);
             return;
         }
-        const hideCC = state.source === 'codex' || state.source === 'gemini';
+        const hideCC = state.source === 'codex';
         tbody.innerHTML = data.map(r => `<tr>
             <td class="mono">${fmtDateTime(r.timestamp)}</td>
             <td><span class="badge">${escapeHtml(r.model)}</span></td>
