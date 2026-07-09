@@ -10,7 +10,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 > **Status: preview, not yet released.** This section describes the full set
 > of features on the main branch today. Iterations ship as `v0.1.0-preview.N`
-> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.12`). Once behavior
+> tags via the GoReleaser pipeline (latest: `v0.1.0-preview.13`). Once behavior
 > stabilizes, the contents below will fold into `v0.1.0`.
 
 ### Proxy compatibility fix
@@ -47,6 +47,9 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 - **Ops endpoint**: `GET /api/pricing/lookup?model=glm-4.6` returns matched key, source, prices, and `is_claude`.
 - **Status panel**: top-right `live` → **Pricing Table** row colored green (<48h), yellow (<7d), or red (>7d / error) by last refresh.
 - **Historical recompute**: `go run ./tools/recompute_cost --db <path> [--config <yaml>] --table both [--apply]` (defaults to dry-run).
+- **Bare-name basename fallback** (preview.13): a bare model name reported by a reverse proxy (e.g. `glm-5.2`) didn't match the provider-prefixed key upstream catalogs use (`z-ai/glm-5.2`). Added a 5th match strategy: fall back to the basename (segment after the last `/`). Collision tiebreak: fewest segments (direct provider) → source rank (user>litellm>openrouter>seed) → lexicographic.
+- **OpenRouter first-party provider price** (preview.13): `/api/v1/models` returns the cheapest provider's blended price, frequently a lower-precision quantized variant (fp4) — not comparable to the first-party fp8 list price. For `z-ai/*` models we now also fetch `/endpoints` and override with the Z.AI first-party provider price (alnum-normalized: `Z.AI` ~ `z-ai`). glm-* no longer need manual YAML overrides.
+- **Split hand-maintained manual seed** (preview.13): curated prices for models no upstream catalog carries (Xiaomi MiMo / StepFun / not-yet-listed DeepSeek V4) moved from `seed.json` to `embed/manual_seed.json`; `seed.go` merges both (manual wins on conflict) and `dump_pricing_snapshot` only rewrites `seed.json`, so manual entries survive the pre-release regen.
 
 ### Web UI · data presentation
 

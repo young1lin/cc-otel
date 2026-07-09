@@ -9,7 +9,7 @@
 ## [Unreleased] · 0.1.0 Preview
 
 > **状态：Preview，尚未正式发布。** 本节描述主分支当前已具备的全部功能，
-> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.12`，对应
+> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.13`，对应
 > GoReleaser 流水线自动出包）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
 ### 代理兼容性修复
@@ -46,6 +46,9 @@
 - **运维端点**：`GET /api/pricing/lookup?model=glm-4.6` 返回命中 key、来源、价格、是否 Claude。
 - **状态面板**：右上 `live` → **Pricing Table** 行，按上次刷新时间显示绿（<48h）/ 黄（<7d）/ 红（>7d 或错误）。
 - **历史回算**：`go run ./tools/recompute_cost --db <path> [--config <yaml>] --table both [--apply]`，默认 dry-run。
+- **裸模型名 basename 兜底匹配**（preview.13）：反代上报的裸名（如 `glm-5.2`）与上游目录的 provider 前缀 key（`z-ai/glm-5.2`）对不上时，新增第 5 级匹配——按 basename（最后一个 `/` 之后）兜底命中。撞名择优：段数最少（直连 provider）→ 来源优先级（user>litellm>openrouter>seed）→ 字典序。
+- **OpenRouter 取直营 provider 价**（preview.13）：`/api/v1/models` 返回的是最便宜 provider 的混合价，常是低精度量化版（fp4）——与直营 fp8 列表价不可比。现对 `z-ai/*` 额外拉 `/endpoints`，取 Z.AI 直营 provider 价覆盖混合价（`Z.AI`↔`z-ai` 归一化匹配）。glm-* 等不再需要手填 YAML 覆盖。
+- **手动价目拆分 manual_seed**（preview.13）：无上游目录的模型（Xiaomi MiMo / StepFun / 未收录的 DeepSeek V4）的手动价从 `seed.json` 挪到 `embed/manual_seed.json`；`seed.go` 合并加载（手动覆盖自动），`dump_pricing_snapshot` 只重写 `seed.json` 不碰它——手动条目不再被发布前重生成冲掉。
 
 ### Web UI · 数据展示
 
