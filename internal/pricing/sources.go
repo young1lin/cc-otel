@@ -218,6 +218,7 @@ func (s *OpenRouterSource) Fetch(ctx context.Context) (map[string]Entry, error) 
 
 	now := time.Now().Unix()
 	out := make(map[string]Entry, len(or.Data))
+	var firstPartyIDs []string
 	for _, m := range or.Data {
 		if m.ID == "" {
 			continue
@@ -246,6 +247,21 @@ func (s *OpenRouterSource) Fetch(ctx context.Context) (map[string]Entry, error) 
 			FetchedAt:     now,
 			UpdatedAt:     now,
 		}
+		if firstPartyPrefixes[ownerSlug(m.ID)] {
+			firstPartyIDs = append(firstPartyIDs, m.ID)
+		}
+	}
+
+	// Override the blended price with the first-party provider price for models
+	// owned by a first-party provider (e.g. z-ai). The blended /api/v1/models
+	// price is the cheapest provider, which is frequently a lower-precision
+	// quantized variant (fp4) — a different product that is not price-comparable
+	// to the first-party fp8 list price. The per-endpoint price from the owner
+	// provider is the real list price, so prefer it.
+	for _, id := range firstPartyIDs {
+		if e, ok, err := s.firstPartyPrice(ctx, id); err == nil && ok {
+			out[Normalize(id)] = e
+		}
 	}
 	return out, nil
 }
@@ -258,4 +274,106 @@ func parseORPrice(s string) (float64, error) {
 		return 0, nil
 	}
 	return strconv.ParseFloat(s, 64)
+}
+
+// firstPartyPrefixes is the set of OpenRouter owner slugs (the id segment
+// before '/') for which Fetch resolves the first-party provider price via
+// /endpoints instead of the blended /api/v1/models price. Restricted to a
+// small set to bound request volume — extend here when another provider's
+// blended price is wrong (e.g. picking a quantized-discount reseller).
+var firstPartyPrefixes = map[string]bool{
+	"z-ai": true,
+}
+
+// ownerSlug returns the lower-cased owner segment of an OpenRouter model id
+// (the part before the first '/'). "z-ai/glm-5.2" -> "z-ai".
+func ownerSlug(modelID string) string {
+	if i := strings.IndexByte(modelID, '/'); i >= 0 {
+		return strings.ToLower(modelID[:i])
+	}
+	return strings.ToLower(modelID)
+}
+
+// alnumLower lowercases and strips to [a-z0-9] so that the provider name
+// "Z.AI" and the owner slug "z-ai" both collapse to "zai" for comparison.
+func alnumLower(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+type orEndpoint struct {
+	ProviderName string `json:"provider_name"`
+	Pricing      struct {
+		Prompt    string `json:"prompt"`
+		Completion string `json:"completion"`
+		InCacheRd string `json:"input_cache_read"`
+	} `json:"pricing"`
+}
+
+// selectFirstPartyEndpoint returns the endpoint whose provider_name identifies
+// the model's first-party/owner provider. ownerSlugNorm is the alnum-normalized
+// owner slug (e.g. "zai"). Pure for testability.
+func selectFirstPartyEndpoint(endpoints []orEndpoint, ownerSlugNorm string) (orEndpoint, bool) {
+	for _, ep := range endpoints {
+		if strings.Contains(alnumLower(ep.ProviderName), ownerSlugNorm) {
+			return ep, true
+		}
+	}
+	return orEndpoint{}, false
+}
+
+// firstPartyPrice fetches /api/v1/models/{id}/endpoints and returns the entry
+// priced at the first-party (owner) provider. Returns ok=false (no error) when
+// no first-party endpoint exists — the caller then keeps the blended price.
+func (s *OpenRouterSource) firstPartyPrice(ctx context.Context, modelID string) (Entry, bool, error) {
+	ownerNorm := alnumLower(ownerSlug(modelID))
+	u := strings.TrimRight(s.URL, "/") + "/" + modelID + "/endpoints"
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("openrouter endpoints fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Entry{}, false, fmt.Errorf("openrouter endpoints: HTTP %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Data struct {
+			Endpoints []orEndpoint `json:"endpoints"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return Entry{}, false, fmt.Errorf("parse openrouter endpoints: %w", err)
+	}
+
+	ep, ok := selectFirstPartyEndpoint(body.Data.Endpoints, ownerNorm)
+	if !ok {
+		return Entry{}, false, nil
+	}
+	input, errIn := strconv.ParseFloat(ep.Pricing.Prompt, 64)
+	output, errOut := strconv.ParseFloat(ep.Pricing.Completion, 64)
+	if errIn != nil || errOut != nil || input <= 0 || output <= 0 {
+		return Entry{}, false, nil
+	}
+	cacheRd, _ := strconv.ParseFloat(ep.Pricing.InCacheRd, 64)
+	now := time.Now().Unix()
+	key := Normalize(modelID)
+	return Entry{
+		Model:     key,
+		Input:     input,
+		Output:    output,
+		CacheRead: cacheRd,
+		Source:    s.Name(),
+		FetchedAt: now,
+		UpdatedAt: now,
+	}, true, nil
 }
