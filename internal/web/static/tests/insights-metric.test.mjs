@@ -1,5 +1,5 @@
 /**
- * Regression tests for Insights metric formatting (see app.js insightMetricScalar / fmtMetricValue).
+ * Regression tests for Insights metric formatting.
  * Run: node --test internal/web/static/tests/insights-metric.test.mjs
  *
  * Bug fixed: fmtMetricValue('reqs', undefined) used String(Math.round(undefined)) => "NaN"
@@ -8,40 +8,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-
-// Keep in sync with internal/web/static/app.js (Insights section)
-function insightMetricScalar(v, key) {
-    if (v == null || typeof v !== 'object') return 0;
-    const n = Number(v[key]);
-    return Number.isFinite(n) ? n : 0;
-}
-
-function fmtMetricValue(metric, v) {
-    const n = Number(v);
-    const safe = Number.isFinite(n) ? n : 0;
-    if (metric === 'cost') return '$' + safe.toFixed(4);
-    if (metric === 'reqs') return String(Math.round(safe));
-    return String(Math.round(safe));
-}
-
-function metricKey(metric) {
-    if (metric === 'cost') return 'cost';
-    if (metric === 'reqs' || metric === 'requests') return 'reqs';
-    return 'tokens';
-}
-
-function topEntry(map, key) {
-    let bestM = '—';
-    let bestV = -Infinity;
-    for (const [m, v] of map.entries()) {
-        const val = insightMetricScalar(v, key);
-        if (val > bestV) { bestV = val; bestM = m; }
-    }
-    if (bestV === -Infinity || !Number.isFinite(bestV)) {
-        return { model: '—', value: 0 };
-    }
-    return { model: bestM, value: bestV };
-}
+import {
+    insightMetricScalar, fmtMetricValue, metricKey, topEntry,
+} from '../js/insights.js';
 
 test('fmtMetricValue(reqs) never prints NaN for undefined/null', () => {
     assert.equal(fmtMetricValue('reqs', undefined), '0');

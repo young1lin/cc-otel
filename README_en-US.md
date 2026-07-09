@@ -14,6 +14,12 @@
 
 Self-hosted OTLP gRPC receiver + Web dashboard for **Claude Code** token usage and cost.
 
+## Docs
+
+- [Design notes (why / how to change safely)](./docs/DESIGN_EN.md)
+- [Changelog (unreleased / version changes)](./CHANGELOG_EN.md)
+- [Claude Code OTEL event reference](./docs/otel-events.md)
+
 **Dark**
 ![Dashboard Dark](./assets/images/ScreenshotDark.png)
 
@@ -189,6 +195,22 @@ Claude Code must export OTLP via gRPC to CC-OTEL. Add these env vars to `~/.clau
 ```
 
 > **Important**: only add/update the OTEL keys -- do not overwrite your existing settings. The port should match `otel_port` in `cc-otel.yaml`.
+
+### Codex CLI Setup
+
+cc-otel also supports receiving OpenTelemetry telemetry from OpenAI Codex CLI. Codex shares the same OTLP gRPC port (`:4317`) with Claude Code. cc-otel auto-detects the source via the OTLP Resource `service.name` attribute and routes data to separate `codex_*` tables.
+
+Add to `~/.codex/config.toml` (backup first, then append — do not overwrite existing config):
+
+```toml
+[otel]
+environment = "dev"
+exporter.otlp-grpc.endpoint = "http://localhost:4317"
+trace_exporter.otlp-grpc.endpoint = "http://localhost:4317"
+metrics_exporter.otlp-grpc.endpoint = "http://localhost:4317"
+```
+
+Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source=codex`) to view Codex usage data. Note: Codex does not report cost (`cost_usd`), so the Cost KPI displays `—` on the Codex tab.
 
 ## Configuration
 

@@ -88,3 +88,27 @@ CC-OTEL looks for `cc-otel.yaml` in order:
 | `CC_OTEL_OTEL_PORT` | 4317 | OTLP gRPC port |
 | `CC_OTEL_WEB_PORT` | 8899 | Web dashboard port |
 | `CC_OTEL_DB_PATH` | (auto) | SQLite database path |
+
+## Codex CLI
+
+cc-otel can also receive telemetry from OpenAI Codex CLI. Both Claude Code and Codex share the same OTLP gRPC port (`:4317`); cc-otel auto-detects the source via `service.name` in the OTLP Resource attributes.
+
+### Setup
+
+Add to `~/.codex/config.toml` (backup first, then append — do not overwrite existing config):
+
+```toml
+[otel]
+environment = "dev"
+exporter.otlp-grpc.endpoint = "http://localhost:4317"
+trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
+metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
+```
+
+Then start Codex. Data will appear at `http://localhost:8899/?source=codex`.
+
+### Differences from Claude Code
+
+- **No cost data**: Codex does not report `cost_usd`. The Cost KPI shows `—`.
+- **Token data via SSE events**: Codex sends token counts in `codex.sse_event(kind=response.completed)`, not in `api_request`.
+- **Separate tables**: All Codex data is stored in `codex_*` tables, completely isolated from Claude Code data.

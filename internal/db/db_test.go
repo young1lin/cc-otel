@@ -45,3 +45,31 @@ func TestWALMode(t *testing.T) {
 		t.Errorf("expected journal_mode=wal, got %q", journalMode)
 	}
 }
+
+func TestInit_CreatesCodexTables(t *testing.T) {
+	cfg := &config.Config{DBPath: ":memory:"}
+	d, err := Init(cfg)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer d.Close()
+
+	tables := []string{
+		"codex_api_requests",
+		"codex_daily_model_agg",
+		"codex_user_prompt_events",
+		"codex_tool_decision_events",
+		"codex_tool_result_events",
+		"codex_events",
+		"codex_raw_otlp_events",
+	}
+	for _, name := range tables {
+		var got string
+		err := d.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name,
+		).Scan(&got)
+		if err != nil {
+			t.Errorf("table %s missing: %v", name, err)
+		}
+	}
+}

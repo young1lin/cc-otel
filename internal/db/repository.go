@@ -120,6 +120,19 @@ type DailyModelSummary struct {
 	RequestCount        int64   `json:"request_count"`
 }
 
+// DurationStat holds per-model latency stats for a time range.
+// duration_ms is the end-to-end Claude API request latency reported by Claude Code (not "thinking-only" time).
+type DurationStat struct {
+	Model          string  `json:"model"`
+	RequestCount   int64   `json:"request_count"`
+	AvgDurationMs  float64 `json:"avg_duration_ms"`
+	AvgTTFTMs      float64 `json:"avg_ttft_ms"`
+	AvgOutTokensPS float64 `json:"avg_out_tokens_per_s"`
+	AvgTotTokensPS float64 `json:"avg_total_tokens_per_s"`
+	MaxDurationMs  int64   `json:"max_duration_ms"`
+	MinDurationMs  int64   `json:"min_duration_ms"`
+}
+
 // HourlyModelSummary holds per-(hour, model) aggregated token and cost statistics for a single local day.
 type HourlyModelSummary struct {
 	Hour                int     `json:"hour"` // 0..23 in local time
@@ -132,11 +145,31 @@ type HourlyModelSummary struct {
 	RequestCount        int64   `json:"request_count"`
 }
 
+// IntradayModelSummary holds per-(time-bucket, model) aggregated stats for the
+// new intraday line-chart view, supporting 15/30/60-minute buckets and a span
+// of up to 7 days. BucketStartUnix is the inclusive start of the bucket (UTC
+// seconds); BucketLabel is the same instant rendered in local time as
+// "MM-DD HH:MM" and is what the frontend displays.
+type IntradayModelSummary struct {
+	BucketStartUnix     int64   `json:"bucket_start_unix"`
+	BucketLabel         string  `json:"bucket_label"`
+	BucketMinutes       int     `json:"bucket_minutes"`
+	Model               string  `json:"model"`
+	CostUSD             float64 `json:"cost_usd"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	RequestCount        int64   `json:"request_count"`
+}
+
 // Repository provides data access methods for the SQLite database.
 type Repository struct {
-	db         *sql.DB
-	stmtInsReq *sql.Stmt // prepared: INSERT OR IGNORE INTO api_requests
-	stmtUpsAgg *sql.Stmt // prepared: UPSERT INTO daily_model_agg
+	db                  *sql.DB
+	stmtInsReq          *sql.Stmt // prepared: INSERT OR IGNORE INTO api_requests
+	stmtUpsAgg          *sql.Stmt // prepared: UPSERT INTO daily_model_agg
+	stmtUpsCodexAgg     *sql.Stmt // prepared: UPSERT INTO codex_daily_model_agg (request_count + 1)
+	stmtUpsCodexAggToks *sql.Stmt // prepared: UPSERT INTO codex_daily_model_agg (token deltas only)
 }
 
 // NewRepository returns a Repository backed by the given database connection.
@@ -167,6 +200,35 @@ func NewRepository(db *sql.DB) *Repository {
 			cost_usd              = cost_usd + excluded.cost_usd,
 			request_count         = request_count + 1`)
 
+	// codex_api_requests is written twice per logical request: once for codex.api_request
+	// (zero tokens, request_count++), once for codex.sse_event(response.completed)
+	// (token deltas, request_count unchanged). Two prepared UPSERTs keep the two paths
+	// from accidentally double-counting.
+	r.stmtUpsCodexAgg, _ = db.Prepare(`
+		INSERT INTO codex_daily_model_agg (date, model, input_tokens, output_tokens,
+			cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens, cost_usd, request_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT(date, model) DO UPDATE SET
+			input_tokens          = input_tokens + excluded.input_tokens,
+			output_tokens         = output_tokens + excluded.output_tokens,
+			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
+			cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+			reasoning_tokens      = reasoning_tokens + excluded.reasoning_tokens,
+			total_tokens          = total_tokens + excluded.total_tokens,
+			cost_usd              = cost_usd + excluded.cost_usd,
+			request_count         = request_count + 1`)
+
+	r.stmtUpsCodexAggToks, _ = db.Prepare(`
+		INSERT INTO codex_daily_model_agg (date, model, input_tokens, output_tokens,
+			cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens, cost_usd, request_count)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0, 0)
+		ON CONFLICT(date, model) DO UPDATE SET
+			input_tokens          = input_tokens + excluded.input_tokens,
+			output_tokens         = output_tokens + excluded.output_tokens,
+			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
+			reasoning_tokens      = reasoning_tokens + excluded.reasoning_tokens,
+			total_tokens          = total_tokens + excluded.total_tokens`)
+
 	return r
 }
 
@@ -178,11 +240,23 @@ func (r *Repository) Close() {
 	if r.stmtUpsAgg != nil {
 		r.stmtUpsAgg.Close()
 	}
+	if r.stmtUpsCodexAgg != nil {
+		r.stmtUpsCodexAgg.Close()
+	}
+	if r.stmtUpsCodexAggToks != nil {
+		r.stmtUpsCodexAggToks.Close()
+	}
 }
 
 // Ping verifies the database connection is alive.
 func (r *Repository) Ping(ctx context.Context) error {
 	return r.db.PingContext(ctx)
+}
+
+// DB returns the underlying *sql.DB for ad-hoc queries (e.g. tests, custom
+// admin endpoints). Production code should prefer the typed methods.
+func (r *Repository) DB() *sql.DB {
+	return r.db
 }
 
 func costToInt64(usd float64) int64 {
@@ -313,6 +387,14 @@ func (r *Repository) InsertRequest(ctx context.Context, req *APIRequest) (bool, 
 		return false, tx.Commit()
 	}
 
+	// If TTFT wasn't present on the log event, try to apply a pending TTFT span that arrived earlier.
+	// This solves the common ordering issue: traces exporter flushes before logs exporter.
+	if req.TTFTMs == 0 {
+		if reqID, idErr := res.LastInsertId(); idErr == nil && reqID > 0 {
+			_, _ = r.applyPendingTTFTForRequestTx(ctx, tx, reqID, req.RequestID, req.SessionID, req.Model, req.Timestamp.Unix(), 120)
+		}
+	}
+
 	dateKey := req.Timestamp.Local().Format("2006-01-02")
 	cost := costToInt64(req.CostUSD)
 
@@ -329,12 +411,172 @@ func (r *Repository) InsertRequest(ctx context.Context, req *APIRequest) (bool, 
 	return true, tx.Commit()
 }
 
+func (r *Repository) applyPendingTTFTForRequestTx(ctx context.Context, tx *sql.Tx, apiRequestID int64, requestID, sessionID, model string, reqUnix int64, windowSec int64) (bool, error) {
+	if r == nil || r.db == nil || tx == nil || apiRequestID <= 0 {
+		return false, nil
+	}
+	if windowSec <= 0 {
+		windowSec = 120
+	}
+
+	var pendingID int64
+	var ttftMs int64
+	var err error
+	if requestID != "" {
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, ttft_ms
+			FROM pending_ttft_spans
+			WHERE processed = 0
+			  AND request_id = ?
+			ORDER BY ABS(span_end_unix - ?) ASC
+			LIMIT 1
+		`, requestID, reqUnix).Scan(&pendingID, &ttftMs)
+	}
+	if requestID == "" || err == sql.ErrNoRows {
+		if sessionID == "" || model == "" {
+			return false, nil
+		}
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, ttft_ms
+			FROM pending_ttft_spans
+			WHERE processed = 0
+			  AND session_id = ?
+			  AND model = ?
+			  AND span_end_unix BETWEEN (? - ?) AND (? + ?)
+			ORDER BY ABS(span_end_unix - ?) ASC
+			LIMIT 1
+		`, sessionID, model, reqUnix, windowSec, reqUnix, windowSec, reqUnix).Scan(&pendingID, &ttftMs)
+	}
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	if ttftMs <= 0 {
+		return false, nil
+	}
+
+	// Update the newly inserted row only.
+	res, err := tx.ExecContext(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE id = ? AND ttft_ms = 0`, ttftMs, apiRequestID)
+	if err != nil {
+		return false, err
+	}
+	aff, _ := res.RowsAffected()
+	if aff <= 0 {
+		return false, nil
+	}
+
+	_, _ = tx.ExecContext(ctx, `UPDATE pending_ttft_spans SET processed = 1 WHERE id = ?`, pendingID)
+	return true, nil
+}
+
 // InsertRawEvent stores the complete original OTEL event as JSON for future re-processing.
 func (r *Repository) InsertRawEvent(ctx context.Context, eventType string, timestamp int64, rawJSON string) error {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO raw_otlp_events (timestamp, event_type, raw_json) VALUES (?, ?, ?)`,
 		timestamp, eventType, rawJSON)
 	return err
+}
+
+func (r *Repository) EnqueuePendingTTFTSpan(ctx context.Context, requestID, sessionID, model string, spanEndUnix int64, ttftMs int64, rawJSON string) error {
+	if r == nil || r.db == nil || spanEndUnix <= 0 || ttftMs <= 0 || rawJSON == "" {
+		return nil
+	}
+	if requestID == "" && (sessionID == "" || model == "") {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO pending_ttft_spans (created_unix, session_id, model, span_end_unix, ttft_ms, raw_json, processed, request_id)
+		VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+	`, time.Now().Unix(), sessionID, model, spanEndUnix, ttftMs, rawJSON, requestID)
+	return err
+}
+
+// BackfillTTFTByRequestID updates api_requests.ttft_ms by the exact upstream request id.
+func (r *Repository) BackfillTTFTByRequestID(ctx context.Context, requestID string, ttftMs int64) (bool, error) {
+	if r == nil || r.db == nil || requestID == "" || ttftMs <= 0 {
+		return false, nil
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE request_id = ? AND ttft_ms = 0`, ttftMs, requestID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// BackfillTTFTNearest best-effort updates api_requests.ttft_ms for the request that most likely
+// corresponds to the given trace span.
+//
+// Strategy: match on (session_id, prompt_id, model) and choose the row whose timestamp is closest
+// to spanEndUnix (seconds). Only updates when ttft_ms is currently 0 and ttftMs > 0.
+func (r *Repository) BackfillTTFTNearest(ctx context.Context, sessionID, promptID, model string, spanEndUnix int64, ttftMs int64) (bool, error) {
+	if r == nil || r.db == nil || ttftMs <= 0 {
+		return false, nil
+	}
+
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM api_requests
+		WHERE session_id = ?
+		  AND prompt_id = ?
+		  AND model = ?
+		  AND ttft_ms = 0
+		ORDER BY ABS(timestamp - ?) ASC
+		LIMIT 1
+	`, sessionID, promptID, model, spanEndUnix).Scan(&id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+
+	res, err := r.db.ExecContext(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE id = ? AND ttft_ms = 0`, ttftMs, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// BackfillTTFTNearestLoose is a fallback when trace spans don't include prompt_id.
+// It matches on (session_id, model) within a small time window around spanEndUnix (seconds),
+// then picks the closest request. Only updates when ttft_ms is currently 0.
+func (r *Repository) BackfillTTFTNearestLoose(ctx context.Context, sessionID, model string, spanEndUnix int64, windowSec int64, ttftMs int64) (bool, error) {
+	if r == nil || r.db == nil || ttftMs <= 0 || sessionID == "" || model == "" {
+		return false, nil
+	}
+	if windowSec <= 0 {
+		windowSec = 120
+	}
+
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM api_requests
+		WHERE session_id = ?
+		  AND model = ?
+		  AND ttft_ms = 0
+		  AND timestamp BETWEEN (? - ?) AND (? + ?)
+		ORDER BY ABS(timestamp - ?) ASC
+		LIMIT 1
+	`, sessionID, model, spanEndUnix, windowSec, spanEndUnix, windowSec, spanEndUnix).Scan(&id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+
+	res, err := r.db.ExecContext(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE id = ? AND ttft_ms = 0`, ttftMs, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // InsertEvent stores any OTEL event into the events table.
@@ -606,6 +848,68 @@ func (r *Repository) GetHourlyStatsByModel(ctx context.Context, date string, mod
 	return result, rows.Err()
 }
 
+// GetIntradayStatsByModel returns per-(bucket, model) stats for [fromYMD, toYMD]
+// (inclusive local days), using a fixed bucket size in minutes (15, 30, or 60).
+// Buckets are computed by flooring api_requests.timestamp to the nearest
+// bucket boundary in UTC seconds; for whole-hour-offset timezones (the common
+// case) this aligns to local clock buckets exactly. The label is rendered in
+// the server's time.Local zone so the frontend gets a display-ready string.
+func (r *Repository) GetIntradayStatsByModel(ctx context.Context, fromYMD, toYMD string, bucketMinutes int, model string) ([]IntradayModelSummary, error) {
+	if bucketMinutes != 15 && bucketMinutes != 30 && bucketMinutes != 60 {
+		return nil, fmt.Errorf("bucket_minutes must be 15, 30, or 60 (got %d)", bucketMinutes)
+	}
+	fromUnix, toExclusiveUnix, err := localDateRangeToUnix(fromYMD, toYMD)
+	if err != nil {
+		return nil, err
+	}
+	bucketSec := int64(bucketMinutes) * 60
+
+	query := `
+		SELECT
+			(timestamp - (timestamp % ?)) AS bucket_start,
+			model,
+			COALESCE(SUM(cost_usd), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0),
+			COALESCE(COUNT(*), 0)
+		FROM api_requests
+		WHERE timestamp >= ? AND timestamp < ?
+	`
+	args := []any{bucketSec, fromUnix, toExclusiveUnix}
+	if strings.TrimSpace(model) != "" {
+		query += ` AND model = ?`
+		args = append(args, model)
+	}
+	query += `
+		GROUP BY bucket_start, model
+		ORDER BY bucket_start ASC, SUM(cost_usd) DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("intraday model stats query: %w", err)
+	}
+	defer rows.Close()
+
+	loc := time.Local
+	var result []IntradayModelSummary
+	for rows.Next() {
+		var s IntradayModelSummary
+		var totalCost int64
+		if err := rows.Scan(&s.BucketStartUnix, &s.Model, &totalCost, &s.InputTokens, &s.OutputTokens,
+			&s.CacheReadTokens, &s.CacheCreationTokens, &s.RequestCount); err != nil {
+			return nil, err
+		}
+		s.CostUSD = costToFloat64(totalCost)
+		s.BucketMinutes = bucketMinutes
+		s.BucketLabel = time.Unix(s.BucketStartUnix, 0).In(loc).Format("01-02 15:04")
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
 // CountDailyStatsByModel returns the number of distinct (date, model) groups.
 func (r *Repository) CountDailyStatsByModel(ctx context.Context, from, to string, granularity string) (int64, error) {
 	dateExpr := aggDateExpr(granularity)
@@ -715,6 +1019,55 @@ func (r *Repository) CountRecentRequests(ctx context.Context, model, from, to st
 	return count, err
 }
 
+// GetDurationStatsByModel returns per-model duration stats for API requests in the given date range.
+// If model is non-empty, results are restricted to that model.
+func (r *Repository) GetDurationStatsByModel(ctx context.Context, model, from, to string, limit int) ([]DurationStat, error) {
+	whereClause, args, err := requestWhereClause(model, from, to)
+	if err != nil {
+		return nil, err
+	}
+	// Exclude missing/zero durations (some events may not have duration_ms).
+	if whereClause == "" {
+		whereClause = " WHERE duration_ms > 0"
+	} else {
+		whereClause += " AND duration_ms > 0"
+	}
+
+	lim := limit
+	if lim <= 0 || lim > 2000 {
+		lim = 2000
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			model,
+			COUNT(*) AS request_count,
+			AVG(duration_ms) AS avg_duration_ms,
+			AVG(ttft_ms) AS avg_ttft_ms,
+			AVG(CAST(output_tokens AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_out_tokens_per_s,
+			AVG(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_total_tokens_per_s,
+			MAX(duration_ms) AS max_duration_ms,
+			MIN(duration_ms) AS min_duration_ms
+		FROM api_requests`+whereClause+`
+		GROUP BY model
+		ORDER BY avg_duration_ms DESC
+		LIMIT ?`, append(args, lim)...)
+	if err != nil {
+		return nil, fmt.Errorf("duration stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DurationStat
+	for rows.Next() {
+		var s DurationStat
+		if err := rows.Scan(&s.Model, &s.RequestCount, &s.AvgDurationMs, &s.AvgTTFTMs, &s.AvgOutTokensPS, &s.AvgTotTokensPS, &s.MaxDurationMs, &s.MinDurationMs); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 type SessionStat struct {
 	SessionID    string    `json:"session_id"`
 	UserID       string    `json:"user_id"`
@@ -812,4 +1165,37 @@ func (r *Repository) Cleanup(ctx context.Context, beforeUnix int64) (int64, erro
 
 	r.db.ExecContext(ctx, "PRAGMA incremental_vacuum")
 	return total, nil
+}
+
+// CleanupRaw deletes records older than beforeUnix from raw event tables only.
+// These tables store the full OTLP JSON and grow quickly; they are safe to prune
+// aggressively since the structured tables already hold the parsed data.
+func (r *Repository) CleanupRaw(ctx context.Context, beforeUnix int64) (int64, error) {
+	var total int64
+
+	for _, tbl := range []string{"raw_otlp_events", "codex_raw_otlp_events"} {
+		res, err := r.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE timestamp < ?`, tbl), beforeUnix)
+		if err != nil {
+			return total, fmt.Errorf("cleanup raw %s: %w", tbl, err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+
+	r.db.ExecContext(ctx, "PRAGMA incremental_vacuum")
+	return total, nil
+}
+
+// CleanupCodexWebsocketEvents deletes codex.websocket_event rows older than maxAge unix seconds.
+// These events are only needed for real-time duration calculation and are consumed immediately;
+// anything older than maxAge is stale.
+func (r *Repository) CleanupCodexWebsocketEvents(ctx context.Context, maxAge int64) (int64, error) {
+	cutoff := time.Now().Unix() - maxAge
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM codex_events WHERE event_name = 'codex.websocket_event' AND timestamp < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }

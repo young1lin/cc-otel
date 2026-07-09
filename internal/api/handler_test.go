@@ -38,8 +38,8 @@ func setupTestHandler(t *testing.T) (h *Handler, repo *db.Repository, cleanup fu
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		DBPath:   filepath.Join(tmpDir, "test.db"),
-		OTELPort: 14317, // non-default to avoid conflicts
-		WebPort:  18899,
+		OTELPort: 4317, // non-default to avoid conflicts
+		WebPort:  8899,
 	}
 	sqlDB, err := db.Init(cfg)
 	if err != nil {
@@ -381,6 +381,62 @@ func TestSessionsEndpointEmpty(t *testing.T) {
 	}
 }
 
+func TestDurationsEndpoint(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// Two models with different durations.
+	_, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp:   time.Now(),
+		SessionID:   "sess-dur",
+		UserID:      "user-dur",
+		Model:       "m1",
+		InputTokens: 10, OutputTokens: 5,
+		CostUSD:     0.01,
+		DurationMs:  1000,
+		TTFTMs:      120,
+	})
+	if err != nil {
+		t.Fatalf("InsertRequest m1: %v", err)
+	}
+	_, err = repo.InsertRequest(context.Background(), &db.APIRequest{
+		Timestamp:   time.Now(),
+		SessionID:   "sess-dur",
+		UserID:      "user-dur",
+		Model:       "m2",
+		InputTokens: 10, OutputTokens: 5,
+		CostUSD:     0.01,
+		DurationMs:  500,
+		TTFTMs:      80,
+	})
+	if err != nil {
+		t.Fatalf("InsertRequest m2: %v", err)
+	}
+
+	today := time.Now().Local().Format("2006-01-02")
+	req := httptest.NewRequest("GET", "/api/durations?from="+today+"&to="+today, nil)
+	w := httptest.NewRecorder()
+	h.Durations(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp []db.DurationStat
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(resp))
+	}
+	// Sorted by avg_duration_ms desc: m1 first (1000), then m2 (500)
+	if resp[0].Model != "m1" || int(resp[0].AvgDurationMs) != 1000 {
+		t.Fatalf("unexpected first row: %+v", resp[0])
+	}
+	if resp[1].Model != "m2" || int(resp[1].AvgDurationMs) != 500 {
+		t.Fatalf("unexpected second row: %+v", resp[1])
+	}
+}
+
 func TestModelsEndpoint(t *testing.T) {
 	h, repo, cleanup := setupTestHandler(t)
 	defer cleanup()
@@ -615,7 +671,24 @@ func TestEventsSSEBrokerNotify(t *testing.T) {
 	if !strings.Contains(body, "data: connected") {
 		t.Error("expected 'data: connected' in SSE output")
 	}
-	if !strings.Contains(body, "data: update") {
-		t.Error("expected 'data: update' in SSE output after Notify()")
+	if !strings.Contains(body, "data: claude") {
+		t.Errorf("expected 'data: claude' in SSE output after Notify(); got: %s", body)
+	}
+}
+
+func TestBrokerNotifySource(t *testing.T) {
+	b := NewBroker()
+	ch := b.Subscribe()
+	b.NotifySource("codex")
+	select {
+	case s := <-ch:
+		if s != "codex" {
+			t.Fatalf("got %q want codex", s)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no event received")
+	}
+	if got := b.LastSource(); got != "codex" {
+		t.Errorf("LastSource: got %q want codex", got)
 	}
 }

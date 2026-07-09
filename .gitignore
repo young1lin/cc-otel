@@ -35,3 +35,6 @@ cc-otel-linux
 .claude/docs/
 !.claude/
 !.claude/CLAUDE.md
+tools/dev/screenshots/
+docs/superpowers/
+tmp_screens/

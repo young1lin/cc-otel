@@ -16,6 +16,7 @@ type Config struct {
 	WebPort       int               `yaml:"web_port"`
 	DBPath        string            `yaml:"db_path"`
 	RetentionDays int               `yaml:"retention_days"`
+	RawTTLDays    int               `yaml:"raw_ttl_days"`
 	ModelMapping  map[string]string `yaml:"model_mapping"`
 }
 
@@ -109,6 +110,7 @@ func Load(path string) (*Config, error) {
 		WebPort:       8899,
 		DBPath:        DefaultDBPath(),
 		RetentionDays: 90,
+		RawTTLDays:    5,
 	}
 
 	if path == "" {

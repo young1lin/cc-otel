@@ -14,6 +14,12 @@
 
 Claude Code Token 用量监控服务。接收 OTEL 遥测数据，提供 Web 仪表盘查看 token 消耗和费用。
 
+## 文档
+
+- [设计说明（为什么这样做 / 怎么改最合适）](./docs/DESIGN.md)
+- [更新日志（未发布 / 版本变更）](./CHANGELOG.md)
+- [Claude Code OTEL 事件参考](./docs/otel-events.md)
+
 **Dark**
 ![Dashboard Dark](./assets/images/ScreenshotDark.png)
 
@@ -190,6 +196,22 @@ Claude Code 需要通过 gRPC 导出 OTLP 数据到 CC-OTEL。在 `~/.claude/set
 
 > **注意**: 只添加/更新以上 OTEL 相关的 key，不要覆盖已有配置。端口号应与 `cc-otel.yaml` 中的 `otel_port` 一致。
 
+### Codex CLI 接入
+
+cc-otel 也支持接收 OpenAI Codex CLI 的 OTEL 遥测数据。Codex 与 Claude Code 共用 OTLP gRPC 端口 (`:4317`)，cc-otel 通过 OTLP Resource 的 `service.name` 字段自动识别来源并路由到独立的 `codex_*` 表。
+
+在 `~/.codex/config.toml` 中加入（备份后追加，不要覆盖已有配置）：
+
+```toml
+[otel]
+environment = "dev"
+exporter.otlp-grpc.endpoint = "http://localhost:4317"
+trace_exporter.otlp-grpc.endpoint = "http://localhost:4317"
+metrics_exporter.otlp-grpc.endpoint = "http://localhost:4317"
+```
+
+启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。注意：Codex 不上报费用 (`cost_usd`)，Cost KPI 在 Codex 视图下显示 `—`。
+
 ## 配置文件
 
 CC-OTEL 按以下顺序查找配置和数据：
@@ -279,3 +301,70 @@ CC_OTEL_STATIC_DIR=internal/web/static cc-otel serve
 ## License
 
 [MIT](LICENSE)
+
+---
+
+## `duration_ms` 是什么？从哪来的？（源码佐证）
+
+CC-OTEL 的 `duration_ms` **不是由 cc-otel 计算**，而是 **Claude Code 通过 OTEL log attributes 上报**，cc-otel 仅接收并落库后用于 Web UI 展示与聚合统计。
+
+### 1) CC-OTEL 侧：接收并落库（不做二次计算）
+
+cc-otel 的 OTLP Logs 接收器会把任意 log record 的 attributes 解析为 `Event`，并直接读取 `duration_ms`/`ttft_ms`：
+
+```go
+// internal/receiver/receiver.go
+DurationMs: parseAttrInt(attrs, "duration_ms"),
+TTFTMs:     parseAttrInt(attrs, "ttft_ms"),
+```
+
+之后 `Event` 会被转换为 `APIRequest` 并写入 SQLite（`api_requests.duration_ms`），用于 Request Log / Sessions / Dashboard 等查询。
+
+### 2) Claude Code 侧：`duration_ms` 的计算口径（源码）
+
+在 Claude Code（source map 还原源码）中：
+
+- `startIncludingRetries = Date.now()`：整次请求链路开始（包含所有 retries）
+- `start = Date.now()`：每次 attempt（重试的单次请求）开始都会重置
+- `durationMs = Date.now() - start`：**本次成功 attempt 的端到端墙钟耗时**
+- `durationMsIncludingRetries = Date.now() - startIncludingRetries`：**包含 retries 的总墙钟耗时**
+
+关键源码片段（计算 start + 重试重置）：
+
+```ts
+// restored-src/src/services/api/claude.ts
+const startIncludingRetries = Date.now()
+let start = Date.now()
+// ...
+async (anthropic, attempt, context) => {
+  // ...
+  start = Date.now() // 每次 attempt 开始重置
+  attemptStartTimes.push(start)
+  // ... dispatch streaming request ...
+}
+```
+
+关键源码片段（把 `duration_ms` 写入 OTEL `api_request` 事件 attributes）：
+
+```ts
+// restored-src/src/services/api/logging.ts
+const durationMs = Date.now() - start
+const durationMsIncludingRetries = Date.now() - startIncludingRetries
+
+void logOTelEvent('api_request', {
+  model,
+  input_tokens: String(usage.input_tokens),
+  output_tokens: String(usage.output_tokens),
+  cache_read_tokens: String(usage.cache_read_input_tokens),
+  cache_creation_tokens: String(usage.cache_creation_input_tokens),
+  cost_usd: String(costUSD),
+  duration_ms: String(durationMs),
+  speed: fastMode ? 'fast' : 'normal',
+})
+```
+
+### 3) 解释：它不是“思考耗时”
+
+因此，CC-OTEL 展示的 `duration_ms` 表示 **一次 Claude Code API 请求的端到端墙钟耗时**（至少包含网络/排队/流式传输/本次 attempt 内的处理）。它 **不是**“模型纯思考时间”。
+
+> 备注：Claude Code 代码里也会计算 `ttftMs`（首 token 时间），但某些版本/事件可能不会把它作为 OTEL attribute 上报，导致 CC-OTEL 中 `ttft_ms` 常为 0。

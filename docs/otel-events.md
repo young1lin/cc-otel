@@ -1,3 +1,12 @@
+# Claude Code / Codex CLI OTEL Event Reference
+
+Claude Code and OpenAI Codex CLI both send telemetry via OTLP (gRPC) to
+`cc-otel`, but their event schemas and token semantics are different. `cc-otel`
+routes them by OTLP Resource `service.name`: Claude data goes into the
+`api_requests` family of tables; Codex data goes into the `codex_*` tables.
+
+---
+
 # Claude Code OTEL Event Reference / Claude Code OTEL 事件参考
 
 > **English Summary**
@@ -138,6 +147,137 @@ Fired after a tool finishes execution. / 工具执行完成后触发。
 | `claude_code.commit.count` | Count | 提交数 | - |
 | `claude_code.code_edit_tool.decision` | Count | Code Edit 决策次数 | - |
 | `claude_code.active_time.total` | Sum | 活跃时间(秒) | - |
+
+---
+
+## Codex CLI Log Events / Codex CLI Log 事件
+
+Codex is detected by OTLP Resource `service.name` containing `codex`. Current
+known values include `codex_cli_rs`, `codex_exec`, `codex-app-server`, and
+`codex_mcp_server`.
+
+Unlike Claude Code, Codex does not put complete request usage into a single
+`api_request` log. `cc-otel` builds a request row by correlating several events:
+
+```
+codex.api_request
+  -> insert codex_api_requests row with network/request metadata
+
+codex.sse_event kind=response.completed
+  -> backfill token fields into the newest pending row for same session+model
+
+codex.websocket_event kind=response.completed
+  -> best-effort backfill duration_ms when duration is not already known
+```
+
+### 1. `codex.api_request` — Request Metadata / 请求元数据
+
+Fired for Codex API calls. This event is the first row anchor for
+`codex_api_requests`; token fields are usually still zero until the completion
+event arrives.
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `event.name` | string | `"codex.api_request"` |
+| `conversation.id` | string | Codex session/conversation key; stored as `session_id` |
+| `model` | string | Model name |
+| `duration_ms` | int | API request duration if Codex reports it |
+| `http.response.status_code` | int | HTTP status |
+| `endpoint` | string | API endpoint |
+| `attempt` | int | Retry attempt |
+| `error.message` | string | Error message, if any |
+| `auth.request_id` | string | Upstream request id, if present |
+| `auth.cf_ray` | string | Cloudflare ray id, if present |
+
+Current storage mapping:
+
+| Source event | Table | Purpose |
+|--------------|-------|---------|
+| `codex.api_request` | `codex_api_requests` | Creates the request row and increments request count |
+| `codex.api_request` | `codex_daily_model_agg` | Adds request count; token deltas are added later |
+| raw OTLP log | `codex_raw_otlp_events` | Debug/audit copy |
+
+### 2. `codex.sse_event` — Streaming Events / 流式事件
+
+Most SSE events are stored in `codex_events` for debugging. The important one
+for usage accounting is `event.kind=response.completed`.
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `event.name` | string | `"codex.sse_event"` |
+| `event.kind` | string | e.g. `response.completed` |
+| `conversation.id` | string | Correlation key |
+| `model` | string | Model name |
+| `input_token_count` | int | Total input tokens; **includes cached input** |
+| `output_token_count` | int | Output tokens |
+| `cached_token_count` | int | Cached input token subset |
+| `reasoning_token_count` | int | Reasoning output tokens |
+| `tool_token_count` | int | Codex currently sends `usage.total_tokens` here; not tool tokens |
+
+Token semantics for Codex:
+
+| UI / DB concept | Formula |
+|-----------------|---------|
+| Total input | `input_token_count` |
+| Cached input | `cached_token_count` |
+| Uncached input | `max(input_token_count - cached_token_count, 0)` |
+| Output | `output_token_count` |
+| Reported total | `tool_token_count` from Codex, stored as `total_tokens` |
+| Fallback total | `input_token_count + output_token_count` |
+| Cache hit rate | `cached_token_count / input_token_count` |
+
+This differs from Claude Code. Claude input-side total is
+`input_tokens + cache_read_tokens + cache_creation_tokens`; Codex must not add
+cached input a second time.
+
+Current backfill behavior:
+
+| Source event | Table | Behavior |
+|--------------|-------|----------|
+| `codex.sse_event` + `response.completed` | `codex_api_requests` | Updates newest zero-token row within 5 minutes for same `conversation.id + model` |
+| same | `codex_daily_model_agg` | Adds token deltas without incrementing request count |
+| no pending request row | `codex_api_requests` | Inserts a token-only fallback row and counts it once |
+| non-completion SSE events | `codex_events` | Stored as generic Codex events |
+
+### 3. `codex.websocket_event` — WebSocket Timing / WebSocket 时序
+
+WebSocket events are used for best-effort duration backfill. Individual
+`duration_ms` values are per-event round-trip timings; `cc-otel` prefers the
+timestamp span of stored websocket events for the same `conversation.id + model`
+when it can compute one.
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `event.name` | string | `"codex.websocket_event"` |
+| `event.kind` | string | e.g. `response.completed` |
+| `conversation.id` | string | Correlation key |
+| `model` | string | Model name |
+| `duration_ms` | int | Per-event duration fallback |
+| `success` | bool | Whether the websocket event succeeded |
+| `error.message` | string | Error message, if any |
+
+Current duration backfill behavior:
+
+| Source event | Table | Behavior |
+|--------------|-------|----------|
+| `codex.websocket_event` | `codex_events` | Stored for later span calculation |
+| `codex.websocket_event` + `response.completed` | `codex_api_requests.duration_ms` | Updates newest tokenized row with zero duration |
+| available websocket span | `duration_ms = (max(timestamp) - min(timestamp)) * 1000` |
+| no span but event `duration_ms` exists | fallback to event `duration_ms` |
+
+This is approximate. The stronger correlation key currently available to
+`cc-otel` is `conversation.id + model + time window`; concurrent same-model
+requests in the same conversation can still be ambiguous.
+
+### 4. Other Codex Events / 其他 Codex 事件
+
+| 事件 | Table | 说明 |
+|------|-------|------|
+| `codex.user_prompt` | `codex_user_prompt_events` | User prompt metadata/content when emitted |
+| `codex.tool_decision` | `codex_tool_decision_events` | Tool approval/decision |
+| `codex.tool_result` | `codex_tool_result_events` | Tool execution result |
+| other Codex logs | `codex_events` | Generic fallback storage |
+| raw OTLP logs | `codex_raw_otlp_events` | Debug/audit copy |
 
 ---
 
