@@ -185,9 +185,11 @@ func TestDashboardWithData(t *testing.T) {
 	if resp.TotalCostUSD != 0.02 {
 		t.Errorf("expected total_cost_usd=0.02, got %f", resp.TotalCostUSD)
 	}
-	// cache_hit_rate = cache_read / (cache_read + cache_creation) = 160/(160+40) = 0.8
-	if resp.CacheHitRate < 0.79 || resp.CacheHitRate > 0.81 {
-		t.Errorf("expected cache_hit_rate ~0.8, got %f", resp.CacheHitRate)
+	// cache_hit_rate = cache_read / input-side total
+	//                = cache_read / (input + cache_read + cache_creation)
+	//                = 160 / (200 + 160 + 40) = 160/400 = 0.4
+	if resp.CacheHitRate < 0.39 || resp.CacheHitRate > 0.41 {
+		t.Errorf("expected cache_hit_rate ~0.4, got %f", resp.CacheHitRate)
 	}
 }
 

@@ -751,9 +751,14 @@ func (r *Repository) GetDashboardForRange(ctx context.Context, from, to string) 
 	d.TotalCacheReadTokens = totalCacheRead
 	d.TotalCostUSD = costToFloat64(totalCost)
 
-	totalCacheTokens := totalCacheRead + totalCacheCreation
-	if totalCacheTokens > 0 {
-		d.CacheHitRate = float64(totalCacheRead) / float64(totalCacheTokens)
+	// Cache hit rate = cache_read / input-side total (uncached + cache read + cache create).
+	// Using the full input side (not just read+create) keeps the metric meaningful for
+	// reverse-proxied providers (GLM, mimo, ...) that report cache_read but never
+	// cache_creation — otherwise the ratio would collapse to a constant 100%. This matches
+	// the Codex/Gemini definition (cache_read / input_tokens, where their input already
+	// includes the cached portion).
+	if d.TotalInputTokens > 0 {
+		d.CacheHitRate = float64(totalCacheRead) / float64(d.TotalInputTokens)
 	}
 	return d, nil
 }
@@ -768,7 +773,7 @@ func (r *Repository) GetDailyStats(ctx context.Context, from, to string) ([]Dail
 			COALESCE(SUM(cost_usd), 0),
 			COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
-			COALESCE(SUM(cache_read_tokens + cache_creation_tokens), 0)
+			COALESCE(SUM(input_tokens + cache_read_tokens + cache_creation_tokens), 0)
 		FROM daily_model_agg
 		WHERE date >= ? AND date <= ?
 		GROUP BY date
@@ -781,13 +786,14 @@ func (r *Repository) GetDailyStats(ctx context.Context, from, to string) ([]Dail
 	var result []DailySummary
 	for rows.Next() {
 		var s DailySummary
-		var totalCost, cacheRead, cacheTotal int64
-		if err := rows.Scan(&s.Date, &s.TotalInputTokens, &s.TotalOutputTokens, &totalCost, &s.RequestCount, &cacheRead, &cacheTotal); err != nil {
+		var totalCost, cacheRead, inputSide int64
+		if err := rows.Scan(&s.Date, &s.TotalInputTokens, &s.TotalOutputTokens, &totalCost, &s.RequestCount, &cacheRead, &inputSide); err != nil {
 			return nil, err
 		}
 		s.TotalCostUSD = costToFloat64(totalCost)
-		if cacheTotal > 0 {
-			s.CacheHitRate = float64(cacheRead) / float64(cacheTotal)
+		// cache_read / input-side total (see GetDashboardForRange for rationale).
+		if inputSide > 0 {
+			s.CacheHitRate = float64(cacheRead) / float64(inputSide)
 		}
 		result = append(result, s)
 	}

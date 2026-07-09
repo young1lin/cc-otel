@@ -227,9 +227,52 @@ func TestGetDashboardCacheHitRate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// CacheHitRate = cache_read / (cache_read + cache_creation) = 800 / 1000 = 0.8
-	if math.Abs(dash.CacheHitRate-0.8) > 0.001 {
-		t.Errorf("expected CacheHitRate ~0.8, got %f", dash.CacheHitRate)
+	// CacheHitRate = cache_read / input-side total
+	//             = cache_read / (input + cache_read + cache_creation)
+	//             = 800 / (100 + 800 + 200) = 800 / 1100 = 0.72727...
+	if math.Abs(dash.CacheHitRate-0.72727) > 0.001 {
+		t.Errorf("expected CacheHitRate ~0.7273, got %f", dash.CacheHitRate)
+	}
+}
+
+// TestGetDashboardCacheHitNoCacheCreation guards the GLM/mimo regression:
+// reverse-proxied providers report cache_read but never cache_creation. The
+// hit rate must use the full input-side as denominator, so it must NOT collapse
+// to 100% just because cache_creation is 0.
+func TestGetDashboardCacheHitNoCacheCreation(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	repo := NewRepository(database)
+	ctx := context.Background()
+
+	now := time.Now()
+	_, err = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp:           now,
+		Model:               "glm-5.1",
+		CacheReadTokens:     900,
+		CacheCreationTokens: 0, // provider never reports cache creation
+		InputTokens:         100,
+		OutputTokens:        50,
+		CostUSD:             0.01,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	from := now.Format("2006-01-02")
+	dash, err := repo.GetDashboardForRange(ctx, from, from)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// CacheHitRate = 900 / (100 + 900 + 0) = 0.9 — must not be 1.0.
+	if math.Abs(dash.CacheHitRate-0.9) > 0.001 {
+		t.Errorf("expected CacheHitRate ~0.9 (not 100%%), got %f", dash.CacheHitRate)
 	}
 }
 
