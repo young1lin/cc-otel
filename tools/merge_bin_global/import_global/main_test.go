@@ -351,6 +351,126 @@ func TestGeminiImportInsertsRowAndCreatesSchema(t *testing.T) {
 	}
 }
 
+func TestRecordExistsIgnoresRecomputedCost(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+
+	if err := ensureTargetSchema(ctx, db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	codexRow := map[string]any{
+		"timestamp":             int64(1777248000),
+		"session_id":            "session-a",
+		"user_id":               "",
+		"model":                 "glm-4.6",
+		"input_tokens":          int64(10),
+		"output_tokens":         int64(20),
+		"cache_read_tokens":     int64(3),
+		"cache_creation_tokens": int64(0),
+		"reasoning_tokens":      int64(7),
+		"total_tokens":          int64(40),
+		"cost_usd":              int64(1234),
+		"duration_ms":           int64(2500),
+		"ttft_ms":               int64(100),
+		"http_status":           int64(200),
+		"endpoint":              "/v1/responses",
+		"conversation_id":       "conversation-a",
+		"event_name":            "codex.api_request",
+		"event_sequence":        int64(1),
+		"terminal_type":         "codex",
+		"service_name":          "cc-otel",
+		"service_version":       "test",
+		"host_arch":             "amd64",
+		"os_type":               "windows",
+		"os_version":            "10",
+		"error_message":         "",
+	}
+	if _, err := insertRecord(ctx, tx, exportRecord{Table: "codex_api_requests", Row: codexRow}); err != nil {
+		t.Fatalf("insert codex record: %v", err)
+	}
+
+	// Same logical row exported from a db where recompute_cost repriced it.
+	repriced := map[string]any{}
+	for k, v := range codexRow {
+		repriced[k] = v
+	}
+	repriced["cost_usd"] = int64(9999)
+
+	exists, err := recordExists(ctx, tx, exportRecord{Table: "codex_api_requests", Row: repriced})
+	if err != nil {
+		t.Fatalf("record exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("repriced codex row must match the existing row (KeyColumns exclude cost_usd), or merges duplicate it")
+	}
+
+	// Different token counts = genuinely different row.
+	other := map[string]any{}
+	for k, v := range codexRow {
+		other[k] = v
+	}
+	other["output_tokens"] = int64(21)
+	exists, err = recordExists(ctx, tx, exportRecord{Table: "codex_api_requests", Row: other})
+	if err != nil {
+		t.Fatalf("record exists (other): %v", err)
+	}
+	if exists {
+		t.Fatal("row with different tokens should not be treated as existing")
+	}
+}
+
+func TestRecordExistsMatchesAPIRequestsByRequestID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+
+	if err := ensureTargetSchema(ctx, db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	row := map[string]any{
+		"timestamp": int64(1777248000), "session_id": "s", "user_id": "u",
+		"prompt_id": "p", "prompt_length": int64(1), "model": "glm-4.6", "actual_model": "glm-4.6",
+		"input_tokens": int64(10), "output_tokens": int64(2),
+		"cache_read_tokens": int64(0), "cache_creation_tokens": int64(0),
+		"cost_usd": int64(100), "duration_ms": int64(50), "ttft_ms": nil,
+		"request_id": "req-1", "event_name": "", "event_sequence": int64(1),
+		"speed": "", "terminal_type": "", "tool_name": "", "decision": "", "source": "",
+		"service_name": "", "service_version": "", "host_arch": "", "os_type": "", "os_version": "",
+		"error_type": "", "error_message": "", "error_code": int64(0), "error_retryable": int64(0),
+	}
+	if _, err := insertRecord(ctx, tx, exportRecord{Table: "api_requests", Row: row}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	repriced := map[string]any{}
+	for k, v := range row {
+		repriced[k] = v
+	}
+	repriced["cost_usd"] = int64(777)
+	exists, err := recordExists(ctx, tx, exportRecord{Table: "api_requests", Row: repriced})
+	if err != nil {
+		t.Fatalf("record exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("api_requests row with same request_id must be treated as existing regardless of cost")
+	}
+}
+
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 

@@ -144,14 +144,12 @@ func main() {
 			break
 		}
 
-		ok, err := tryLedger(ctx, tx, rec.UUID, sourceTag, rec.Table)
-		if err != nil {
+		// Record the UUID in the ledger, but never let a ledger hit alone skip
+		// the row: a stale ledger entry (row pruned after an earlier merge)
+		// would silently drop data. Only the actual row's existence decides.
+		if _, err := tryLedger(ctx, tx, rec.UUID, sourceTag, rec.Table); err != nil {
 			batchErr = err
 			break
-		}
-		if !ok {
-			skipped++
-			continue
 		}
 
 		exists, err := recordExists(ctx, tx, rec)
@@ -720,9 +718,29 @@ func recordExists(ctx context.Context, tx *sql.Tx, rec exportRecord) (bool, erro
 		return false, fmt.Errorf("unknown table %q", rec.Table)
 	}
 
-	clauses := make([]string, 0, len(cfg.Columns))
-	args := make([]any, 0, len(cfg.Columns))
-	for _, col := range cfg.Columns {
+	// api_requests rows carry a globally unique request_id when present; match
+	// on it alone so a repriced copy of the same request is not re-imported.
+	if rec.Table == "api_requests" {
+		if rid, _ := rec.Row["request_id"].(string); rid != "" {
+			var one int
+			err := tx.QueryRowContext(ctx, `SELECT 1 FROM api_requests WHERE request_id = ? LIMIT 1`, rid).Scan(&one)
+			if err == nil {
+				return true, nil
+			}
+			if err == sql.ErrNoRows {
+				return false, nil
+			}
+			return false, err
+		}
+	}
+
+	keyCols := cfg.KeyColumns
+	if len(keyCols) == 0 {
+		keyCols = cfg.Columns
+	}
+	clauses := make([]string, 0, len(keyCols))
+	args := make([]any, 0, len(keyCols))
+	for _, col := range keyCols {
 		clauses = append(clauses, col+" IS ?")
 		args = append(args, normalizeForSQLite(rec.Row[col]))
 	}
@@ -771,6 +789,10 @@ func insertRecord(ctx context.Context, tx *sql.Tx, rec exportRecord) (bool, erro
 type insertCfg struct {
 	Columns      []string
 	InsertPrefix string
+	// KeyColumns is the natural identity used by recordExists. Columns that
+	// recompute_cost rewrites (cost_usd) are excluded so a repriced copy of the
+	// same logical row is still recognized as existing. Empty = all columns.
+	KeyColumns []string
 }
 
 func tableInsertConfigs() map[string]insertCfg {
@@ -784,6 +806,13 @@ func tableInsertConfigs() map[string]insertCfg {
 				"event_name", "event_sequence", "speed", "terminal_type", "tool_name", "decision", "source",
 				"service_name", "service_version", "host_arch", "os_type", "os_version",
 				"error_type", "error_message", "error_code", "error_retryable",
+			},
+			// Fallback identity when request_id is empty (recordExists matches
+			// non-empty request_id directly); mirrors export_bin's StableName
+			// fallback minus cost_usd.
+			KeyColumns: []string{
+				"timestamp", "session_id", "prompt_id", "event_sequence",
+				"model", "input_tokens", "output_tokens", "duration_ms",
 			},
 		},
 		"user_prompt_events": {
@@ -846,6 +875,10 @@ func tableInsertConfigs() map[string]insertCfg {
 				"service_name", "service_version", "host_arch", "os_type", "os_version",
 				"error_message",
 			},
+			// export_bin's StableName fields minus cost_usd.
+			KeyColumns: []string{
+				"timestamp", "session_id", "model", "input_tokens", "output_tokens", "duration_ms",
+			},
 		},
 		"codex_user_prompt_events": {
 			Columns: []string{
@@ -883,6 +916,11 @@ func tableInsertConfigs() map[string]insertCfg {
 				"thoughts_tokens", "tool_tokens", "total_tokens",
 				"duration_ms", "cost_usd", "http_status_code",
 				"prompt_id", "event_name", "service_name", "service_version",
+			},
+			// export_bin's StableName fields minus cost_usd.
+			KeyColumns: []string{
+				"timestamp", "session_id", "model", "prompt_id",
+				"input_tokens", "output_tokens", "total_tokens",
 			},
 		},
 	}
