@@ -23,7 +23,9 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
   - Extracted from OTLP trace spans and back-filled into `api_requests.ttft_ms` / `codex_api_requests.ttft_ms`.
   - Built-in pending queue handles out-of-order delivery (trace before `api_request` log).
   - Historical backfill: `tools/backfill_claude_ttft`.
-- **Codex duration backfill**: `tools/backfill_codex_duration` scans the `codex_raw_otlp_events` table for paired `codex.websocket_request` / `codex.websocket_event` spans and writes the derived `duration_ms` back into `codex_api_requests`.
+- **Codex duration backfill** (two paths):
+  - **Online** (in-receiver): when an `api_request` log lacks a matching span ID, fall back to the most recent `codex.websocket_request` span by `(sessionID, model)` within a 10-minute window and fill `duration_ms` at ingest time.
+  - **Offline**: `tools/backfill_codex_duration` scans the `codex_raw_otlp_events` table for paired `codex.websocket_request` / `codex.websocket_event` spans and writes the derived `duration_ms` back into `codex_api_requests`.
 - **Live push**: `/api/events` SSE — `Broker.Notify()` fires after each successful insert, all open browsers auto-refresh.
 
 ### Pricing & cost recompute (`internal/pricing`)
