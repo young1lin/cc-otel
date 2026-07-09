@@ -9,8 +9,8 @@
 ## [Unreleased] · 0.1.0 Preview
 
 > **状态：Preview，尚未正式发布。** 本节描述主分支当前已具备的全部功能，
-> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.13`，对应
-> GoReleaser 流水线自动出包）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
+> 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.13`，本节为
+> **preview.14** 待发布内容）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
 ### 代理兼容性修复
 
@@ -49,6 +49,18 @@
 - **裸模型名 basename 兜底匹配**（preview.13）：反代上报的裸名（如 `glm-5.2`）与上游目录的 provider 前缀 key（`z-ai/glm-5.2`）对不上时，新增第 5 级匹配——按 basename（最后一个 `/` 之后）兜底命中。撞名择优：段数最少（直连 provider）→ 来源优先级（user>litellm>openrouter>seed）→ 字典序。
 - **OpenRouter 取直营 provider 价**（preview.13）：`/api/v1/models` 返回的是最便宜 provider 的混合价，常是低精度量化版（fp4）——与直营 fp8 列表价不可比。现对 `z-ai/*` 额外拉 `/endpoints`，取 Z.AI 直营 provider 价覆盖混合价（`Z.AI`↔`z-ai` 归一化匹配）。glm-* 等不再需要手填 YAML 覆盖。
 - **手动价目拆分 manual_seed**（preview.13）：无上游目录的模型（Xiaomi MiMo / StepFun / 未收录的 DeepSeek V4）的手动价从 `seed.json` 挪到 `embed/manual_seed.json`；`seed.go` 合并加载（手动覆盖自动），`dump_pricing_snapshot` 只重写 `seed.json` 不碰它——手动条目不再被发布前重生成冲掉。
+
+### Token 速率与吞吐（preview.14）
+
+- **Rate 面板（新）**：Web UI 新增 **Rate** 标签页，按模型绘制 **Token Rate over Time** 折线图（Claude 源；最长 7 天）。支持 **Weighted / Avg**、**Output / Total tok/s**、**5 / 15 / 30 / 60 min** 时间桶；切换日期范围时默认桶为 **Today → 5 min**、**多天 → 30 min**（下拉仍可手动改 5 / 15）。
+- **速率 API**：`GET /api/rate?from=&to=&bucket=&model=` 返回按 `(bucket, model)` 聚合的吞吐桶；`duration_ms` 为 API 请求耗时（不含本地工具执行）。桶内同时返回 **加权吞吐** `SUM(tokens)×1000/SUM(duration_ms)` 与 **算术平均** `AVG(单请求 tok/s)`。
+- **会话近期速率 API**：`GET /api/session/rate?session_id=` 返回该会话最近一个有数据的 **1 分钟** 桶（加权 + 平均 Out tok/s）；无数据 404。
+- **Request Log 双列 tok/s**：按模型汇总表新增 **Out tok/s (avg)** 与 **Out tok/s (wt)** 两列（可排序），列头 tooltip 标明公式；与 Rate 图使用同一套速率语义。
+- **Rate 图交互**：
+  - **图例 solo**：点击图例只显示该模型；再点同一项或 **All models** 恢复全部。
+  - **整线 hover**：光标沿折线移动即可看 tooltip（按时间桶匹配，避免跨桶错显模型）。
+  - **连线策略**：单日日内连续（轻 smooth）；**多天按自然日断开**、日内直线相连，避免跨夜斜线横穿全图（对齐 Intraday 稀疏桶 + Grafana 式日界断线取舍）。
+- **开发规则**：`.cursor/rules/sync-global-db-to-bin.mdc` — 说「挪 / 同步全局 db 到 bin」即走 `snapshot_db` → 停 bin → 替换库 → 重启（全局 daemon 不停；见 `.claude/rules/db-copy-no-stop.md`）。
 
 ### Web UI · 数据展示
 
@@ -93,7 +105,7 @@
 - **前端 ESM 模块化（无构建工具）**：`app.js` 是约 230 行的薄入口，按职责拆分到 `internal/web/static/js/` 下的独立模块：
   - `state.js` / `utils.js` / `theme.js` / `api.js` / `filters.js` / `sse.js`
   - `breakdown.js` / `insights.js` / `chart-main.js`
-  - `panel-daily.js` / `panel-sessions.js` / `panel-requests.js` / `pagination.js`
+  - `panel-daily.js` / `panel-sessions.js` / `panel-requests.js` / `panel-rate.js` / `pagination.js`
 - **纯函数单测**：`internal/web/static/tests/*.test.mjs`，通过 `node --test` 运行（Node ≥ 18 内置 runner，零依赖）。
 - **前端开发免重编译**：设 `CC_OTEL_STATIC_DIR=internal/web/static`，Web UI 从磁盘读取静态资源；默认 `go:embed` 进二进制。
 - **图表硬规则**（永不违反）：`stack: 'total'`、`trigger: 'axis'`、`emphasis: { focus: 'series' }` 全部禁用。

@@ -30,6 +30,7 @@ import { loadSessions } from './js/panel-sessions.js';
 import {
     loadRequests, loadDurationStats, loadModelFilter, initPanelRequests,
 } from './js/panel-requests.js';
+import { loadRate, initPanelRate } from './js/panel-rate.js';
 import { renderPagination } from './js/pagination.js';
 
 // ── Popover positioner — shared by status / breakdown / insights modals ────
@@ -207,6 +208,7 @@ function loadAll() {
     refreshDailyPanel();
     loadSessions();
     loadRequests();
+    if (document.querySelector('.panel.active')?.id === 'panel-rate') loadRate();
 }
 
 function selectCalendarDate(date) {
@@ -266,6 +268,7 @@ function startDayRolloverWatcher() {
 initTheme({
     onThemeChange: () => {
         if (state.mainChart) loadChart();
+        if (state.rateChart && document.querySelector('.panel.active')?.id === 'panel-rate') loadRate();
         if (state.customRangeFlatpickr && typeof state.customRangeFlatpickr.redraw === 'function') {
             state.customRangeFlatpickr.redraw();
         }
@@ -280,6 +283,7 @@ initBreakdownModal({ openPopover, closePopover });
 initInsightsModal({ openPopover, closePopover, onSelectDate: selectCalendarDate });
 initPanelDaily();
 initPanelRequests();
+initPanelRate();
 initCustomRangePicker();
 applySourceFromURL();
 syncSourceTabsUI();
@@ -295,6 +299,7 @@ initSSE({
         const activePanel = document.querySelector('.panel.active');
         if (activePanel?.id === 'panel-sessions') loadSessions();
         if (activePanel?.id === 'panel-requests') loadRequests();
+        if (activePanel?.id === 'panel-rate') loadRate();
     },
     openPopover, closePopover,
 });

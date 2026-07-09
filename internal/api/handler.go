@@ -108,6 +108,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/daily", h.DailyModel)
 	mux.HandleFunc("/api/hourly", h.HourlyModel)
 	mux.HandleFunc("/api/intraday", h.Intraday)
+	mux.HandleFunc("/api/rate", h.Rate)
+	mux.HandleFunc("/api/session/rate", h.SessionRate)
 	mux.HandleFunc("/api/requests", h.Requests)
 	mux.HandleFunc("/api/durations", h.Durations)
 	mux.HandleFunc("/api/sessions", h.Sessions)
@@ -594,6 +596,90 @@ func (h *Handler) Intraday(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(IntradayResponse{From: from, To: to, BucketMinutes: bucket, Data: data})
+}
+
+// RateResponse wraps the rate-over-time buckets in a JSON envelope. From/To are
+// inclusive local YYYY-MM-DD; BucketMinutes echoes the granularity actually used.
+type RateResponse struct {
+	From          string          `json:"from"`
+	To            string          `json:"to"`
+	BucketMinutes int             `json:"bucket_minutes"`
+	Data          []db.RateBucket `json:"data"`
+}
+
+// Rate returns per-(bucket, model) token throughput over time for the rate chart.
+func (h *Handler) Rate(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	from := q.Get("from")
+	to := q.Get("to")
+	if from == "" || to == "" {
+		rng := q.Get("range")
+		if rng == "" {
+			rng = "today"
+		}
+		from, to = rangeToFromTo(rng)
+	}
+	if !isValidDate(from) || !isValidDate(to) {
+		http.Error(w, "invalid date", http.StatusBadRequest)
+		return
+	}
+	loc := time.Local
+	fromT, errF := time.ParseInLocation("2006-01-02", from, loc)
+	toT, errT := time.ParseInLocation("2006-01-02", to, loc)
+	if errF != nil || errT != nil || toT.Before(fromT) {
+		http.Error(w, "invalid date range", http.StatusBadRequest)
+		return
+	}
+	if toT.Sub(fromT) > 6*24*time.Hour {
+		http.Error(w, "rate range must not exceed 7 days", http.StatusBadRequest)
+		return
+	}
+
+	bucket := 30
+	if v := q.Get("bucket"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil && db.ValidRateBucketMinutes(n) {
+			bucket = n
+		}
+	}
+	model := q.Get("model")
+
+	data, err := h.repo.GetRateOverTime(r.Context(), from, to, bucket, model)
+	if err != nil {
+		log.Printf("rate data error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if data == nil {
+		data = []db.RateBucket{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(RateResponse{From: from, To: to, BucketMinutes: bucket, Data: data})
+}
+
+// SessionRate returns token throughput for the most recent 1-minute window in which
+// the given session had API activity (duration_ms > 0).
+func (h *Handler) SessionRate(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session_id required", http.StatusBadRequest)
+		return
+	}
+
+	snap, err := h.repo.GetSessionRecentMinuteRate(r.Context(), sessionID)
+	if err != nil {
+		log.Printf("session rate error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if snap == nil {
+		http.Error(w, "no rate data for session", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(snap)
 }
 
 // Requests returns individual API request records with optional model and date filters.

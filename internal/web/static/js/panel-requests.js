@@ -62,7 +62,7 @@ function renderDurationStatsTable() {
 
     updateDurationSortIndicators();
     if (!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:16px">No duration data</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:16px">No duration data</td></tr>';
         return;
     }
     tbody.innerHTML = rows.map(r => `<tr>
@@ -70,6 +70,7 @@ function renderDurationStatsTable() {
         <td class="mono">${r.request_count}</td>
         <td class="mono">${r.avg_duration_ms ? Math.round(r.avg_duration_ms) + 'ms' : '—'}</td>
         <td class="mono">${r.avg_out_tokens_per_s ? Math.round(r.avg_out_tokens_per_s) : '—'}</td>
+        <td class="mono">${r.weighted_out_tokens_per_s ? Math.round(r.weighted_out_tokens_per_s) : '—'}</td>
         ${hasTTFT ? `<td class="mono">${r.avg_ttft_ms ? Math.round(r.avg_ttft_ms) + 'ms' : '—'}</td>` : ``}
         <td class="mono">${r.min_duration_ms ? r.min_duration_ms + 'ms' : '—'}</td>
         <td class="mono">${r.max_duration_ms ? r.max_duration_ms + 'ms' : '—'}</td>
@@ -86,7 +87,7 @@ export async function loadDurationStats(from, to, model) {
         state.durationStatsRows = Array.isArray(rows) ? rows : [];
         if (state.durationStatsRows.length === 0) {
             setTTFTColumnVisible(false);
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:16px">No duration data</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:16px">No duration data</td></tr>';
             return;
         }
         renderDurationStatsTable();
@@ -95,7 +96,7 @@ export async function loadDurationStats(from, to, model) {
         console.error('durations:', e);
         state.durationStatsRows = [];
         setTTFTColumnVisible(false);
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:16px">Failed to load duration stats</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:16px">Failed to load duration stats</td></tr>';
     }
 }
 

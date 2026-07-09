@@ -694,3 +694,62 @@ func TestNeedsAggRebuild(t *testing.T) {
 		t.Error("empty agg with data in api_requests should need rebuild")
 	}
 }
+
+func TestGetSessionRecentMinuteRate(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo := NewRepository(database)
+	ctx := context.Background()
+
+	now := time.Now()
+	bucketStart := now.Unix() - (now.Unix() % 60)
+
+	_, err = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp: time.Unix(bucketStart-90, 0), SessionID: "s1", Model: "m",
+		OutputTokens: 999, DurationMs: 1000, RequestID: "old",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp: time.Unix(bucketStart+5, 0), SessionID: "s1", Model: "m",
+		OutputTokens: 20, DurationMs: 2000, RequestID: "new1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp: time.Unix(bucketStart+15, 0), SessionID: "s1", Model: "m",
+		OutputTokens: 80, DurationMs: 8000, RequestID: "new2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := repo.GetSessionRecentMinuteRate(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap == nil {
+		t.Fatal("expected snapshot")
+	}
+	if snap.RequestCount != 2 || snap.OutTokens != 100 {
+		t.Fatalf("unexpected aggregate: %+v", snap)
+	}
+	wantWeighted := 100.0 * 1000.0 / 10000.0
+	if math.Abs(snap.WeightedOutPerS-wantWeighted) > 0.01 {
+		t.Fatalf("weighted_out_per_s = %v, want %v", snap.WeightedOutPerS, wantWeighted)
+	}
+
+	missing, err := repo.GetSessionRecentMinuteRate(ctx, "no-such-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing != nil {
+		t.Fatalf("expected nil for missing session, got %+v", missing)
+	}
+}

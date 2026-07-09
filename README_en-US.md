@@ -48,6 +48,7 @@ Claude Code ──OTLP gRPC(:4317)──> cc-otel ──> SQLite
 - **Date ranges** -- Today, 7 Days, 30 Days, All Time, or custom date picker
 - **Chart switching** -- Tokens, Cost, Requests views
 - **Session tracking** -- per-session cost and token aggregation
+- **Token rate chart (Rate)** -- per-model Out/Total tok/s over time (weighted / average, 5–60 min buckets; up to 7 days)
 - **Pre-aggregation table** -- query latency < 3ms, handles millions of rows
 - **Single binary** -- `go:embed` bundles the web UI, zero runtime dependencies
 - **Cross-platform** -- Windows, macOS, Linux
@@ -165,7 +166,7 @@ Token accounting follows Anthropic's [Prompt caching spec](https://docs.anthropi
 
 **3. Serve (`internal/api/` + `internal/web/`)**
 
-- REST API: `/api/dashboard`, `/api/daily`, `/api/sessions`, `/api/status`, ...
+- REST API: `/api/dashboard`, `/api/daily`, `/api/sessions`, `/api/rate`, `/api/session/rate`, `/api/status`, ...
 - SSE: `/api/events` -- every successful insert calls `Broker.Notify()`, which pushes a Server-Sent Event to the browser so charts refresh without polling
 - Static assets: bundled with `go:embed` by default; set `CC_OTEL_STATIC_DIR` during local development to serve directly from disk and skip recompilation
 
@@ -301,6 +302,17 @@ Top-right green dot + `live` indicates the SSE stream is connected. Click to ope
 ### KPI Breakdowns
 
 Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model breakdown.
+
+### Panels
+
+| Panel | Description |
+|-------|-------------|
+| **Daily Detail** | Per-day / per-hour tables; Intraday line chart on single-day ranges |
+| **Sessions** | Per-session Cost / Token aggregates |
+| **Request Log** | Per-model duration and **Out tok/s (avg / weighted)** summary; per-request list with TTFT |
+| **Rate** | Per-model **Token Rate over Time** line chart; Weighted / Avg, Output / Total tok/s, 5 / 15 / 30 / 60 min buckets; click legend to solo one model (**All models** to restore) |
+
+`duration_ms` is API request time only (excludes local tool execution), so tok/s reflects model output throughput. Multi-day views break lines at calendar-day boundaries; switching the date range defaults to **Today → 5 min**, **multi-day → 30 min** (overridable).
 
 ## Update
 
