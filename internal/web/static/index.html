@@ -58,6 +58,7 @@
     <nav class="source-tabs" aria-label="Telemetry source">
         <button type="button" class="source-tab is-active" data-source="claude">Claude Code</button>
         <button type="button" class="source-tab" data-source="codex">Codex</button>
+        <button type="button" class="source-tab" data-source="gemini">Gemini</button>
     </nav>
 
     <div class="kpi-row">
@@ -132,7 +133,7 @@
                         <tr>
                             <th>Uncached</th>
                             <th>Cache Read</th>
-                            <th>Cache Create</th>
+                            <th class="col-cache-create">Cache Create</th>
                         </tr>
                     </thead>
                     <tbody id="daily-tbody"></tbody>
@@ -159,7 +160,7 @@
                             <th>Input</th>
                             <th>Uncached</th>
                             <th>Cache Read</th>
-                            <th>Cache Create</th>
+                            <th class="col-cache-create">Cache Create</th>
                             <th>Output</th>
                             <th>Cost</th>
                             <th>Reqs</th>
@@ -218,7 +219,7 @@
                         <th>Input</th>
                         <th>Output</th>
                         <th>Cache Read</th>
-                        <th>Cache Create</th>
+                        <th class="col-cache-create">Cache Create</th>
                         <th>Cost</th>
                         <th title="TTFT = Time To First Token (ms). How long it took to receive the first token after the request started.">TTFT</th>
                         <th>Duration</th>
@@ -314,6 +315,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=48"></script>
+<script type="module" src="app.js?v=49"></script>
 </body>
 </html>

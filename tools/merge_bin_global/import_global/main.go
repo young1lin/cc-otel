@@ -525,6 +525,42 @@ func ensureTargetSchema(ctx context.Context, db *sql.DB) error {
 			request_count INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (date, model)
 		) WITHOUT ROWID;
+
+		-- Gemini CLI tables (independent product channel)
+		CREATE TABLE IF NOT EXISTS gemini_api_requests (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp       INTEGER NOT NULL,
+			session_id      TEXT     NOT NULL DEFAULT '',
+			model           TEXT     NOT NULL DEFAULT '',
+			input_tokens    INTEGER  NOT NULL DEFAULT 0,
+			output_tokens   INTEGER  NOT NULL DEFAULT 0,
+			cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+			thoughts_tokens     INTEGER NOT NULL DEFAULT 0,
+			tool_tokens         INTEGER NOT NULL DEFAULT 0,
+			total_tokens        INTEGER NOT NULL DEFAULT 0,
+			duration_ms     INTEGER  NOT NULL DEFAULT 0,
+			cost_usd        INTEGER  NOT NULL DEFAULT 0,
+			http_status_code INTEGER NOT NULL DEFAULT 0,
+			prompt_id       TEXT     NOT NULL DEFAULT '',
+			event_name      TEXT     NOT NULL DEFAULT 'api_response',
+			service_name    TEXT     NOT NULL DEFAULT '',
+			service_version TEXT     NOT NULL DEFAULT ''
+		);
+
+		CREATE TABLE IF NOT EXISTS gemini_daily_model_agg (
+			date            TEXT     NOT NULL,
+			model           TEXT     NOT NULL,
+			total_requests  INTEGER  NOT NULL DEFAULT 0,
+			input_tokens    INTEGER  NOT NULL DEFAULT 0,
+			output_tokens   INTEGER  NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			thoughts_tokens INTEGER  NOT NULL DEFAULT 0,
+			tool_tokens     INTEGER  NOT NULL DEFAULT 0,
+			total_tokens    INTEGER  NOT NULL DEFAULT 0,
+			cost_usd        INTEGER  NOT NULL DEFAULT 0,
+			duration_ms_sum INTEGER  NOT NULL DEFAULT 0,
+			PRIMARY KEY (date, model)
+		) WITHOUT ROWID;
 	`)
 	if err != nil {
 		return err
@@ -585,6 +621,12 @@ func ensureTargetSchema(ctx context.Context, db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_codex_tool_decision_time ON codex_tool_decision_events(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_codex_tool_result_time ON codex_tool_result_events(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_codex_raw_otlp_time ON codex_raw_otlp_events(timestamp);
+
+		CREATE INDEX IF NOT EXISTS idx_gemini_requests_timestamp ON gemini_api_requests(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_gemini_requests_model     ON gemini_api_requests(model);
+		CREATE INDEX IF NOT EXISTS idx_gemini_requests_session   ON gemini_api_requests(session_id);
+		CREATE INDEX IF NOT EXISTS idx_gemini_requests_time_model ON gemini_api_requests(timestamp, model);
+		CREATE INDEX IF NOT EXISTS idx_gemini_requests_dedup     ON gemini_api_requests(session_id, prompt_id, timestamp);
 	`)
 	return err
 }
@@ -832,6 +874,16 @@ func tableInsertConfigs() map[string]insertCfg {
 		},
 		"codex_raw_otlp_events": {
 			Columns: []string{"timestamp", "event_type", "raw_json"},
+		},
+		// Gemini CLI table (independent product channel)
+		"gemini_api_requests": {
+			Columns: []string{
+				"timestamp", "session_id", "model",
+				"input_tokens", "output_tokens", "cache_read_tokens",
+				"thoughts_tokens", "tool_tokens", "total_tokens",
+				"duration_ms", "cost_usd", "http_status_code",
+				"prompt_id", "event_name", "service_name", "service_version",
+			},
 		},
 	}
 }

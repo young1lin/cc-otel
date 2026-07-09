@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    fmtNum, fmtUSD, fmtPct, fmtTokens, fmtTime,
+    fmtNum, fmtUSD, fmtPct, fmtTokens, fmtTime, fmtDateTime,
     escapeHtml, truncate, formatUserCell,
     toYMD, getTodayYMD, isValidYMD, rangeToFromTo,
 } from '../js/utils.js';
@@ -40,6 +40,23 @@ test('fmtTime: falsy -> em-dash', () => {
     assert.equal(fmtTime(0), '—');
     assert.equal(fmtTime(null), '—');
     assert.equal(fmtTime(undefined), '—');
+});
+
+test('fmtDateTime: 24-hour, zero-padded; midnight is 00 not "12 AM"', () => {
+    // Local midnight; built from local components so the assertion is timezone-independent.
+    const d = new Date(2026, 5, 11, 0, 6, 29);
+    assert.equal(fmtDateTime(d), '2026-06-11 00:06:29');
+});
+
+test('fmtDateTime: afternoon stays 24-hour (13, not "1 PM")', () => {
+    const d = new Date(2026, 5, 11, 13, 5, 8);
+    assert.equal(fmtDateTime(d), '2026-06-11 13:05:08');
+});
+
+test('fmtDateTime: empty/invalid -> em-dash, bad string passthrough', () => {
+    assert.equal(fmtDateTime(''), '—');
+    assert.equal(fmtDateTime(null), '—');
+    assert.equal(fmtDateTime('not-a-date'), 'not-a-date');
 });
 
 test('escapeHtml escapes the five reserved chars', () => {

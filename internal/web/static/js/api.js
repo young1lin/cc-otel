@@ -26,9 +26,17 @@ const CODEX_ROUTES = new Set([
     'dashboard', 'calendar', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
 ]);
 
+// Routes that have a Gemini mirror at /api/gemini/<name>.
+const GEMINI_ROUTES = new Set([
+    'dashboard', 'calendar', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
+]);
+
 function apiPath(name) {
     if (state.source === 'codex' && CODEX_ROUTES.has(name)) {
         return '/api/codex/' + name;
+    }
+    if (state.source === 'gemini' && GEMINI_ROUTES.has(name)) {
+        return '/api/gemini/' + name;
     }
     return '/api/' + name;
 }

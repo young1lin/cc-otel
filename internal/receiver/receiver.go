@@ -67,6 +67,13 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 					continue
 				}
 
+				if isGeminiService(svc) {
+					if dispatchGeminiLog(ctx, s.repo, lr, rl.Resource, s.notifier, s.pricer) {
+						shouldNotify = true
+					}
+					continue
+				}
+
 				// 1. Parse ALL events into Event struct (never nil)
 				event := parseEventFromOTLP(lr, rl.Resource)
 				if event == nil {
@@ -267,6 +274,11 @@ func isCodexService(name string) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(name), "codex")
+}
+
+// isGeminiService returns true if service.name identifies a Gemini CLI client.
+func isGeminiService(name string) bool {
+	return name == "gemini-cli"
 }
 
 func apiRequestFromEvent(e *db.Event) *db.APIRequest {

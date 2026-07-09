@@ -183,6 +183,7 @@ type Repository struct {
 	stmtUpsAgg          *sql.Stmt // prepared: UPSERT INTO daily_model_agg
 	stmtUpsCodexAgg     *sql.Stmt // prepared: UPSERT INTO codex_daily_model_agg (request_count + 1)
 	stmtUpsCodexAggToks *sql.Stmt // prepared: UPSERT INTO codex_daily_model_agg (token deltas only)
+	stmtUpsGeminiAgg    *sql.Stmt // prepared: UPSERT INTO gemini_daily_model_agg
 }
 
 // NewRepository returns a Repository backed by the given database connection.
@@ -243,6 +244,21 @@ func NewRepository(db *sql.DB) *Repository {
 			total_tokens          = total_tokens + excluded.total_tokens,
 			cost_usd              = cost_usd + excluded.cost_usd`)
 
+	r.stmtUpsGeminiAgg, _ = db.Prepare(`
+		INSERT INTO gemini_daily_model_agg (date, model, input_tokens, output_tokens,
+			cache_read_tokens, thoughts_tokens, tool_tokens, total_tokens, cost_usd, duration_ms_sum, total_requests)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT(date, model) DO UPDATE SET
+			input_tokens      = input_tokens + excluded.input_tokens,
+			output_tokens     = output_tokens + excluded.output_tokens,
+			cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+			thoughts_tokens   = thoughts_tokens + excluded.thoughts_tokens,
+			tool_tokens       = tool_tokens + excluded.tool_tokens,
+			total_tokens      = total_tokens + excluded.total_tokens,
+			cost_usd          = cost_usd + excluded.cost_usd,
+			duration_ms_sum   = duration_ms_sum + excluded.duration_ms_sum,
+			total_requests    = total_requests + 1`)
+
 	return r
 }
 
@@ -259,6 +275,9 @@ func (r *Repository) Close() {
 	}
 	if r.stmtUpsCodexAggToks != nil {
 		r.stmtUpsCodexAggToks.Close()
+	}
+	if r.stmtUpsGeminiAgg != nil {
+		r.stmtUpsGeminiAgg.Close()
 	}
 }
 

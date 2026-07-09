@@ -22,11 +22,26 @@ export function fmtTokens(n) {
     return fmtNum(n);
 }
 
+// Local-time, 24-hour, locale-independent "YYYY-MM-DD HH:mm:ss".
+// Built from local getters so midnight renders as 00:xx (never the 12-hour "12:xx AM").
+function fmtDate24(d) {
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+        + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Accepts an ISO string (e.g. "2026-06-11T00:06:29+08:00") or a Date.
+export function fmtDateTime(input) {
+    if (input == null || input === '') return '—';
+    const d = input instanceof Date ? input : new Date(input);
+    if (isNaN(d.getTime())) return typeof input === 'string' ? input : '—';
+    return fmtDate24(d);
+}
+
 export function fmtTime(unix) {
     if (!unix) return '—';
     try {
-        const d = new Date(unix * 1000);
-        return d.toLocaleString();
+        return fmtDate24(new Date(unix * 1000));
     } catch { return String(unix); }
 }
 

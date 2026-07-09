@@ -507,6 +507,23 @@ func tableConfigs() []tableCfg {
 				return fmt.Sprintf("timestamp=%v|event_type=%v|raw_sha1=%x", row["timestamp"], row["event_type"], h[:8])
 			},
 		},
+		// --- Gemini CLI tables (independent product channel) ---
+		{
+			Name: "gemini_api_requests",
+			Columns: []string{
+				"timestamp", "session_id", "model",
+				"input_tokens", "output_tokens", "cache_read_tokens",
+				"thoughts_tokens", "tool_tokens", "total_tokens",
+				"duration_ms", "cost_usd", "http_status_code",
+				"prompt_id", "event_name", "service_name", "service_version",
+			},
+			WhereSQL:  "timestamp BETWEEN ? AND ?",
+			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
+			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
+			StableName: func(row map[string]any) string {
+				return stableKV(row, []string{"timestamp", "session_id", "model", "prompt_id", "input_tokens", "output_tokens", "total_tokens", "cost_usd"})
+			},
+		},
 	}
 
 	sort.Slice(cfgs, func(i, j int) bool { return cfgs[i].Name < cfgs[j].Name })

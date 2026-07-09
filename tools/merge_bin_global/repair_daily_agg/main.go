@@ -97,6 +97,35 @@ func main() {
 		codexTotalApplied += applied
 	}
 	fmt.Printf("Done (Codex). Applied %d delta row(s).\n", codexTotalApplied)
+
+	// Gemini (independent product channel). Skip cleanly on pre-gemini dbs.
+	if has, _ := tableExists(ctx, db, "gemini_api_requests"); has {
+		fmt.Printf("Repairing gemini_daily_model_agg for %d day(s): %s..%s\n", days, fromDate, toDate)
+		var geminiTotalApplied int64
+		for d := fromT; !d.After(toT); d = d.Add(24 * time.Hour) {
+			day := d.Format("2006-01-02")
+			applied, err := repairGeminiOneDay(ctx, db, day)
+			if err != nil {
+				panic(err)
+			}
+			geminiTotalApplied += applied
+		}
+		fmt.Printf("Done (Gemini). Applied %d delta row(s).\n", geminiTotalApplied)
+	} else {
+		fmt.Println("Skipping gemini_daily_model_agg (table not present).")
+	}
+}
+
+func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	var got string
+	err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func repairOneDay(ctx context.Context, db *sql.DB, day string) (int64, error) {
@@ -418,6 +447,151 @@ func codexAggFromDailyAgg(ctx context.Context, db *sql.DB, day string) (map[stri
 		var model string
 		var r codexAggRow
 		if err := rows.Scan(&model, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.ReasoningTokens, &r.TotalTokens, &r.CostUSDUnits, &r.RequestCount); err != nil {
+			return nil, err
+		}
+		out[model] = r
+	}
+	return out, rows.Err()
+}
+
+// --- Gemini CLI daily aggregate repair (independent product channel) ---
+
+type geminiAggRow struct {
+	InputTokens     int64
+	OutputTokens    int64
+	CacheReadTokens int64
+	ThoughtsTokens  int64
+	ToolTokens      int64
+	TotalTokens     int64
+	CostUSDUnits    int64
+	DurationMsSum   int64
+	RequestCount    int64
+}
+
+func repairGeminiOneDay(ctx context.Context, db *sql.DB, day string) (int64, error) {
+	desired, err := geminiAggFromRequests(ctx, db, day)
+	if err != nil {
+		return 0, err
+	}
+	current, err := geminiAggFromDailyAgg(ctx, db, day)
+	if err != nil {
+		return 0, err
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO gemini_daily_model_agg (date, model, total_requests, input_tokens, output_tokens, cache_read_tokens, thoughts_tokens, tool_tokens, total_tokens, cost_usd, duration_ms_sum)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(date, model) DO UPDATE SET
+			total_requests  = total_requests + excluded.total_requests,
+			input_tokens    = input_tokens + excluded.input_tokens,
+			output_tokens   = output_tokens + excluded.output_tokens,
+			cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+			thoughts_tokens = thoughts_tokens + excluded.thoughts_tokens,
+			tool_tokens     = tool_tokens + excluded.tool_tokens,
+			total_tokens    = total_tokens + excluded.total_tokens,
+			cost_usd        = cost_usd + excluded.cost_usd,
+			duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	var applied int64
+	for model, want := range desired {
+		have := current[model]
+		delta := geminiDiffNonNegative(want, have)
+		if delta.RequestCount == 0 && delta.CostUSDUnits == 0 &&
+			delta.InputTokens == 0 && delta.OutputTokens == 0 &&
+			delta.CacheReadTokens == 0 && delta.ThoughtsTokens == 0 &&
+			delta.ToolTokens == 0 && delta.TotalTokens == 0 && delta.DurationMsSum == 0 {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, day, model,
+			delta.RequestCount, delta.InputTokens, delta.OutputTokens, delta.CacheReadTokens,
+			delta.ThoughtsTokens, delta.ToolTokens, delta.TotalTokens, delta.CostUSDUnits, delta.DurationMsSum,
+		); err != nil {
+			return applied, err
+		}
+		applied++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return applied, err
+	}
+	return applied, nil
+}
+
+func geminiDiffNonNegative(want geminiAggRow, have geminiAggRow) geminiAggRow {
+	return geminiAggRow{
+		InputTokens:     max0(want.InputTokens - have.InputTokens),
+		OutputTokens:    max0(want.OutputTokens - have.OutputTokens),
+		CacheReadTokens: max0(want.CacheReadTokens - have.CacheReadTokens),
+		ThoughtsTokens:  max0(want.ThoughtsTokens - have.ThoughtsTokens),
+		ToolTokens:      max0(want.ToolTokens - have.ToolTokens),
+		TotalTokens:     max0(want.TotalTokens - have.TotalTokens),
+		CostUSDUnits:    max0(want.CostUSDUnits - have.CostUSDUnits),
+		DurationMsSum:   max0(want.DurationMsSum - have.DurationMsSum),
+		RequestCount:    max0(want.RequestCount - have.RequestCount),
+	}
+}
+
+func geminiAggFromRequests(ctx context.Context, db *sql.DB, day string) (map[string]geminiAggRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+			model,
+			COALESCE(SUM(input_tokens),0),
+			COALESCE(SUM(output_tokens),0),
+			COALESCE(SUM(cache_read_tokens),0),
+			COALESCE(SUM(thoughts_tokens),0),
+			COALESCE(SUM(tool_tokens),0),
+			COALESCE(SUM(total_tokens),0),
+			COALESCE(SUM(cost_usd),0),
+			COALESCE(SUM(duration_ms),0),
+			COALESCE(COUNT(*),0)
+		FROM gemini_api_requests
+		WHERE date(timestamp, 'unixepoch', 'localtime') = ?
+		GROUP BY model
+	`, day)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]geminiAggRow{}
+	for rows.Next() {
+		var model string
+		var r geminiAggRow
+		if err := rows.Scan(&model, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.ThoughtsTokens, &r.ToolTokens, &r.TotalTokens, &r.CostUSDUnits, &r.DurationMsSum, &r.RequestCount); err != nil {
+			return nil, err
+		}
+		out[model] = r
+	}
+	return out, rows.Err()
+}
+
+func geminiAggFromDailyAgg(ctx context.Context, db *sql.DB, day string) (map[string]geminiAggRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT model, input_tokens, output_tokens, cache_read_tokens, thoughts_tokens, tool_tokens, total_tokens, cost_usd, duration_ms_sum, total_requests
+		FROM gemini_daily_model_agg
+		WHERE date = ?
+	`, day)
+	if err != nil {
+		return map[string]geminiAggRow{}, nil
+	}
+	defer rows.Close()
+
+	out := map[string]geminiAggRow{}
+	for rows.Next() {
+		var model string
+		var r geminiAggRow
+		if err := rows.Scan(&model, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.ThoughtsTokens, &r.ToolTokens, &r.TotalTokens, &r.CostUSDUnits, &r.DurationMsSum, &r.RequestCount); err != nil {
 			return nil, err
 		}
 		out[model] = r

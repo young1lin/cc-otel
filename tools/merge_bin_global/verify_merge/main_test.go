@@ -1,6 +1,36 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestSimpleTableChecksIncludeGeminiWithCost(t *testing.T) {
+	var found *tableCheck
+	for i, c := range simpleTableChecks() {
+		if c.Name == "gemini_api_requests" {
+			found = &simpleTableChecks()[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("simpleTableChecks() must include gemini_api_requests so merges verify Gemini carried over")
+	}
+	if !found.CheckCost {
+		t.Fatal("gemini_api_requests check should compare cost (CheckCost=true)")
+	}
+}
+
+func TestCountQueryEmitsCostSumOnlyWhenChecked(t *testing.T) {
+	withCost := countQuery("gemini_api_requests", true)
+	if !strings.Contains(withCost, "SUM(cost_usd)") || !strings.Contains(withCost, "FROM gemini_api_requests") {
+		t.Fatalf("countQuery(checkCost=true) missing cost sum or table: %q", withCost)
+	}
+	noCost := countQuery("user_prompt_events", false)
+	if strings.Contains(noCost, "SUM(cost_usd)") {
+		t.Fatalf("countQuery(checkCost=false) should not sum cost: %q", noCost)
+	}
+}
 
 func TestContainedAtLeast(t *testing.T) {
 	tests := []struct {

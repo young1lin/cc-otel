@@ -26,6 +26,7 @@ import (
 	"github.com/young1lin/cc-otel/internal/receiver"
 
 	"google.golang.org/grpc"
+	_ "google.golang.org/grpc/encoding/gzip"
 )
 
 var version = "dev"

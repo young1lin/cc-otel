@@ -75,55 +75,21 @@ func main() {
 		}
 	}
 
-	// Claude tables
-	check("api_requests", `SELECT
-		COALESCE(COUNT(*),0),
-		COALESCE(SUM(cost_usd),0),
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM api_requests WHERE timestamp BETWEEN ? AND ?`, true)
+	// Uniform per-table count/cost checks, driven by a registry so new product
+	// channels (Claude, Codex, Gemini) cannot be silently forgotten.
+	runGroup := func(group, header string) {
+		if header != "" {
+			fmt.Println()
+			fmt.Println(header)
+		}
+		for _, c := range simpleTableChecks() {
+			if c.Group == group {
+				check(c.Name, countQuery(c.Name, c.CheckCost), c.CheckCost)
+			}
+		}
+	}
 
-	check("user_prompt_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM user_prompt_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("tool_decision_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM tool_decision_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("tool_result_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM tool_result_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("api_error_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM api_error_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("otel_metric_points", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM otel_metric_points WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("raw_otlp_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM raw_otlp_events WHERE timestamp BETWEEN ? AND ?`, false)
+	runGroup("claude", "")
 
 	// pending_ttft_spans uses 4-arg query
 	{
@@ -141,46 +107,12 @@ func main() {
 		}
 	}
 
-	// Codex tables
-	fmt.Println()
-	fmt.Println("--- Codex tables ---")
+	runGroup("codex", "--- Codex tables ---")
 
-	check("codex_api_requests", `SELECT
-		COALESCE(COUNT(*),0),
-		COALESCE(SUM(cost_usd),0),
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM codex_api_requests WHERE timestamp BETWEEN ? AND ?`, true)
-
-	check("codex_user_prompt_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM codex_user_prompt_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("codex_tool_decision_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM codex_tool_decision_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("codex_tool_result_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM codex_tool_result_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("codex_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM codex_events WHERE timestamp BETWEEN ? AND ?`, false)
-
-	check("codex_raw_otlp_events", `SELECT
-		COALESCE(COUNT(*),0), 0,
-		COALESCE(MIN(timestamp),0),
-		COALESCE(MAX(timestamp),0)
-	FROM codex_raw_otlp_events WHERE timestamp BETWEEN ? AND ?`, false)
+	// Gemini lives in independent tables; skip cleanly if neither db has them.
+	if hasTable(ctx, binDB, "gemini_api_requests") || hasTable(ctx, globalDB, "gemini_api_requests") {
+		runGroup("gemini", "--- Gemini tables ---")
+	}
 
 	// Ledger presence in global only.
 	var ledgerCnt int64
@@ -213,6 +145,56 @@ func main() {
 	if failed {
 		os.Exit(1)
 	}
+}
+
+// tableCheck describes a uniform per-table count/cost comparison between the
+// bin and global dbs. Group controls which header it prints under.
+type tableCheck struct {
+	Name      string
+	Group     string // "claude" | "codex" | "gemini"
+	CheckCost bool
+}
+
+func simpleTableChecks() []tableCheck {
+	return []tableCheck{
+		{"api_requests", "claude", true},
+		{"user_prompt_events", "claude", false},
+		{"tool_decision_events", "claude", false},
+		{"tool_result_events", "claude", false},
+		{"api_error_events", "claude", false},
+		{"otel_metric_points", "claude", false},
+		{"events", "claude", false},
+		{"raw_otlp_events", "claude", false},
+		// pending_ttft_spans is handled separately (4-arg span/created query).
+		{"codex_api_requests", "codex", true},
+		{"codex_user_prompt_events", "codex", false},
+		{"codex_tool_decision_events", "codex", false},
+		{"codex_tool_result_events", "codex", false},
+		{"codex_events", "codex", false},
+		{"codex_raw_otlp_events", "codex", false},
+		{"gemini_api_requests", "gemini", true},
+	}
+}
+
+// countQuery builds the standard count/cost/min-ts/max-ts probe over a single
+// timestamp-keyed table. cost_usd is summed only when checkCost is set.
+func countQuery(table string, checkCost bool) string {
+	cost := "0"
+	if checkCost {
+		cost = "COALESCE(SUM(cost_usd),0)"
+	}
+	return fmt.Sprintf(`SELECT
+		COALESCE(COUNT(*),0),
+		%s,
+		COALESCE(MIN(timestamp),0),
+		COALESCE(MAX(timestamp),0)
+	FROM %s WHERE timestamp BETWEEN ? AND ?`, cost, table)
+}
+
+func hasTable(ctx context.Context, db *sql.DB, name string) bool {
+	var got string
+	err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
+	return err == nil
 }
 
 func mustOpen(ctx context.Context, path string, readOnly bool) *sql.DB {

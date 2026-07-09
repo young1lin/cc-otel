@@ -1,5 +1,5 @@
 import { state, paging } from './state.js';
-import { fmtNum, escapeHtml, formatUserCell, rangeToFromTo } from './utils.js';
+import { fmtNum, fmtDateTime, escapeHtml, formatUserCell, rangeToFromTo } from './utils.js';
 import { loadRequestsData, loadDurationsData, loadModelsData } from './api.js';
 import { renderPagination } from './pagination.js';
 
@@ -117,14 +117,15 @@ export async function loadRequests() {
             renderPagination('requests-pagination', paging.requests, loadRequests);
             return;
         }
+        const hideCC = state.source === 'codex' || state.source === 'gemini';
         tbody.innerHTML = data.map(r => `<tr>
-            <td class="mono">${new Date(r.timestamp).toLocaleString()}</td>
+            <td class="mono">${fmtDateTime(r.timestamp)}</td>
             <td><span class="badge">${escapeHtml(r.model)}</span></td>
             <td class="mono">${formatUserCell(r.user_id)}</td>
             <td class="mono">${fmtNum(r.input_tokens)}</td>
             <td class="mono">${fmtNum(r.output_tokens)}</td>
             <td class="mono">${fmtNum(r.cache_read_tokens)}</td>
-            <td class="mono">${fmtNum(r.cache_creation_tokens)}</td>
+            ${hideCC ? '' : `<td class="mono">${fmtNum(r.cache_creation_tokens)}</td>`}
             <td class="cost-val">$${r.cost_usd.toFixed(4)}</td>
             <td class="mono" title="${escapeHtml(
                 r.ttft_ms
