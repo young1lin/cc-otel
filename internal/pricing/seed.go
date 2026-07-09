@@ -12,6 +12,9 @@ import (
 //go:embed embed/seed.json
 var seedJSON []byte
 
+//go:embed embed/manual_seed.json
+var manualSeedJSON []byte
+
 // seedFile is the on-disk shape of embed/seed.json. We keep _meta separate
 // from entries so the file stays readable.
 type seedFile struct {
@@ -28,12 +31,29 @@ type seedEntry struct {
 	Aliases       []string `json:"aliases"`
 }
 
-// loadSeedEntries returns the embedded seed parsed into Entry values.
+// loadSeedEntries returns the embedded seed (auto-generated from LiteLLM via
+// tools/dump_pricing_snapshot) merged with the hand-maintained manual seed
+// (embed/manual_seed.json — models no upstream catalog carries, e.g. Xiaomi
+// MiMo, StepFun, not-yet-listed DeepSeek V4). Manual entries override auto on
+// key conflict; they are the curated defaults and survive seed.json regen.
 // Public so tests can exercise the same data the runtime uses.
 func loadSeedEntries() ([]Entry, error) {
-	var sf seedFile
-	if err := json.Unmarshal(seedJSON, &sf); err != nil {
+	auto, err := parseSeedFile(seedJSON)
+	if err != nil {
 		return nil, fmt.Errorf("parse embed/seed.json: %w", err)
+	}
+	manual, err := parseSeedFile(manualSeedJSON)
+	if err != nil {
+		return nil, fmt.Errorf("parse embed/manual_seed.json: %w", err)
+	}
+	return mergeSeedEntries(auto, manual), nil
+}
+
+// parseSeedFile parses one embedded seed file into Entry values.
+func parseSeedFile(b []byte) ([]Entry, error) {
+	var sf seedFile
+	if err := json.Unmarshal(b, &sf); err != nil {
+		return nil, err
 	}
 	now := time.Now().Unix()
 	out := make([]Entry, 0, len(sf.Entries))
@@ -51,6 +71,36 @@ func loadSeedEntries() ([]Entry, error) {
 		})
 	}
 	return out, nil
+}
+
+// mergeSeedEntries folds manual into auto, with manual winning on key conflict.
+// Output order: auto entries first (manual value substituted where overridden),
+// then any manual-only keys appended.
+func mergeSeedEntries(auto, manual []Entry) []Entry {
+	merged := make(map[string]Entry, len(auto)+len(manual))
+	for _, e := range auto {
+		merged[e.Model] = e
+	}
+	for _, e := range manual {
+		merged[e.Model] = e // manual overrides auto on conflict
+	}
+	out := make([]Entry, 0, len(merged))
+	seen := make(map[string]bool, len(merged))
+	for _, e := range auto {
+		if seen[e.Model] {
+			continue
+		}
+		out = append(out, merged[e.Model])
+		seen[e.Model] = true
+	}
+	for _, e := range manual {
+		if seen[e.Model] {
+			continue
+		}
+		out = append(out, merged[e.Model])
+		seen[e.Model] = true
+	}
+	return out
 }
 
 // seedIfEmpty bulk-inserts the embedded seed when model_pricing has no rows.
