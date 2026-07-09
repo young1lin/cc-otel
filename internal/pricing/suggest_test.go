@@ -35,13 +35,17 @@ func orRoutingServer(t *testing.T, modelsPayload, endpointsPayload string, model
 // automatically on test cleanup.
 func redirectBoth(t *testing.T, baseURL string) {
 	t.Helper()
+	urlMu.Lock()
 	origM := openRouterModelsURL
 	origE := openRouterEndpointsURLFmt
 	openRouterModelsURL = baseURL
 	openRouterEndpointsURLFmt = baseURL + "/models/%s/endpoints"
+	urlMu.Unlock()
 	t.Cleanup(func() {
+		urlMu.Lock()
 		openRouterModelsURL = origM
 		openRouterEndpointsURLFmt = origE
+		urlMu.Unlock()
 	})
 }
 
