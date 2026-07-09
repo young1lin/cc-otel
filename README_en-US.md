@@ -14,8 +14,11 @@
 
 Self-hosted OTLP gRPC receiver + Web dashboard for **Claude Code** token usage and cost.
 
-<!-- TODO: screenshot placeholder -->
-<!-- ![Dashboard Screenshot](./images/dashboard.png) -->
+**Dark**
+![Dashboard Dark](./assets/images/ScreenshotDark.png)
+
+**Light**
+![Dashboard Light](./assets/images/ScreenshotLight.png)
 
 ## Why
 
@@ -226,8 +229,7 @@ Or run manually: `cc-otel cleanup`
 
 ## Web UI
 
-<!-- TODO: Web UI screenshot placeholder -->
-<!-- ![Web UI Screenshot](./images/web-ui.png) -->
+![Web UI](./assets/images/ScreenshotDark.png)
 
 ### Status Indicator
 

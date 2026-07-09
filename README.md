@@ -14,8 +14,11 @@
 
 Claude Code Token 用量监控服务。接收 OTEL 遥测数据，提供 Web 仪表盘查看 token 消耗和费用。
 
-<!-- TODO: 截图占位 -->
-<!-- ![Dashboard 截图](./images/dashboard.png) -->
+**Dark**
+![Dashboard Dark](./assets/images/ScreenshotDark.png)
+
+**Light**
+![Dashboard Light](./assets/images/ScreenshotLight.png)
 
 ## 为什么需要
 
@@ -226,8 +229,7 @@ retention_days: 90   # 0 = 永不清理
 
 ## Web UI
 
-<!-- TODO: Web UI 截图占位 -->
-<!-- ![Web UI 截图](./images/web-ui.png) -->
+![Web UI](./assets/images/ScreenshotDark.png)
 
 ### 状态指示器
 
