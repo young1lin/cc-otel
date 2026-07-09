@@ -29,5 +29,9 @@ cc-otel-linux
 # Environment
 .env
 
-# Claude Code internal instructions
-.claude/
+# Claude Code: ignore everything under .claude except tracked CLAUDE.md
+.claude/settings.json
+.claude/settings.local.json
+.claude/docs/
+!.claude/
+!.claude/CLAUDE.md

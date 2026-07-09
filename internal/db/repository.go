@@ -41,61 +41,61 @@ type APIRequest struct {
 	HostArch            string    `json:"host_arch"`
 	OSType              string    `json:"os_type"`
 	OSVersion           string    `json:"os_version"`
-	ErrorType            string    `json:"error_type"`
-	ErrorMessage         string    `json:"error_message"`
-	ErrorCode            int64     `json:"error_code"`
-	ErrorRetryable       int       `json:"error_retryable"`
+	ErrorType           string    `json:"error_type"`
+	ErrorMessage        string    `json:"error_message"`
+	ErrorCode           int64     `json:"error_code"`
+	ErrorRetryable      int       `json:"error_retryable"`
 }
 
 // Event represents any OTEL event (user_prompt, api_request, tool_decision, tool_result).
 // All unrecognized event names are stored here; known types go to dedicated tables.
 type Event struct {
-	ID                   int64     `json:"id"`
-	Timestamp            time.Time `json:"timestamp"`
-	SessionID            string    `json:"session_id"`
-	UserID               string    `json:"user_id"`
-	PromptID             string    `json:"prompt_id"`
-	PromptText           string    `json:"prompt_text"`
-	PromptLength         int64     `json:"prompt_length"`
-	EventName            string    `json:"event_name"`           // user_prompt / api_request / tool_decision / tool_result
-	EventSequence        int64     `json:"event_sequence"`
-	Model                string    `json:"model"`
-	InputTokens          int64     `json:"input_tokens"`
-	OutputTokens         int64     `json:"output_tokens"`
-	CacheReadTokens      int64     `json:"cache_read_tokens"`
-	CacheCreationTokens  int64     `json:"cache_creation_tokens"`
-	CostUSD              float64   `json:"cost_usd"`
-	DurationMs           int64     `json:"duration_ms"`
-	TTFTMs               int64     `json:"ttft_ms"`
-	Speed                string    `json:"speed"`                 // normal / fast
-	TerminalType         string    `json:"terminal_type"`
-	ToolName             string    `json:"tool_name"`             // Agent / Bash / Read / Write ...
-	Decision             string    `json:"decision"`              // accept / deny
-	Source               string    `json:"source"`                // config / user
-	DecisionSource       string    `json:"decision_source"`       // tool_result (e.g. config)
-	DecisionType         string    `json:"decision_type"`         // tool_result (e.g. accept)
-	Success              int       `json:"success"`              // 1/0 for tool_result
-	ToolResultSizeBytes  int64     `json:"tool_result_size_bytes"`
-	ErrorType            string    `json:"error_type"`           // for api_error events
-	ErrorMessage         string    `json:"error_message"`        // for api_error events
-	ErrorCode            int64     `json:"error_code"`           // HTTP status / error code
-	RequestID            string    `json:"request_id"`
-	ErrorRetryable       int       `json:"error_retryable"`      // 1/0 for api_error
-	ServiceName          string    `json:"service_name"`
-	ServiceVersion       string    `json:"service_version"`
-	HostArch             string    `json:"host_arch"`
-	OSType               string    `json:"os_type"`
-	OSVersion            string    `json:"os_version"`
+	ID                  int64     `json:"id"`
+	Timestamp           time.Time `json:"timestamp"`
+	SessionID           string    `json:"session_id"`
+	UserID              string    `json:"user_id"`
+	PromptID            string    `json:"prompt_id"`
+	PromptText          string    `json:"prompt_text"`
+	PromptLength        int64     `json:"prompt_length"`
+	EventName           string    `json:"event_name"` // user_prompt / api_request / tool_decision / tool_result
+	EventSequence       int64     `json:"event_sequence"`
+	Model               string    `json:"model"`
+	InputTokens         int64     `json:"input_tokens"`
+	OutputTokens        int64     `json:"output_tokens"`
+	CacheReadTokens     int64     `json:"cache_read_tokens"`
+	CacheCreationTokens int64     `json:"cache_creation_tokens"`
+	CostUSD             float64   `json:"cost_usd"`
+	DurationMs          int64     `json:"duration_ms"`
+	TTFTMs              int64     `json:"ttft_ms"`
+	Speed               string    `json:"speed"` // normal / fast
+	TerminalType        string    `json:"terminal_type"`
+	ToolName            string    `json:"tool_name"`       // Agent / Bash / Read / Write ...
+	Decision            string    `json:"decision"`        // accept / deny
+	Source              string    `json:"source"`          // config / user
+	DecisionSource      string    `json:"decision_source"` // tool_result (e.g. config)
+	DecisionType        string    `json:"decision_type"`   // tool_result (e.g. accept)
+	Success             int       `json:"success"`         // 1/0 for tool_result
+	ToolResultSizeBytes int64     `json:"tool_result_size_bytes"`
+	ErrorType           string    `json:"error_type"`    // for api_error events
+	ErrorMessage        string    `json:"error_message"` // for api_error events
+	ErrorCode           int64     `json:"error_code"`    // HTTP status / error code
+	RequestID           string    `json:"request_id"`
+	ErrorRetryable      int       `json:"error_retryable"` // 1/0 for api_error
+	ServiceName         string    `json:"service_name"`
+	ServiceVersion      string    `json:"service_version"`
+	HostArch            string    `json:"host_arch"`
+	OSType              string    `json:"os_type"`
+	OSVersion           string    `json:"os_version"`
 }
 
 // Dashboard holds aggregated token usage and cost statistics for a date range.
 type Dashboard struct {
-	TotalCostUSD          float64 `json:"total_cost_usd"`
-	TotalInputTokens      int64   `json:"total_input_tokens"`       // SUM(input+cache_read+cache_creation) — input-side total (matches chart KPI Input)
-	TotalCacheReadTokens  int64   `json:"total_cache_read_tokens"`   // SUM(cache_read_tokens) — matches column "Cache Read"
-	TotalOutputTokens     int64   `json:"total_output_tokens"`
-	CacheHitRate          float64 `json:"cache_hit_rate"`
-	RequestCount          int64   `json:"request_count"`
+	TotalCostUSD         float64 `json:"total_cost_usd"`
+	TotalInputTokens     int64   `json:"total_input_tokens"`      // SUM(input+cache_read+cache_creation) — input-side total (matches chart KPI Input)
+	TotalCacheReadTokens int64   `json:"total_cache_read_tokens"` // SUM(cache_read_tokens) — matches column "Cache Read"
+	TotalOutputTokens    int64   `json:"total_output_tokens"`
+	CacheHitRate         float64 `json:"cache_hit_rate"`
+	RequestCount         int64   `json:"request_count"`
 }
 
 // DailySummary holds per-day aggregated token and cost statistics.
@@ -116,15 +116,27 @@ type DailyModelSummary struct {
 	InputTokens         int64   `json:"input_tokens"`
 	OutputTokens        int64   `json:"output_tokens"`
 	CacheReadTokens     int64   `json:"cache_read_tokens"`
-	CacheCreationTokens int64     `json:"cache_creation_tokens"`
-	RequestCount        int64     `json:"request_count"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	RequestCount        int64   `json:"request_count"`
+}
+
+// HourlyModelSummary holds per-(hour, model) aggregated token and cost statistics for a single local day.
+type HourlyModelSummary struct {
+	Hour                int     `json:"hour"` // 0..23 in local time
+	Model               string  `json:"model"`
+	CostUSD             float64 `json:"cost_usd"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	RequestCount        int64   `json:"request_count"`
 }
 
 // Repository provides data access methods for the SQLite database.
 type Repository struct {
-	db          *sql.DB
-	stmtInsReq  *sql.Stmt // prepared: INSERT OR IGNORE INTO api_requests
-	stmtUpsAgg  *sql.Stmt // prepared: UPSERT INTO daily_model_agg
+	db         *sql.DB
+	stmtInsReq *sql.Stmt // prepared: INSERT OR IGNORE INTO api_requests
+	stmtUpsAgg *sql.Stmt // prepared: UPSERT INTO daily_model_agg
 }
 
 // NewRepository returns a Repository backed by the given database connection.
@@ -543,6 +555,57 @@ func (r *Repository) GetDailyStatsByModel(ctx context.Context, from, to string, 
 	return result, rows.Err()
 }
 
+// GetHourlyStatsByModel returns per-(local-hour, model) aggregated stats for a single local day.
+// date must be YYYY-MM-DD (local time). Optional model filter narrows rows for the given model.
+func (r *Repository) GetHourlyStatsByModel(ctx context.Context, date string, model string) ([]HourlyModelSummary, error) {
+	fromUnix, toExclusiveUnix, err := localDateRangeToUnix(date, date)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT
+			CAST(strftime('%H', timestamp, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+			model,
+			COALESCE(SUM(cost_usd), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0),
+			COALESCE(COUNT(*), 0)
+		FROM api_requests
+		WHERE timestamp >= ? AND timestamp < ?
+	`
+	args := []interface{}{fromUnix, toExclusiveUnix}
+	if strings.TrimSpace(model) != "" {
+		query += ` AND model = ?`
+		args = append(args, model)
+	}
+	query += `
+		GROUP BY hour, model
+		ORDER BY hour ASC, SUM(cost_usd) DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("hourly model stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []HourlyModelSummary
+	for rows.Next() {
+		var s HourlyModelSummary
+		var totalCost int64
+		if err := rows.Scan(&s.Hour, &s.Model, &totalCost, &s.InputTokens, &s.OutputTokens,
+			&s.CacheReadTokens, &s.CacheCreationTokens, &s.RequestCount); err != nil {
+			return nil, err
+		}
+		s.CostUSD = costToFloat64(totalCost)
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
 // CountDailyStatsByModel returns the number of distinct (date, model) groups.
 func (r *Repository) CountDailyStatsByModel(ctx context.Context, from, to string, granularity string) (int64, error) {
 	dateExpr := aggDateExpr(granularity)
@@ -556,17 +619,11 @@ func (r *Repository) CountDailyStatsByModel(ctx context.Context, from, to string
 	return count, err
 }
 
-// GetRecentRequests returns individual API request records with optional model and date filters.
-func (r *Repository) GetRecentRequests(ctx context.Context, limit, offset int, model, from, to string) ([]APIRequest, error) {
-	query := `SELECT id, timestamp, session_id, user_id, prompt_id, prompt_length,
-		model, actual_model, input_tokens, output_tokens,
-		cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, ttft_ms, request_id,
-		event_name, event_sequence, speed, terminal_type, tool_name, decision, source,
-		service_name, service_version, host_arch, os_type, os_version,
-		error_type, error_message, error_code, error_retryable
-		FROM api_requests`
-	args := []interface{}{}
-	where := []string{}
+// requestWhereClause builds a shared WHERE clause + args for api_requests queries
+// filtered by optional model and local date range [from, to].
+func requestWhereClause(model, from, to string) (string, []interface{}, error) {
+	var where []string
+	var args []interface{}
 	if model != "" {
 		where = append(where, "model = ?")
 		args = append(args, model)
@@ -574,17 +631,32 @@ func (r *Repository) GetRecentRequests(ctx context.Context, limit, offset int, m
 	if from != "" && to != "" {
 		fromUnix, toExclusiveUnix, err := localDateRangeToUnix(from, to)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		where = append(where, "timestamp >= ?", "timestamp < ?")
 		args = append(args, fromUnix, toExclusiveUnix)
 	}
+	clause := ""
 	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+		clause = " WHERE " + strings.Join(where, " AND ")
 	}
-	query += ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`
-	args = append(args, limit)
-	args = append(args, offset)
+	return clause, args, nil
+}
+
+// GetRecentRequests returns individual API request records with optional model and date filters.
+func (r *Repository) GetRecentRequests(ctx context.Context, limit, offset int, model, from, to string) ([]APIRequest, error) {
+	whereClause, args, err := requestWhereClause(model, from, to)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT id, timestamp, session_id, user_id, prompt_id, prompt_length,
+		model, actual_model, input_tokens, output_tokens,
+		cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, ttft_ms, request_id,
+		event_name, event_sequence, speed, terminal_type, tool_name, decision, source,
+		service_name, service_version, host_arch, os_type, os_version,
+		error_type, error_message, error_code, error_retryable
+		FROM api_requests` + whereClause + ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -634,26 +706,12 @@ func (r *Repository) GetDistinctModels(ctx context.Context) ([]string, error) {
 
 // CountRecentRequests returns the total number of API request records matching the filters.
 func (r *Repository) CountRecentRequests(ctx context.Context, model, from, to string) (int64, error) {
-	query := `SELECT COUNT(*) FROM api_requests`
-	args := []interface{}{}
-	where := []string{}
-	if model != "" {
-		where = append(where, "model = ?")
-		args = append(args, model)
-	}
-	if from != "" && to != "" {
-		fromUnix, toExclusiveUnix, err := localDateRangeToUnix(from, to)
-		if err != nil {
-			return 0, err
-		}
-		where = append(where, "timestamp >= ?", "timestamp < ?")
-		args = append(args, fromUnix, toExclusiveUnix)
-	}
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+	whereClause, args, err := requestWhereClause(model, from, to)
+	if err != nil {
+		return 0, err
 	}
 	var count int64
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests`+whereClause, args...).Scan(&count)
 	return count, err
 }
 
@@ -721,29 +779,35 @@ func (r *Repository) CountSessionStats(ctx context.Context, from, to string) (in
 	return count, err
 }
 
-// Cleanup deletes records older than beforeUnix from raw_otlp_events, events, and daily_model_agg.
+// Cleanup deletes records older than beforeUnix from all event tables and daily_model_agg.
 func (r *Repository) Cleanup(ctx context.Context, beforeUnix int64) (int64, error) {
 	var total int64
-	res, err := r.db.ExecContext(ctx, `DELETE FROM raw_otlp_events WHERE timestamp < ?`, beforeUnix)
-	if err != nil {
-		return 0, fmt.Errorf("cleanup raw_otlp_events: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	total += n
 
-	res, err = r.db.ExecContext(ctx, `DELETE FROM events WHERE timestamp < ?`, beforeUnix)
-	if err != nil {
-		return total, fmt.Errorf("cleanup events: %w", err)
+	// Timestamp-based tables (unix epoch column "timestamp")
+	tsTable := []string{
+		"raw_otlp_events",
+		"events",
+		"user_prompt_events",
+		"tool_decision_events",
+		"tool_result_events",
+		"api_error_events",
 	}
-	n, _ = res.RowsAffected()
-	total += n
+	for _, tbl := range tsTable {
+		res, err := r.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE timestamp < ?`, tbl), beforeUnix)
+		if err != nil {
+			return total, fmt.Errorf("cleanup %s: %w", tbl, err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
 
+	// Date-string based table
 	beforeDate := time.Unix(beforeUnix, 0).Local().Format("2006-01-02")
-	res, err = r.db.ExecContext(ctx, `DELETE FROM daily_model_agg WHERE date < ?`, beforeDate)
+	res, err := r.db.ExecContext(ctx, `DELETE FROM daily_model_agg WHERE date < ?`, beforeDate)
 	if err != nil {
 		return total, fmt.Errorf("cleanup daily_model_agg: %w", err)
 	}
-	n, _ = res.RowsAffected()
+	n, _ := res.RowsAffected()
 	total += n
 
 	r.db.ExecContext(ctx, "PRAGMA incremental_vacuum")
