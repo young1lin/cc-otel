@@ -13,6 +13,10 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 > tags via the GoReleaser pipeline (latest: `v0.1.0-preview.7`). Once behavior
 > stabilizes, the contents below will fold into `v0.1.0`.
 
+### Proxy compatibility fix
+
+- **Auto-inject `no_proxy`**: `/cc-otel:setup` now automatically adds `"no_proxy": "localhost,127.0.0.1"` to `settings.json` `env`. When `http_proxy` / `https_proxy` is set (e.g. Clash, V2Ray, corporate proxies), OTEL gRPC traffic to `localhost:4317` is routed through the proxy and silently dropped. `no_proxy` ensures the OTEL exporter connects directly, bypassing the proxy. README and setup docs updated with prominent proxy warning.
+
 ### Sources & ingestion
 
 - **OTLP gRPC receiver**: ingest logs / metrics / traces over OTLP/gRPC. Code default port is `4317` (see the Daemon / CLI section below for port details).

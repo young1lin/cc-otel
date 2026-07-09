@@ -12,6 +12,10 @@
 > 通过 `v0.1.0-preview.N` 标签逐步迭代（已发布到 `v0.1.0-preview.7`，对应
 > GoReleaser 流水线自动出包）。等行为稳定后整体收敛为 `v0.1.0` 正式版本。
 
+### 代理兼容性修复
+
+- **`no_proxy` 自动注入**：`/cc-otel:setup` 现在会在 `settings.json` 的 `env` 中自动添加 `"no_proxy": "localhost,127.0.0.1"`。当用户设置了 `http_proxy` / `https_proxy`（如 Clash、V2Ray、企业代理）时，OTEL gRPC 流量会错误地走代理，导致遥测数据静默丢失。`no_proxy` 确保 OTEL exporter 直连 localhost，绕过代理。README 和 setup 文档已同步更新，重点标注代理用户必须配置此项。
+
 ### 数据源与接收
 
 - **OTLP gRPC 接收器**：通过 OTLP/gRPC 接收 logs / metrics / traces。代码默认端口 `4317`（详见下面 Daemon / CLI 段的端口说明）。

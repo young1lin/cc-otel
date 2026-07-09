@@ -55,6 +55,7 @@ One-command setup for cc-otel telemetry dashboard. Downloads the latest binary (
      OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:<otel_port>"
      OTEL_METRICS_EXPORTER       = "otlp"
      OTEL_LOGS_EXPORTER          = "otlp"
+     no_proxy                    = "localhost,127.0.0.1"
      ```
      其中 `<otel_port>` 取自 cc-otel.yaml 的 `otel_port`，默认 4317
    - Preserve all other top-level keys (`"permissions"`, `"hooks"`, etc.) and all other `"env"` entries untouched
@@ -76,10 +77,13 @@ One-command setup for cc-otel telemetry dashboard. Downloads the latest binary (
          "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
          "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
          "OTEL_METRICS_EXPORTER": "otlp",
-         "OTEL_LOGS_EXPORTER": "otlp"
+         "OTEL_LOGS_EXPORTER": "otlp",
+         "no_proxy": "localhost,127.0.0.1"
        }
      }
      ```
+
+   **Why `no_proxy`?** If the user has `http_proxy` / `https_proxy` set (e.g. Clash, V2Ray, or corporate proxies), the OTEL gRPC client will route traffic to `localhost:4317` through the proxy, which silently drops the connection — **telemetry data will not be received at all**. Adding `no_proxy = "localhost,127.0.0.1"` forces the OTEL exporter to connect directly, bypassing the proxy. This is not optional for proxy users.
 
 5. **Initialize config if not exists:**
    - Run `<bin>/cc-otel init` to generate default config
@@ -94,7 +98,7 @@ One-command setup for cc-otel telemetry dashboard. Downloads the latest binary (
 
 ## Important Notes
 
-- settings.json 操作是 **merge**，不是 replace。只在 `env` 内添加/更新上述 5 个 key，绝不删除任何已有 key
+- settings.json 操作是 **merge**，不是 replace。只在 `env` 内添加/更新上述 6 个 key（含 `no_proxy`），绝不删除任何已有 key
 - 如果 settings.json 不存在，创建最小 JSON：`{"env": {...}}`
 - 如果 settings.json 存在但无 `env` 字段，添加 `env` 字段，保留其他所有字段
 - If download fails, suggest manual download from GitHub releases page
