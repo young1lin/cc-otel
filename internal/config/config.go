@@ -6,18 +6,46 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config holds all runtime configuration for cc-otel, loaded from YAML with env overrides.
 type Config struct {
-	OTELPort      int               `yaml:"otel_port"`
-	WebPort       int               `yaml:"web_port"`
-	DBPath        string            `yaml:"db_path"`
-	RetentionDays int               `yaml:"retention_days"`
-	RawTTLDays    int               `yaml:"raw_ttl_days"`
-	ModelMapping  map[string]string `yaml:"model_mapping"`
+	OTELPort       int                   `yaml:"otel_port"`
+	WebPort        int                   `yaml:"web_port"`
+	DBPath         string                `yaml:"db_path"`
+	RetentionDays  int                   `yaml:"retention_days"`
+	RawTTLDays     int                   `yaml:"raw_ttl_days"`
+	ModelMapping   map[string]string     `yaml:"model_mapping"`
+	Pricing        map[string]PriceEntry `yaml:"pricing"`
+	PricingRefresh PricingRefreshConfig  `yaml:"pricing_refresh"`
+}
+
+// PriceEntry is a user-supplied per-token price override for a single model.
+// Costs are USD per token; cache fields fall back to multipliers (0.1×/1.25×) when zero.
+type PriceEntry struct {
+	Input         float64  `yaml:"input"`
+	Output        float64  `yaml:"output"`
+	CacheRead     float64  `yaml:"cache_read"`
+	CacheCreation float64  `yaml:"cache_creation"`
+	Aliases       []string `yaml:"aliases"`
+}
+
+// PricingRefreshConfig controls the daily remote pricing refresher.
+type PricingRefreshConfig struct {
+	Enabled  *bool         `yaml:"enabled"`  // pointer so YAML omission keeps default-true
+	Interval time.Duration `yaml:"interval"` // default 24h
+	Timeout  time.Duration `yaml:"timeout"`  // default 30s
+}
+
+// PricingRefreshEnabled returns true unless the user explicitly set enabled: false.
+func (c *PricingRefreshConfig) PricingRefreshEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // claudeDir returns ~/.claude (Claude Code's standard data directory).

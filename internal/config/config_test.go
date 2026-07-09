@@ -34,7 +34,7 @@ model_mapping:
 func TestResolveActualModel(t *testing.T) {
 	cfg := &Config{
 		ModelMapping: map[string]string{
-			"glm-5":      "claude-opus-4-6",
+			"glm-5":       "claude-opus-4-6",
 			"deepseek-r1": "claude-sonnet-4-6",
 		},
 	}

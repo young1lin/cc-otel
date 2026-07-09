@@ -145,3 +145,69 @@ Recommended order:
 - **TTFT backfill**: best-effort only; the "pending + time window" approach softens out-of-order arrivals.
 - **Frontend modularity (vanilla ESM, no build tools)**: `internal/web/static/app.js` is split into a set of ES modules under `js/*.js`, loaded via the browser's native `<script type="module">`. **No** Node / Vite / bundler. `go:embed static/*` recurses, so the single-binary deployment shape is unchanged. Each module has one responsibility (state / utils / theme / api / filters / sse / breakdown / insights / chart-main / panel-* / pagination); pure helpers live in `utils.js` / `theme.js` / `insights.js` with `node --test` unit tests. Cross-module dependencies are injected via `initX({ ... })` callbacks so we avoid circular imports.
 
+---
+
+## 8. Pricing table & non-Claude cost recompute
+
+### Why
+
+Trusting upstream `cost_usd` blindly produces two known failure modes:
+
+1. **Codex never reports cost**: `codex.api_request` and `codex.sse_event` carry no `cost_usd`, so the dashboard Cost KPI was permanently `—`.
+2. **GLM/DeepSeek/Kimi via Anthropic-compatible reverse proxies**: Claude Code prices the call against Anthropic's table, so the recorded cost reflects Sonnet/Opus prices applied to GLM tokens — wildly inflated.
+
+### Single rule
+
+```
+if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-")
+    keep e.CostUSD as upstream-reported  // Claude is Anthropic's source of truth
+else
+    e.CostUSD = registry.Calc(...)       // every other model is recomputed locally
+```
+
+Derived effects: Codex (`gpt-5-codex`) is always recomputed; GLM via proxy is always recomputed; native Anthropic Claude is untouched. No `cost_mode` config exists — the rule is a one-liner.
+
+### Three-layer lookup priority
+
+```
+1. cfg.Pricing (user override in cc-otel.yaml)   → in-memory, loaded at startup, highest
+2. model_pricing table                           → SQLite, persistent across restarts
+3. Daily refresh (LiteLLM + OpenRouter)          → 24h tick, diff-only writes
+```
+
+The query path only consults layers 1+2; remote sources contribute exclusively at write time, so runtime traffic never blocks on the network.
+
+### Initialisation
+
+`pricing.NewRegistry` calls `seedIfEmpty`. If `model_pricing` is empty, it bulk-inserts ~669 entries from `internal/pricing/embed/seed.json`, generated offline by `tools/dump_pricing_snapshot` from BerriAI/litellm. Anthropic / Claude entries are intentionally absent — registry lookups for Claude are designed to miss, and the receiver short-circuits before consulting it via `IsClaudeModel`.
+
+### Refresher (diff writes)
+
+`internal/pricing/refresher.go` runs a goroutine that ticks immediately and then every 24h:
+
+1. Fetch all Sources concurrently (LiteLLM priority 10, OpenRouter priority 5).
+2. Higher priority wins for shared model ids.
+3. Hash each fetched entry (`fmt.Sprintf("%.12g|%.12g|%.12g|%.12g", input, output, cacheRead, cacheCreate)`) and compare with the current SQLite snapshot.
+4. Only write rows whose hash changed; unchanged rows skip the UPDATE entirely so `updated_at` doesn't flap.
+5. If every source fails the previous snapshot is preserved; partial failures degrade status to `partial` and surface via `/api/status`.
+
+After applying changes the refresher calls `Reloader.Reload(ctx)` so the in-memory registry sees the new values, and `SetRefreshStatus(...)` so the popup shows the latest result.
+
+### Model-name matching (`match.go`)
+
+Resolving short names like `glm-4.6` to canonical entries like `openrouter/z-ai/glm-4.6` works through a four-step cascade:
+
+1. Exact match.
+2. Strip date suffix (`-20251028`) and tags (`-preview` / `-latest` / etc.), then exact again.
+3. Alias reverse lookup (the seed populates the `aliases` column).
+4. Longest-prefix match with a `-` / `.` / `:` boundary so `gpt-5` doesn't capture `gpt-50`.
+
+### History backfill
+
+`tools/recompute_cost` defaults to dry-run; `--apply` writes:
+
+1. Build the same `pricing.Registry`.
+2. SELECT rows in the date range, skipping Claude rows and rows without token signal.
+3. Recompute and compare against the stored `cost_usd`; queue only differing rows.
+4. After UPDATEs, DELETE + INSERT to rebuild `daily_model_agg` / `codex_daily_model_agg` from the corrected base rows.
+

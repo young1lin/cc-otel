@@ -210,7 +210,40 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source=codex`) to view Codex usage data. Note: Codex does not report cost (`cost_usd`), so the Cost KPI displays `—` on the Codex tab.
+Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source=codex`) to view Codex usage data. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into `codex_api_requests.cost_usd`, so the Cost KPI matches the Claude tab.
+
+## Pricing table & non-Claude cost recompute
+
+cc-otel ships with a price snapshot derived from [BerriAI/litellm](https://github.com/BerriAI/litellm) (GPT / GLM / DeepSeek / Kimi / Qwen / Gemini / …). The first start seeds it into the `model_pricing` table. Lookups follow this priority:
+
+1. **`pricing:` in `cc-otel.yaml`** (user override, highest)
+2. **SQLite `model_pricing` table** (canonical store, survives restarts)
+3. **Daily upstream refresh** from LiteLLM + OpenRouter (diff-only writes)
+
+Recompute follows a single rule:
+
+- `model` starts with `claude-` (case-insensitive) → trust the `cost_usd` Claude Code already reported (Anthropic owns the canonical Claude prices).
+- Everything else → recompute locally from token counts.
+
+This corrects two situations: Codex (`gpt-5-codex`, etc.) records that previously stored `cost_usd = 0`, and GLM/DeepSeek/Kimi traffic that flowed through an Anthropic-compatible reverse proxy and was therefore priced like Sonnet/Opus.
+
+Debug: `GET /api/pricing/lookup?model=glm-4.6` shows the resolved entry and match strategy. The top-right `live` popup has a **Pricing Table** row (green/yellow/red dot indicates last-refresh age).
+
+Backfilling history:
+
+```bash
+# dry-run first
+go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both
+# review the per-model delta, then apply
+go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both --apply
+```
+
+To disable the daily refresher, add this to `cc-otel.yaml`:
+
+```yaml
+pricing_refresh:
+  enabled: false
+```
 
 ## Configuration
 

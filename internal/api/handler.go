@@ -17,6 +17,7 @@ import (
 
 	"github.com/young1lin/cc-otel/internal/config"
 	"github.com/young1lin/cc-otel/internal/db"
+	"github.com/young1lin/cc-otel/internal/pricing"
 	"github.com/young1lin/cc-otel/internal/web"
 )
 
@@ -83,6 +84,7 @@ type Handler struct {
 	broker     *Broker
 	cfg        *config.Config
 	configPath string
+	pricer     pricing.Registry // optional; nil disables /api/pricing/lookup and the pricing block in /api/status
 }
 
 // NewHandler creates a Handler with the given database repository, SSE broker, config,
@@ -91,10 +93,16 @@ func NewHandler(repo *db.Repository, broker *Broker, cfg *config.Config, configP
 	return &Handler{repo: repo, broker: broker, cfg: cfg, configPath: configPath}
 }
 
+// SetPricer injects the pricing registry used by /api/status and
+// /api/pricing/lookup. Done via setter (rather than another constructor
+// argument) to avoid churning every existing call site.
+func (h *Handler) SetPricer(p pricing.Registry) { h.pricer = p }
+
 // Register wires all API and static-file routes onto the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", h.Health)
 	mux.HandleFunc("/api/status", h.Status)
+	mux.HandleFunc("/api/pricing/lookup", h.PricingLookup)
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
 	mux.HandleFunc("/api/daily", h.DailyModel)
 	mux.HandleFunc("/api/hourly", h.HourlyModel)
@@ -158,6 +166,24 @@ type StatusResponse struct {
 	// DBPath is the resolved SQLite path after yaml + CC_OTEL_DB_PATH env override.
 	ConfigPath string `json:"config_path"`
 	DBPath     string `json:"db_path"`
+
+	// Pricing is omitted when no pricing registry is wired (legacy callers /
+	// tests). The frontend Server Status popup keys off the presence of this
+	// block to decide whether to render the Pricing row.
+	Pricing *PricingStatus `json:"pricing,omitempty"`
+}
+
+// PricingStatus mirrors pricing.Snapshot with JSON-friendly names. Kept
+// separate so the api package doesn't expose the internal struct directly.
+type PricingStatus struct {
+	TableSize       int      `json:"table_size"`
+	UserOverrides   int      `json:"user_overrides"`
+	LastRefreshAt   int64    `json:"last_refresh_at"`
+	LastRefreshMsg  string   `json:"last_refresh_status"`
+	LastRefreshErr  string   `json:"last_refresh_error,omitempty"`
+	LastChangedRows int      `json:"last_refresh_changed"`
+	MissCount24h    int      `json:"miss_count_24h"`
+	MissModelsTop   []string `json:"miss_models_top"`
 }
 
 // Status returns server health details: DB, SSE, OTEL receiver, ports, and last update time.
@@ -201,6 +227,21 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		dbPath = h.cfg.DBPath
 	}
 
+	var pricingBlock *PricingStatus
+	if h.pricer != nil {
+		s := h.pricer.Snapshot(r.Context())
+		pricingBlock = &PricingStatus{
+			TableSize:       s.TableSize,
+			UserOverrides:   s.UserOverrides,
+			LastRefreshAt:   s.LastRefreshAt,
+			LastRefreshMsg:  s.LastRefreshMsg,
+			LastRefreshErr:  s.LastRefreshErr,
+			LastChangedRows: s.LastChangedRows,
+			MissCount24h:    s.MissCount24h,
+			MissModelsTop:   s.MissModelsTop,
+		}
+	}
+
 	json.NewEncoder(w).Encode(StatusResponse{
 		ServerTimeUnix:        time.Now().Unix(),
 		DBOK:                  dbOK,
@@ -212,7 +253,57 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		OTELReceiverListening: otelListening,
 		ConfigPath:            h.configPath,
 		DBPath:                dbPath,
+		Pricing:               pricingBlock,
 	})
+}
+
+// PricingLookupResponse describes one model lookup against the registry.
+// Returned by /api/pricing/lookup.
+type PricingLookupResponse struct {
+	Query      string  `json:"query"`
+	Found      bool    `json:"found"`
+	Kind       string  `json:"kind"` // "exact" | "alias" | "prefix" | "miss"
+	MatchedKey string  `json:"matched_key,omitempty"`
+	Source     string  `json:"source,omitempty"`
+	Input      float64 `json:"input,omitempty"`
+	Output     float64 `json:"output,omitempty"`
+	CacheRead  float64 `json:"cache_read,omitempty"`
+	CacheWrite float64 `json:"cache_creation,omitempty"`
+	IsClaude   bool    `json:"is_claude"` // Claude is intentionally absent — surfaced so callers know why
+}
+
+// PricingLookup answers "why does cc-otel think model X costs Y?". Useful
+// when a row's cost_usd looks wrong: hit /api/pricing/lookup?model=glm-4.6
+// to confirm whether the registry resolved at all and which entry won.
+func (h *Handler) PricingLookup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.pricer == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "pricing registry not initialised"})
+		return
+	}
+	model := r.URL.Query().Get("model")
+	if model == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "missing model query param"})
+		return
+	}
+	res := h.pricer.Lookup(r.Context(), model)
+	out := PricingLookupResponse{
+		Query:      model,
+		Found:      res.Found,
+		Kind:       string(res.Kind),
+		MatchedKey: res.MatchedKey,
+		IsClaude:   pricing.IsClaudeModel(model),
+	}
+	if res.Found {
+		out.Source = res.Entry.Source
+		out.Input = res.Entry.Input
+		out.Output = res.Entry.Output
+		out.CacheRead = res.Entry.CacheRead
+		out.CacheWrite = res.Entry.CacheCreation
+	}
+	json.NewEncoder(w).Encode(out)
 }
 
 // rangeToFromTo converts a range name to (from, to) date strings in local time.

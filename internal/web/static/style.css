@@ -541,8 +541,9 @@ span.flatpickr-weekday {
     background: var(--text-dim);
     transition: background 0.3s;
 }
-.status-dot.ok  { background: var(--green); }
-.status-dot.err { background: var(--red); }
+.status-dot.ok   { background: var(--green); }
+.status-dot.err  { background: var(--red); }
+.status-dot.warn { background: #d97706; }
 
 /* ── Modal (status) ───────────────────────── */
 .modal-backdrop {

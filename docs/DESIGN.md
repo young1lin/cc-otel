@@ -148,3 +148,69 @@ Claude Code 的 `api_request` log 并不总是包含 `ttft_ms`。
 - **TTFT 回填**：只做 best-effort；通过"pending + 时间窗口"降低顺序问题影响。
 - **前端模块化（vanilla ESM，无构建工具）**：`internal/web/static/app.js` 拆为 `js/*.js` 一组 ES Modules，浏览器原生 `<script type="module">` 加载，**不引入** Node / Vite / 打包器。`go:embed static/*` 自动覆盖嵌套子目录，单二进制部署形态不变。每个模块单一职责（state / utils / theme / api / filters / sse / breakdown / insights / chart-main / panel-* / pagination），纯函数下沉到 `utils.js` / `theme.js` / `insights.js` 并配 `node --test` 单元测试。跨模块依赖通过 `initX({ ... })` 显式注入回调，避免循环 import。
 
+---
+
+## 8. 价格表与非 Claude 模型成本重算
+
+### 问题
+
+cc-otel 早期直接信任 OTLP 上报的 `cost_usd`，导致两类失真：
+
+1. **Codex 不上报费用**：Codex CLI 的 `codex.api_request` 与 `codex.sse_event` 都不带 `cost_usd`，dashboard Cost KPI 永远显示 `—`。
+2. **GLM/DeepSeek/Kimi 走 Anthropic 兼容反代**：Claude Code 仍按 Anthropic 官方价目算 `cost_usd`，cc-otel 接收的成本被按 Sonnet/Opus 价乘了 GLM 的 token，严重失真。
+
+### 单一规则
+
+```
+if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-")
+    keep e.CostUSD as upstream-reported  // Claude 由 Anthropic 自己维护
+else
+    e.CostUSD = registry.Calc(...)       // 其他全部本地重算
+```
+
+派生效果：Codex 必然重算；GLM 反代必然重算；原生 Claude 不动。**没有 `cost_mode` 配置开关**，规则只此一条。
+
+### 三层价格优先级
+
+```
+1. cfg.Pricing (cc-otel.yaml 用户覆盖) → 内存层，启动时加载，最高优先
+2. model_pricing 表                    → SQLite 长期存储，跨重启
+3. 远端定时刷新 (LiteLLM + OpenRouter)  → 24h 一次，diff 才写
+```
+
+查询路径只查 1+2；远端只在写入时参与，运行时绝不打远端。
+
+### 价格表初始化
+
+首次启动 `pricing.NewRegistry` 调用 `seedIfEmpty`，若 `model_pricing` 行数为 0，从 `internal/pricing/embed/seed.json`（669 条，由 `tools/dump_pricing_snapshot` 离线生成）灌入。embed 来自 BerriAI/litellm，**不包含** Anthropic / Claude 条目——查 Claude 时 registry 必返回 miss，receiver 早就在调用前用 `IsClaudeModel` 短路了。
+
+### Refresher（diff 写）
+
+`internal/pricing/refresher.go` 起一个 goroutine，启动立刻跑一次然后每 24h 跑一次：
+
+1. 并发拉所有 Source（LiteLLM 优先级 10、OpenRouter 5）
+2. 同 model 高优先级覆盖低优先级
+3. 与 `model_pricing` 当前快照比 hash（`fmt.Sprintf("%.12g|%.12g|%.12g|%.12g", input, output, cacheRead, cacheCreate)`）
+4. 仅 hash 变化的 UPDATE，未变化跳过（`updated_at` 不抖）
+5. 全部源失败时保留旧快照；部分失败 → 状态置为 `partial`
+
+刷新完成后调用 `Reloader.Reload(ctx)` 让 in-memory map 立即可见，并写入 `lastRefreshAt/Msg/Err/ChangedRows`，对外通过 `/api/status` 的 `pricing` 字段暴露。
+
+### 模型名匹配（match.go）
+
+跑通 "glm-4.6 反向解析到 openrouter/z-ai/glm-4.6" 靠四步级联：
+
+1. 精确匹配
+2. 去尾巴变体（`-20251028` 日期、`-preview/-latest` 标签）后再精确匹配
+3. 别名反查（seed 写入的 alias 列）
+4. 最长前缀匹配，要求边界字符是 `-`/`.`/`:`（避免 `gpt-5` 撞 `gpt-50`）
+
+### 历史回填
+
+`tools/recompute_cost` 默认 dry-run，`--apply` 才写：
+
+1. 加载同一个 `pricing.Registry`
+2. SELECT 范围内行，跳过 Claude 行与无 token 信号行
+3. 重算并比 `cost_usd`，仅差异行进 batch UPDATE
+4. UPDATE 完后 DELETE+INSERT 重建 `daily_model_agg` / `codex_daily_model_agg`
+

@@ -36,6 +36,10 @@ type CodexAPIRequest struct {
 }
 
 // CodexTokenUpdate is the payload for UpdateCodexAPIRequestTokens.
+//
+// CostUSD is computed by the receiver via the local pricing registry
+// (Codex never reports cost_usd itself). Pass 0 to leave cost untouched on
+// both the row and the daily aggregate.
 type CodexTokenUpdate struct {
 	SessionID       string
 	Model           string
@@ -45,6 +49,7 @@ type CodexTokenUpdate struct {
 	CacheReadTokens int64
 	ReasoningTokens int64
 	TotalTokens     int64
+	CostUSD         float64
 }
 
 // CodexEvent is a parsed Codex log record. Carries fields used by all

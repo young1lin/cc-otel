@@ -26,7 +26,7 @@ func TestCodexE2E_APIRequestThenSSECompletion(t *testing.T) {
 	defer d.Close()
 	repo := db.NewRepository(d)
 	broker := api.NewBroker()
-	rcv := New(repo, &fakeResolver{}, broker)
+	rcv := New(repo, &fakeResolver{}, broker, nil)
 
 	srv := grpc.NewServer()
 	rcv.Register(srv)

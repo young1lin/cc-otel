@@ -138,6 +138,7 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 			CacheReadTokens: u.CacheReadTokens,
 			ReasoningTokens: u.ReasoningTokens,
 			TotalTokens:     u.TotalTokens,
+			CostUSD:         u.CostUSD,
 			EventName:       "codex.sse_event:response.completed",
 		})
 		if ierr != nil {
@@ -152,10 +153,10 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE codex_api_requests
 		SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-		    reasoning_tokens = ?, total_tokens = ?
+		    reasoning_tokens = ?, total_tokens = ?, cost_usd = ?
 		WHERE id = ?`,
 		u.InputTokens, u.OutputTokens, u.CacheReadTokens,
-		u.ReasoningTokens, u.TotalTokens, rowID,
+		u.ReasoningTokens, u.TotalTokens, costToInt64(u.CostUSD), rowID,
 	); err != nil {
 		return false, fmt.Errorf("update codex tokens: %w", err)
 	}
@@ -165,6 +166,7 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 		dateKey, u.Model,
 		u.InputTokens, u.OutputTokens, u.CacheReadTokens,
 		u.ReasoningTokens, u.TotalTokens,
+		costToInt64(u.CostUSD),
 	); err != nil {
 		return false, fmt.Errorf("upsert codex agg tokens: %w", err)
 	}
