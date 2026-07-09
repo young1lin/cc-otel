@@ -184,7 +184,9 @@ export function syncRangeNavUIFromState() {
     }
 }
 
-export function syncURLFromState() {
+// Default = pushState so range/day/source clicks create back-able history entries.
+// Pass { replace: true } when canonicalizing the URL after a popstate or on boot.
+export function syncURLFromState({ replace = false } = {}) {
     const p = new URLSearchParams();
     if (state.source && state.source !== 'claude') {
         p.set('source', state.source);
@@ -210,9 +212,9 @@ export function syncURLFromState() {
     const qs = p.toString();
     const next = `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`;
     const cur = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (next !== cur) {
-        history.replaceState(null, '', next);
-    }
+    if (next === cur) return;
+    if (replace) history.replaceState(null, '', next);
+    else history.pushState(null, '', next);
 }
 
 export function applyStateFromURL() {
@@ -226,7 +228,9 @@ export function applyStateFromURL() {
     const finish = () => {
         syncRangeNavUIFromState();
         buildDayDropdown();
-        syncURLFromState();
+        // Canonicalize URL without creating a new history entry — this runs on
+        // boot and on every popstate, neither of which should push.
+        syncURLFromState({ replace: true });
     };
 
     if (isValidYMD(from) && isValidYMD(to) && from <= to) {

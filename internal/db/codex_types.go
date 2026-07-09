@@ -50,6 +50,7 @@ type CodexTokenUpdate struct {
 	ReasoningTokens int64
 	TotalTokens     int64
 	CostUSD         float64
+	DurationMs      int64
 }
 
 // CodexEvent is a parsed Codex log record. Carries fields used by all

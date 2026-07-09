@@ -68,10 +68,10 @@ body {
 /* ── Insights bar (Avg/day + Top models) ─────────────────────────────────── */
 .insights-bar {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     justify-content: space-between;
     gap: 14px;
-    padding: 10px 18px;
+    padding: 12px 18px;
     margin: 10px 0 4px;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -80,20 +80,27 @@ body {
 }
 .insights-main {
     display: flex;
-    align-items: baseline;
-    gap: 10px;
+    align-items: stretch;
     flex: 1;
-    background: none;
-    border: none;
-    padding: 0;
     color: inherit;
-    cursor: pointer;
-    text-align: left;
     min-width: 0;
 }
-.insights-main:hover { opacity: 0.95; }
-.insights-main:focus { outline: 2px solid var(--accent-dim); outline-offset: 2px; border-radius: 8px; }
+.usage-calendar-visual {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.usage-calendar-visual-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+}
 .insights-details-btn {
+    align-self: flex-start;
     background: var(--surface2);
     border: 1px solid var(--border);
     color: var(--text);
@@ -111,12 +118,172 @@ body {
 }
 .insights-v {
     color: var(--text);
+    font-size: 15px;
+    font-weight: 700;
 }
 .insights-sep {
     color: var(--text-dim);
 }
 .insights-tail {
     color: var(--text-muted);
+}
+.usage-calendar-headline {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.usage-calendar-body {
+    --usage-cell-size: 12px;
+    --usage-cell-gap: 3px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 10px;
+    min-width: 0;
+}
+.usage-calendar-body-strip {
+    --usage-cell-size: 30px;
+    --usage-cell-gap: 8px;
+    justify-content: flex-start;
+}
+.usage-calendar-body-short {
+    --usage-cell-size: 30px;
+    --usage-cell-gap: 6px;
+    justify-content: center;
+}
+.usage-calendar-body-medium {
+    --usage-cell-size: 22px;
+    --usage-cell-gap: 5px;
+    justify-content: center;
+}
+.usage-calendar-body-long {
+    --usage-cell-size: 13px;
+    --usage-cell-gap: 3px;
+    justify-content: flex-start;
+}
+.usage-calendar-weekdays {
+    display: grid;
+    grid-template-rows: repeat(7, var(--usage-cell-size, 12px));
+    gap: var(--usage-cell-gap, 3px);
+    padding-top: 1px;
+    width: 28px;
+    flex: 0 0 auto;
+    color: var(--text-dim);
+    font-size: 10px;
+    line-height: var(--usage-cell-size, 12px);
+    font-family: var(--font-mono);
+    text-align: right;
+}
+.usage-calendar-body-strip .usage-calendar-weekdays {
+    display: none;
+}
+.usage-calendar-scroll {
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 1px 0 3px;
+}
+.usage-calendar-body-strip .usage-calendar-scroll,
+.usage-calendar-body-short .usage-calendar-scroll,
+.usage-calendar-body-medium .usage-calendar-scroll {
+    flex: 0 0 auto;
+    max-width: 100%;
+}
+.usage-calendar-body-long .usage-calendar-scroll {
+    flex: 1 1 auto;
+}
+.usage-calendar-months {
+    display: grid;
+    gap: var(--usage-cell-gap);
+    width: max-content;
+    min-height: 16px;
+    margin-bottom: 4px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 14px;
+}
+.usage-calendar-body-short .usage-calendar-months,
+.usage-calendar-body-medium .usage-calendar-months {
+    font-size: 12px;
+}
+.usage-calendar-grid {
+    display: grid;
+    grid-template-rows: repeat(7, var(--usage-cell-size));
+    grid-auto-flow: column;
+    gap: var(--usage-cell-gap);
+    min-height: calc(var(--usage-cell-size) * 7 + var(--usage-cell-gap) * 6 + 4px);
+    width: max-content;
+}
+.usage-calendar-grid-strip {
+    grid-template-rows: var(--usage-cell-size);
+    min-height: calc(var(--usage-cell-size) + 4px);
+}
+.usage-calendar-dates {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+.usage-calendar-dates-strip {
+    display: grid;
+    gap: var(--usage-cell-gap);
+    width: max-content;
+    text-align: center;
+}
+.usage-calendar-cell {
+    width: var(--usage-cell-size, 12px);
+    height: var(--usage-cell-size, 12px);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface2);
+    cursor: pointer;
+    padding: 0;
+}
+.usage-calendar-cell:hover {
+    border-color: var(--border-hover);
+    transform: translateY(-1px);
+}
+.usage-calendar-cell.is-padding {
+    opacity: 0.35;
+    cursor: default;
+}
+.usage-calendar-cell.is-padding:hover {
+    transform: none;
+    border-color: var(--border);
+}
+.usage-calendar-cell.level-0,
+.usage-calendar-swatch.level-0 { background: var(--surface2); }
+.usage-calendar-cell.level-1,
+.usage-calendar-swatch.level-1 { background: rgba(10, 132, 255, 0.20); }
+.usage-calendar-cell.level-2,
+.usage-calendar-swatch.level-2 { background: rgba(10, 132, 255, 0.36); }
+.usage-calendar-cell.level-3,
+.usage-calendar-swatch.level-3 { background: rgba(10, 132, 255, 0.54); }
+.usage-calendar-cell.level-4,
+.usage-calendar-swatch.level-4 { background: rgba(10, 132, 255, 0.72); }
+.usage-calendar-cell.level-5,
+.usage-calendar-swatch.level-5 { background: var(--accent); }
+.usage-calendar-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+}
+.usage-calendar-swatch {
+    width: 11px;
+    height: 11px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
 }
 
 .insights-details { display: none; }
@@ -182,6 +349,12 @@ body {
 }
 @media (max-width: 720px) {
     .insights-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+    .insights-bar { flex-direction: column; }
+    .insights-main { flex-direction: column; gap: 12px; }
+    .usage-calendar-visual-head { align-items: flex-start; flex-direction: column; }
+    .insights-details-btn { align-self: flex-end; }
 }
 .insights-card {
     background: var(--surface2);

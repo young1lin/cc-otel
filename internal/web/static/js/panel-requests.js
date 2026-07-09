@@ -79,8 +79,10 @@ function renderDurationStatsTable() {
 export async function loadDurationStats(from, to, model) {
     const tbody = document.getElementById('duration-stats-tbody');
     if (!tbody) return;
+    const sourceAtStart = state.source;
     try {
         const rows = await loadDurationsData({ from, to, model });
+        if (sourceAtStart !== state.source) return;
         state.durationStatsRows = Array.isArray(rows) ? rows : [];
         if (state.durationStatsRows.length === 0) {
             setTTFTColumnVisible(false);
@@ -89,6 +91,7 @@ export async function loadDurationStats(from, to, model) {
         }
         renderDurationStatsTable();
     } catch (e) {
+        if (sourceAtStart !== state.source) return;
         console.error('durations:', e);
         state.durationStatsRows = [];
         setTTFTColumnVisible(false);
@@ -99,10 +102,12 @@ export async function loadDurationStats(from, to, model) {
 export async function loadRequests() {
     const { from, to } = rangeToFromTo(state.currentRange);
     const { page, pageSize } = paging.requests;
+    const sourceAtStart = state.source;
     try {
         const model = document.getElementById('model-filter').value;
         loadDurationStats(from, to, model);
         const json = await loadRequestsData({ from, to, page, pageSize, model });
+        if (sourceAtStart !== state.source) return;
         paging.requests.total = json.total || 0;
         const data = json.data || [];
 
@@ -132,18 +137,21 @@ export async function loadRequests() {
     } catch (e) { console.error('requests:', e); }
 }
 
-export async function loadModelFilter() {
+export async function loadModelFilter({ preserveCurrent = true } = {}) {
+    const select = document.getElementById('model-filter');
+    if (!select) return;
+    const current = preserveCurrent ? select.value : '';
+    select.innerHTML = '<option value="">All Models</option>';
+    select.value = '';
+
     try {
         const models = await loadModelsData();
-        const select = document.getElementById('model-filter');
-        const current = select.value;
-        select.innerHTML = '<option value="">All Models</option>';
         models.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m; opt.textContent = m;
             select.appendChild(opt);
         });
-        if (models.includes(current)) select.value = current;
+        if (preserveCurrent && models.includes(current)) select.value = current;
     } catch(e) { console.error('models:', e); }
 }
 
