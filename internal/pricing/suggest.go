@@ -55,7 +55,28 @@ type SuggestResult struct {
 var (
 	openRouterModelsURL       = "https://openrouter.ai/api/v1/models"
 	openRouterEndpointsURLFmt = "https://openrouter.ai/api/v1/models/%s/endpoints"
+
+	// urlMu guards the two URL vars above. They are effectively const in
+	// production (set once at init), but tests reassign them per-case via
+	// redirectBoth, and WarmCatalogInBackground's fire-and-forget fetch reads
+	// them from a goroutine that can outlive the test that spawned it. Every
+	// read goes through modelsURL/endpointsURLFmt; every write (redirectBoth)
+	// takes the lock — so a background fetch can't race with a reassignment.
+	urlMu sync.RWMutex
 )
+
+// modelsURL / endpointsURLFmt read the redirectable URL vars under urlMu.
+func modelsURL() string {
+	urlMu.RLock()
+	defer urlMu.RUnlock()
+	return openRouterModelsURL
+}
+
+func endpointsURLFmt() string {
+	urlMu.RLock()
+	defer urlMu.RUnlock()
+	return openRouterEndpointsURLFmt
+}
 
 const (
 	openRouterTimeout = 15 * time.Second
@@ -154,7 +175,7 @@ func fetchDecode[T any](ctx context.Context, url string) (T, error) {
 // catalogTTL. On a miss it fetches and parses the full catalog once, then stores
 // it for subsequent lookups (any model, within the TTL window).
 func fetchCatalog(ctx context.Context) ([]orModel, error) {
-	url := openRouterModelsURL
+	url := modelsURL()
 
 	catalogMu.Lock()
 	if e, ok := catalogCache[url]; ok && time.Since(e.at) < catalogTTL {
@@ -180,7 +201,7 @@ func fetchCatalog(ctx context.Context) ([]orModel, error) {
 // reusing a cached copy for catalogTTL. On error the caller degrades silently to
 // the blended catalog default — the UI never errors on a suggest lookup.
 func fetchEndpoints(ctx context.Context, id string) ([]endpoint, error) {
-	url := fmt.Sprintf(openRouterEndpointsURLFmt, id)
+	url := fmt.Sprintf(endpointsURLFmt(), id)
 
 	endpointsMu.Lock()
 	if e, ok := endpointsCache[url]; ok && time.Since(e.at) < catalogTTL {
@@ -223,8 +244,9 @@ func CachedCatalogPrice(model string) (in, out, cacheRead float64, ok bool) {
 	if q == "" {
 		return 0, 0, 0, false
 	}
+	url := modelsURL()
 	catalogMu.Lock()
-	e, hit := catalogCache[openRouterModelsURL]
+	e, hit := catalogCache[url]
 	catalogMu.Unlock()
 	if !hit || len(e.data) == 0 {
 		return 0, 0, 0, false
@@ -252,9 +274,10 @@ func CachedCatalogPrice(model string) (in, out, cacheRead float64, ok bool) {
 // is not yet cached, so the next read-only price lookup (e.g. Claude rows in the
 // pricing table) hits the cache. No-op when already warm.
 func WarmCatalogInBackground() {
+	url := modelsURL()
 	catalogMu.Lock()
 	warm := false
-	if e, ok := catalogCache[openRouterModelsURL]; ok && len(e.data) > 0 {
+	if e, ok := catalogCache[url]; ok && len(e.data) > 0 {
 		warm = true
 	}
 	catalogMu.Unlock()
@@ -270,9 +293,10 @@ func WarmCatalogInBackground() {
 // error or ctx cancellation leaves the cache cold; the caller proceeds and
 // Claude rows simply show no price (List schedules a background retry).
 func EnsureCatalogWarm(ctx context.Context) {
+	url := modelsURL()
 	catalogMu.Lock()
 	warm := false
-	if e, ok := catalogCache[openRouterModelsURL]; ok && len(e.data) > 0 {
+	if e, ok := catalogCache[url]; ok && len(e.data) > 0 {
 		warm = true
 	}
 	catalogMu.Unlock()
