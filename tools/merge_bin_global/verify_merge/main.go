@@ -106,7 +106,7 @@ func main() {
 	}
 
 	// Uniform per-table count/cost checks, driven by a registry so new product
-	// channels (Claude, Codex, Gemini) cannot be silently forgotten.
+	// channels (Claude, Codex) cannot be silently forgotten.
 	runGroup := func(group, header string) {
 		if header != "" {
 			fmt.Println()
@@ -138,11 +138,6 @@ func main() {
 	}
 
 	runGroup("codex", "--- Codex tables ---")
-
-	// Gemini lives in independent tables; skip cleanly if neither db has them.
-	if hasTable(ctx, binDB, "gemini_api_requests") || hasTable(ctx, globalDB, "gemini_api_requests") {
-		runGroup("gemini", "--- Gemini tables ---")
-	}
 
 	// Ledger presence in global only.
 	var ledgerCnt int64
@@ -181,7 +176,7 @@ func main() {
 // bin and global dbs. Group controls which header it prints under.
 type tableCheck struct {
 	Name      string
-	Group     string // "claude" | "codex" | "gemini"
+	Group     string // "claude" | "codex"
 	CheckCost bool
 }
 
@@ -202,7 +197,6 @@ func simpleTableChecks() []tableCheck {
 		{"codex_tool_result_events", "codex", false},
 		{"codex_events", "codex", false},
 		{"codex_raw_otlp_events", "codex", false},
-		{"gemini_api_requests", "gemini", true},
 	}
 }
 
@@ -248,21 +242,6 @@ func containmentSQL() map[string]string {
 				  m.input_tokens IS s.input_tokens AND
 				  m.output_tokens IS s.output_tokens AND
 				  m.duration_ms IS s.duration_ms
-			  )`,
-		"gemini_api_requests": `
-			SELECT COUNT(*)
-			FROM src.gemini_api_requests s
-			WHERE s.timestamp BETWEEN ? AND ?
-			  AND NOT EXISTS (
-				SELECT 1 FROM main.gemini_api_requests m
-				WHERE
-				  m.timestamp = s.timestamp AND
-				  m.session_id IS s.session_id AND
-				  m.model IS s.model AND
-				  m.prompt_id IS s.prompt_id AND
-				  m.input_tokens IS s.input_tokens AND
-				  m.output_tokens IS s.output_tokens AND
-				  m.total_tokens IS s.total_tokens
 			  )`,
 	}
 }

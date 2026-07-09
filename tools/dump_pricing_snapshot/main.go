@@ -58,8 +58,7 @@ var allowedProviders = map[string]bool{
 	"cohere_chat":  true,
 	"cohere":       true,
 	"moonshot":     true,
-	"vertex_ai":    true, // Gemini family
-	"gemini":       true,
+	"vertex_ai":    true,
 }
 
 // Anthropic provider names — every shape that carries Claude entries we
@@ -115,6 +114,7 @@ func main() {
 		noPricing    int
 		notWhitelist int
 		claudeName   int
+		geminiName   int
 	}{}
 
 	for name, payload := range raw {
@@ -135,6 +135,11 @@ func main() {
 		lower := strings.ToLower(name)
 		if strings.HasPrefix(lower, "claude-") || strings.Contains(lower, "/claude-") || strings.Contains(lower, "anthropic.claude") {
 			skipped.claudeName++
+			continue
+		}
+		// Gemini pricing is intentionally excluded (Gemini CLI integration removed).
+		if strings.Contains(lower, "gemini") {
+			skipped.geminiName++
 			continue
 		}
 
@@ -227,8 +232,8 @@ func main() {
 	}
 
 	fmt.Printf("wrote %d entries to %s\n", len(entries), *out)
-	fmt.Printf("skipped: anthropic=%d claude_name=%d non_chat=%d no_pricing=%d not_whitelisted=%d\n",
-		skipped.anthropic, skipped.claudeName, skipped.nonChat, skipped.noPricing, skipped.notWhitelist)
+	fmt.Printf("skipped: anthropic=%d claude_name=%d gemini_name=%d non_chat=%d no_pricing=%d not_whitelisted=%d\n",
+		skipped.anthropic, skipped.claudeName, skipped.geminiName, skipped.nonChat, skipped.noPricing, skipped.notWhitelist)
 }
 
 // providerRank assigns a numeric score to a model id's leading provider

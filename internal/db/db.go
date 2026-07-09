@@ -460,53 +460,6 @@ func runMigrations(db *sql.DB) error {
 		return fmt.Errorf("codex sub-event indexes: %w", err)
 	}
 
-	// 7) Gemini CLI tables — completely independent from Claude/Codex tables.
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS gemini_api_requests (
-			id              INTEGER PRIMARY KEY AUTOINCREMENT,
-			timestamp       INTEGER NOT NULL,
-			session_id      TEXT     NOT NULL DEFAULT '',
-			model           TEXT     NOT NULL DEFAULT '',
-			input_tokens    INTEGER  NOT NULL DEFAULT 0,
-			output_tokens   INTEGER  NOT NULL DEFAULT 0,
-			cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
-			thoughts_tokens     INTEGER NOT NULL DEFAULT 0,
-			tool_tokens         INTEGER NOT NULL DEFAULT 0,
-			total_tokens        INTEGER NOT NULL DEFAULT 0,
-			duration_ms     INTEGER  NOT NULL DEFAULT 0,
-			cost_usd        INTEGER  NOT NULL DEFAULT 0,
-			http_status_code INTEGER NOT NULL DEFAULT 0,
-			prompt_id       TEXT     NOT NULL DEFAULT '',
-			event_name      TEXT     NOT NULL DEFAULT 'api_response',
-			service_name    TEXT     NOT NULL DEFAULT '',
-			service_version TEXT     NOT NULL DEFAULT ''
-		);
-
-		CREATE TABLE IF NOT EXISTS gemini_daily_model_agg (
-			date            TEXT     NOT NULL,
-			model           TEXT     NOT NULL,
-			total_requests  INTEGER  NOT NULL DEFAULT 0,
-			input_tokens    INTEGER  NOT NULL DEFAULT 0,
-			output_tokens   INTEGER  NOT NULL DEFAULT 0,
-			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-			thoughts_tokens INTEGER  NOT NULL DEFAULT 0,
-			tool_tokens     INTEGER  NOT NULL DEFAULT 0,
-			total_tokens    INTEGER  NOT NULL DEFAULT 0,
-			cost_usd        INTEGER  NOT NULL DEFAULT 0,
-			duration_ms_sum INTEGER  NOT NULL DEFAULT 0,
-			PRIMARY KEY (date, model)
-		) WITHOUT ROWID;
-
-		CREATE INDEX IF NOT EXISTS idx_gemini_requests_timestamp ON gemini_api_requests(timestamp);
-		CREATE INDEX IF NOT EXISTS idx_gemini_requests_model     ON gemini_api_requests(model);
-		CREATE INDEX IF NOT EXISTS idx_gemini_requests_session   ON gemini_api_requests(session_id);
-		CREATE INDEX IF NOT EXISTS idx_gemini_requests_time_model ON gemini_api_requests(timestamp, model);
-		CREATE INDEX IF NOT EXISTS idx_gemini_requests_dedup     ON gemini_api_requests(session_id, prompt_id, timestamp);
-	`)
-	if err != nil {
-		return fmt.Errorf("gemini tables: %w", err)
-	}
-
 	return nil
 }
 

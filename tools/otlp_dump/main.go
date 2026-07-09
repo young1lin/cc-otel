@@ -128,7 +128,6 @@ func main() {
 	_ = gzip.Name
 
 	fmt.Fprintf(os.Stderr, "OTLP dump server listening on :%s — press Ctrl+C to stop\n", port)
-	fmt.Fprintf(os.Stderr, "Set: GEMINI_TELEMETRY_OTLP_ENDPOINT=http://localhost:%s\n", port)
 
 	go func() {
 		time.Sleep(300 * time.Second)
