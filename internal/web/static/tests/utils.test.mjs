@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
     fmtNum, fmtUSD, fmtPct, fmtTokens, fmtTime, fmtDateTime,
     escapeHtml, truncate, formatUserCell,
-    toYMD, getTodayYMD, isValidYMD, rangeToFromTo,
+    toYMD, getTodayYMD, isValidYMD, rangeToFromTo, quantBadge,
 } from '../js/utils.js';
 import { state } from '../js/state.js';
 
@@ -111,4 +111,14 @@ test('rangeToFromTo "custom" reads from state.customFrom/To', () => {
     assert.deepEqual(r, { from: '2026-04-01', to: '2026-04-15' });
     state.customFrom = '';
     state.customTo   = '';
+});
+
+test('quantBadge flags aggressive low-bit quants only', () => {
+    assert.equal(quantBadge('fp4'), 'quantized');
+    assert.equal(quantBadge('int4'), 'quantized');
+    assert.equal(quantBadge('NF4'), 'quantized');
+    assert.equal(quantBadge('fp8'), '');
+    assert.equal(quantBadge('unknown'), '');
+    assert.equal(quantBadge(''), '');
+    assert.equal(quantBadge(null), '');
 });

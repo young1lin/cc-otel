@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,7 +19,6 @@ type Config struct {
 	RawTTLDays     int                   `yaml:"raw_ttl_days"`
 	ModelMapping   map[string]string     `yaml:"model_mapping"`
 	Pricing        map[string]PriceEntry `yaml:"pricing"`
-	PricingRefresh PricingRefreshConfig  `yaml:"pricing_refresh"`
 }
 
 // PriceEntry is a user-supplied per-token price override for a single model.
@@ -31,21 +29,6 @@ type PriceEntry struct {
 	CacheRead     float64  `yaml:"cache_read"`
 	CacheCreation float64  `yaml:"cache_creation"`
 	Aliases       []string `yaml:"aliases"`
-}
-
-// PricingRefreshConfig controls the daily remote pricing refresher.
-type PricingRefreshConfig struct {
-	Enabled  *bool         `yaml:"enabled"`  // pointer so YAML omission keeps default-true
-	Interval time.Duration `yaml:"interval"` // default 24h
-	Timeout  time.Duration `yaml:"timeout"`  // default 30s
-}
-
-// PricingRefreshEnabled returns true unless the user explicitly set enabled: false.
-func (c *PricingRefreshConfig) PricingRefreshEnabled() bool {
-	if c == nil || c.Enabled == nil {
-		return true
-	}
-	return *c.Enabled
 }
 
 // claudeDir returns ~/.claude (Claude Code's standard data directory).

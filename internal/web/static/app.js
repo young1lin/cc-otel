@@ -31,6 +31,7 @@ import {
     loadRequests, loadDurationStats, loadModelFilter, initPanelRequests,
 } from './js/panel-requests.js';
 import { loadRate, initPanelRate } from './js/panel-rate.js';
+import { initPanelPricing } from './js/panel-pricing.js';
 import { renderPagination } from './js/pagination.js';
 
 // ── Popover positioner — shared by status / breakdown / insights modals ────
@@ -44,7 +45,7 @@ function openPopover(backdropEl, anchorEl) {
     backdropEl.setAttribute('aria-hidden', 'false');
 
     // Insights: centered by flex on .modal-backdrop; avoid fixed+transform so native resize works.
-    if (backdropEl.id === 'insights-modal') {
+    if (backdropEl.id === 'insights-modal' || backdropEl.id === 'pricing-modal') {
         modalEl.style.left = '';
         modalEl.style.top = '';
         modalEl.style.transform = '';
@@ -284,6 +285,7 @@ initInsightsModal({ openPopover, closePopover, onSelectDate: selectCalendarDate 
 initPanelDaily();
 initPanelRequests();
 initPanelRate();
+initPanelPricing({ openPopover, closePopover });
 initCustomRangePicker();
 applySourceFromURL();
 syncSourceTabsUI();

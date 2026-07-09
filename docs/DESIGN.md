@@ -170,31 +170,26 @@ else
 
 派生效果：Codex 必然重算；GLM 反代必然重算；原生 Claude 不动。**没有 `cost_mode` 配置开关**，规则只此一条。
 
-### 三层价格优先级
+### 价格优先级（两层）
 
 ```
 1. cfg.Pricing (cc-otel.yaml 用户覆盖) → 内存层，启动时加载，最高优先
 2. model_pricing 表                    → SQLite 长期存储，跨重启
-3. 远端定时刷新 (LiteLLM + OpenRouter)  → 24h 一次，diff 才写
 ```
 
-查询路径只查 1+2；远端只在写入时参与，运行时绝不打远端。
+查询只走这两层，运行时绝不打远端。价目表的写入完全靠手动（Web UI 弹窗或 `pricing:` YAML），见下一节。
 
 ### 价格表初始化
 
 首次启动 `pricing.NewRegistry` 调用 `seedIfEmpty`，若 `model_pricing` 行数为 0，从 `internal/pricing/embed/seed.json`（669 条，由 `tools/dump_pricing_snapshot` 离线生成）灌入。embed 来自 BerriAI/litellm，**不包含** Anthropic / Claude 条目——查 Claude 时 registry 必返回 miss，receiver 早就在调用前用 `IsClaudeModel` 短路了。
 
-### Refresher（diff 写）
+### 手动定价 + 按需重算
 
-`internal/pricing/refresher.go` 起一个 goroutine，启动立刻跑一次然后每 24h 跑一次：
+价目表不再有任何后台拉取。所有写入走手动路径：
 
-1. 并发拉所有 Source（LiteLLM 优先级 10、OpenRouter 5）
-2. 同 model 高优先级覆盖低优先级
-3. 与 `model_pricing` 当前快照比 hash（`fmt.Sprintf("%.12g|%.12g|%.12g|%.12g", input, output, cacheRead, cacheCreate)`）
-4. 仅 hash 变化的 UPDATE，未变化跳过（`updated_at` 不抖）
-5. 全部源失败时保留旧快照；部分失败 → 状态置为 `partial`
-
-刷新完成后调用 `Reloader.Reload(ctx)` 让 in-memory map 立即可见，并写入 `lastRefreshAt/Msg/Err/ChangedRows`，对外通过 `/api/status` 的 `pricing` 字段暴露。
+- **CRUD**：`pricing.Writer` 接口（`internal/pricing/pricing.go`，`List` / `Upsert` / `Delete`，配 `ListFilter` / `ListResult` 分页）是 `model_pricing` 表的唯一读写入口。Web UI 的 Pricing Table 弹窗（从状态弹窗打开）直接调它：保存即 UPDATE/INSERT，随后 `Reloader.Reload(ctx)` 让 in-memory map 立即可见，无需重启。
+- **OpenRouter suggest**：`pricing.SuggestOpenRouter`（`internal/pricing/suggest.go`，返回 `Suggestion`）按需查 OpenRouter 单模型价格，对应 `GET /api/pricing/suggest?model=...`。前端行内 💡 按钮调它回填表单，**不落库、不改表**，只填表单后仍需手动保存。
+- **历史重算**：`internal/recompute` 包（`recompute.Run(ctx, db, reg, opts, apply, progress)`，配套 `Options` / `Progress` / `Result`）按当前价目表回算 `api_requests` + `codex_api_requests` 的 `cost_usd` 并重建 `daily_model_agg`。`POST /api/pricing/recompute` 启动它，由 `recomputeJob`（`internal/api/handler.go`）单例跟踪：`running/scanned/total/changed/lastResult` 全程加锁，`GET /api/pricing/recompute` 轮询；任务跑在后台 goroutine，刷新页面不重算、状态不丢。
 
 ### 模型名匹配（match.go）
 

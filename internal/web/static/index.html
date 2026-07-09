@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=12">
+    <link rel="stylesheet" href="style.css?v=21">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -42,6 +42,9 @@
         <button type="button" class="status-wrap" id="status-btn" title="Server status">
             <span class="status-dot" id="status-dot"></span>
             <span id="status-label">connecting…</span>
+        </button>
+        <button type="button" class="pricing-toggle" id="pricing-btn" title="Pricing Table">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>
         </button>
         <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
             <svg id="theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
@@ -288,10 +291,6 @@
                     <div class="status-k">Last Update</div>
                     <div class="status-v" id="st-last">—</div>
                 </div>
-                <div class="status-item" id="st-pricing-row">
-                    <div class="status-k">Pricing Table</div>
-                    <div class="status-v" id="st-pricing">—</div>
-                </div>
             </div>
 
             <div class="status-endpoints">
@@ -307,6 +306,50 @@
                     <button type="button" class="endpoint-copy" data-copy-from="st-web-endpoint">Copy</button>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Pricing Table admin modal (opened from #pricing-btn) -->
+<div class="modal-backdrop" id="pricing-modal" style="display:none" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" style="width:min(1200px,96vw)">
+        <div class="modal-header">
+            <div class="modal-title">Pricing Table</div>
+            <button type="button" class="modal-close" id="pricing-close">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="pf-toolbar">
+                <label class="pf-search">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+                    <input id="pricing-search" placeholder="Search model / alias…">
+                </label>
+                <div class="pf-seg" id="pricing-source">
+                    <button type="button" class="active" data-src="all">All</button>
+                    <button type="button" data-src="manual">Manual</button>
+                    <button type="button" data-src="seed">Seed</button>
+                    <button type="button" data-src="user">YAML</button>
+                </div>
+                <button type="button" class="pf-btn" id="pricing-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add model</button>
+                <button type="button" class="pf-btn" id="pricing-recompute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>Recompute</button>
+                <span class="pf-stlbl" id="pricing-recompute-lbl"></span>
+            </div>
+            <table class="pf-table">
+                <thead>
+                    <tr>
+                        <th>Model / Aliases</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Create</th>
+                        <th>Source</th><th>Updated</th><th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="pricing-tbody"></tbody>
+            </table>
+            <div id="pricing-pagination" class="pagination"></div>
+            <div class="pf-foot">
+                <span><b id="pricing-count">—</b> model(s)</span><span>·</span>
+                <span>Unit <code>$/Mtok</code> (stored as <code>USD/token</code>)</span><span>·</span>
+                <span>Claude is priced upstream — not recomputed</span><span>·</span>
+                <span>Tinted rows = reported locally</span>
+            </div>
+            <div class="pf-toast" id="pricing-toast"></div>
         </div>
     </div>
 </div>
@@ -344,6 +387,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=49"></script>
+<script type="module" src="app.js?v=64"></script>
 </body>
 </html>

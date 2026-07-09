@@ -167,31 +167,26 @@ else
 
 Derived effects: Codex (`gpt-5-codex`) is always recomputed; GLM via proxy is always recomputed; native Anthropic Claude is untouched. No `cost_mode` config exists — the rule is a one-liner.
 
-### Three-layer lookup priority
+### Lookup priority (two layers)
 
 ```
 1. cfg.Pricing (user override in cc-otel.yaml)   → in-memory, loaded at startup, highest
 2. model_pricing table                           → SQLite, persistent across restarts
-3. Daily refresh (LiteLLM + OpenRouter)          → 24h tick, diff-only writes
 ```
 
-The query path only consults layers 1+2; remote sources contribute exclusively at write time, so runtime traffic never blocks on the network.
+The query path consults only these two layers and never hits the network at runtime. All writes to the price table are manual (the Web UI modal or the `pricing:` YAML); see the next section.
 
 ### Initialisation
 
 `pricing.NewRegistry` calls `seedIfEmpty`. If `model_pricing` is empty, it bulk-inserts ~669 entries from `internal/pricing/embed/seed.json`, generated offline by `tools/dump_pricing_snapshot` from BerriAI/litellm. Anthropic / Claude entries are intentionally absent — registry lookups for Claude are designed to miss, and the receiver short-circuits before consulting it via `IsClaudeModel`.
 
-### Refresher (diff writes)
+### Manual pricing + on-demand recompute
 
-`internal/pricing/refresher.go` runs a goroutine that ticks immediately and then every 24h:
+There is no background fetch of the price table any more. Every write goes through a manual path:
 
-1. Fetch all Sources concurrently (LiteLLM priority 10, OpenRouter priority 5).
-2. Higher priority wins for shared model ids.
-3. Hash each fetched entry (`fmt.Sprintf("%.12g|%.12g|%.12g|%.12g", input, output, cacheRead, cacheCreate)`) and compare with the current SQLite snapshot.
-4. Only write rows whose hash changed; unchanged rows skip the UPDATE entirely so `updated_at` doesn't flap.
-5. If every source fails the previous snapshot is preserved; partial failures degrade status to `partial` and surface via `/api/status`.
-
-After applying changes the refresher calls `Reloader.Reload(ctx)` so the in-memory registry sees the new values, and `SetRefreshStatus(...)` so the popup shows the latest result.
+- **CRUD**: the `pricing.Writer` interface (`internal/pricing/pricing.go` — `List` / `Upsert` / `Delete`, with `ListFilter` / `ListResult` for paging) is the single read/write entry point into the `model_pricing` table. The Web UI's Pricing Table modal (opened from the Status popup) calls it directly: a save runs UPDATE/INSERT, then `Reloader.Reload(ctx)` makes the new values visible to the in-memory registry with no restart.
+- **OpenRouter suggest**: `pricing.SuggestOpenRouter` (`internal/pricing/suggest.go`, returns a `Suggestion`) looks up a single model's price on OpenRouter on demand, exposed as `GET /api/pricing/suggest?model=...`. The in-row 💡 button calls it to prefill the form — it **does not write to the table**; you still save manually.
+- **History recompute**: the `internal/recompute` package (`recompute.Run(ctx, db, reg, opts, apply, progress)`, with `Options` / `Progress` / `Result`) recomputes `cost_usd` for `api_requests` + `codex_api_requests` against the current price table and rebuilds `daily_model_agg`. `POST /api/pricing/recompute` starts it; a singleton `recomputeJob` (`internal/api/handler.go`) tracks `running/scanned/total/changed/lastResult` under a mutex, polled via `GET /api/pricing/recompute`. The job runs in a background goroutine, so refreshing the page neither restarts it nor loses state.
 
 ### Model-name matching (`match.go`)
 

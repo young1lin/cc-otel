@@ -13,6 +13,10 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 > tags via the GoReleaser pipeline (latest: `v0.1.0-preview.13`; **preview.14**
 > below is pending release). Once behavior stabilizes, the contents below will fold into `v0.1.0`.
 
+### Manual pricing management
+
+- **Manual pricing management**: removed the 24h LiteLLM/OpenRouter auto-refresher; the Web UI (Status popup → Pricing Table) now CRUDs model_pricing with immediate effect; added 💡 on-demand OpenRouter single-model suggest and ↻ server-side full recompute (status tracked, survives refresh). The `pricing_refresh:` YAML key is retired.
+
 ### Proxy compatibility fix
 
 - **Auto-inject `no_proxy`**: `/cc-otel:setup` now automatically adds `"no_proxy": "localhost,127.0.0.1"` to `settings.json` `env`. When `http_proxy` / `https_proxy` is set (e.g. Clash, V2Ray, corporate proxies), OTEL gRPC traffic to `localhost:4317` is routed through the proxy and silently dropped. `no_proxy` ensures the OTEL exporter connects directly, bypassing the proxy. README and setup docs updated with prominent proxy warning.
