@@ -36,11 +36,18 @@ func (w *Writer) open() error {
 	return nil
 }
 
-func (w *Writer) rotate() error {
-	if w.file != nil {
-		w.file.Close()
-		w.file = nil
+// closeFile closes the underlying file if open and clears the handle.
+func (w *Writer) closeFile() error {
+	if w.file == nil {
+		return nil
 	}
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
+func (w *Writer) rotate() error {
+	_ = w.closeFile()
 	// Rename current → .1 (overwrite any existing .1)
 	_ = os.Rename(w.Path, w.Path+".1")
 	w.written = 0
@@ -69,10 +76,5 @@ func (w *Writer) Write(p []byte) (int, error) {
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.file != nil {
-		err := w.file.Close()
-		w.file = nil
-		return err
-	}
-	return nil
+	return w.closeFile()
 }
