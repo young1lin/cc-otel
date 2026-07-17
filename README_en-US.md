@@ -49,6 +49,7 @@ Claude Code ──OTLP gRPC(:4317)──> cc-otel ──> SQLite
 - **Chart switching** -- Tokens, Cost, Requests views
 - **Session tracking** -- per-session cost and token aggregation
 - **Token rate chart (Rate)** -- per-model Out/Total tok/s over time (weighted / average, 5–60 min buckets; up to 7 days)
+- **Online database import** -- merge an uploaded `.db` into the running primary DB, no downtime, additive-only
 - **Pre-aggregation table** -- query latency < 3ms, handles millions of rows
 - **Single binary** -- `go:embed` bundles the web UI, zero runtime dependencies
 - **Cross-platform** -- Windows, macOS, Linux
@@ -244,6 +245,14 @@ go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both
 go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both --apply
 ```
 
+## Online database import
+
+Merge a `.db` file into the live primary database **without stopping the process or replacing any file**. The target stays online in WAL mode; the uploaded database is opened read-only and never attached to the writable connection. The merge is additive only — only rows missing from the target are inserted, duplicates keep the target's version, and an import ledger makes re-upload / retry safe with no double writes.
+
+Click **Import database** at the top of the Web UI and pick a `.db` file: schema precheck → preview new / duplicate rows → confirm → live progress → result. Endpoints: `/api/import{,/inspect,/start,/status}`.
+
+> Handy for merging another machine's `cc-otel.db` in — no downtime, no CLI merge tool. Single-file limit 2 GB; compatibility-only tables like `codex_events` are skipped automatically.
+
 ## Configuration
 
 CC-OTEL resolves its data directory in this order (see `defaultDataDir` in `internal/config/config.go`):
@@ -301,7 +310,7 @@ Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model
 
 | Panel | Description |
 |-------|-------------|
-| **Daily Detail** | Per-day / per-hour tables; Intraday line chart on single-day ranges |
+| **Daily Detail** | Per-day / per-hour tables; Intraday per-bucket bar chart on single-day ranges (5 / 10 / 15 / 30 / 60 min, up to 7 days) |
 | **Sessions** | Per-session Cost / Token aggregates |
 | **Request Log** | Per-model duration and **Out tok/s (avg / weighted)** summary; per-request list with TTFT |
 | **Rate** | Per-model **Token Rate over Time** line chart; Weighted / Avg, Output / Total tok/s, 5 / 15 / 30 / 60 min buckets; click legend to solo one model (**All models** to restore) |

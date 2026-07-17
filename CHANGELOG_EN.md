@@ -6,6 +6,46 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.0-preview.16] - 2026-07-17
+
+> Summarizes the 6 commits after `v0.1.0-preview.15`: online database import, Codex structured accounting correlation, startup cleanup of legacy Codex events, a frontend taste guide, a granularity segmented control, and Intraday rebuilt as a per-bucket bar chart.
+
+### Online database import (new)
+
+- Merge a `.db` file into the live primary database **without stopping the process or replacing any file**. The target stays online in WAL mode; the uploaded database is opened read-only and is never attached to the writable connection.
+- The merge is **additive only** — existing rows are never deleted, overwritten, or updated; only logical records missing from the target are inserted, and duplicates keep the target's version. An import ledger makes re-upload / retry safe with no double writes.
+- Adds `internal/dbmerge` as the single implementation for schema detection, natural-key identity, staging, batching, aggregation, and verification; the offline `tools/merge_bin_global` CLIs now delegate to it, so the offline and online paths can no longer drift apart.
+- Performance: set-based work over staged digests, each batch bounded by 10,000 rows or ~128 MiB. End-to-end gates — preview ~550k rows within 2 minutes, import plus verify within 5 minutes. `codex_events` is recognized and skipped.
+- Frontend: `js/import-db.js` drives upload → precheck → preview → confirm → progress → result over `/api/import{,/inspect,/start,/status}`.
+
+### Codex structured accounting correlation
+
+- Correlates Codex streaming events into **one structured accounting row per model request**: uncached input, cache-read, cache-write, output, and reasoning tokens are recorded separately, plus the upstream-reported total, TTFT, and the full model-call duration from request start through `response.completed` (excluding local tool execution). Cost is computed from four independently priced token categories.
+- Correlation state is held in memory, dropped once the structured transaction commits, and abandoned state is evicted after 30 minutes.
+- The field mapping is pinned against the upstream Codex source: note that `tool_token_count` carries total token usage (not a tool-token category) and must not be priced separately; `cache_write_token_count` comes from `input_tokens_details.cache_write_tokens` and defaults to 0 on older payloads.
+
+### Startup cleanup of legacy Codex events
+
+- After each daemon start, a background goroutine deletes legacy rows from the compatibility-only `codex_events` table in batches (≤ 10,000 rows per batch) until empty; on any DB error it logs and stops, leaving the remainder for the next start. The receiver no longer writes this table and imports skip it, so every remaining row is legacy by definition.
+- Deliberately temporary: remove it in a later release once deployed databases have had enough starts to clean themselves.
+
+### Frontend taste guide (FRONTEND_TASTE)
+
+- Adds `.claude/harness/FRONTEND_TASTE.md` as the authoritative visual taste guide, required reading before any frontend design, implementation, modification, or review. It codifies the project's existing visual language: graphite / neutral gray by default, hierarchy through spacing and elevation before saturated color, compact controls over browser-native defaults, and dark / light as one system.
+
+### Chart granularity segmented control
+
+- The toolbar Day / Month granularity switch is restyled from browser-native buttons into a compact macOS-style graphite segmented control matching the app; styling is scoped to `#granularity-switch` so the Token Rate panel's Weighted / Avg control is untouched.
+- Accessibility: adds `type="button"`, `role="group"`, and `aria-label`, and keeps `aria-pressed` in sync with the active state across all three paths (init / URL restore / click).
+- Extracts `syncGranularityButtons` into `js/granularity.js` so the three call sites in filters.js share one implementation, eliminating the prior `aria-pressed` / visual drift.
+
+### Intraday rebuilt as a per-bucket bar chart
+
+- The Intraday view moves from a per-model line chart plus detail table to **one bar per (bucket, model)** with a 5 / 10 / 15 / 30 / 60-minute selector, spanning up to 7 days; the detail table is gone.
+- Backend: all four intraday bucket whitelists (Claude repo + handler, Codex repo + handler) previously hardcoded 15 / 30 / 60 and silently coerced 5 and 10 to 30; they now reuse `db.ValidRateBucketMinutes` (the SQL already supported any bucket size — purely a validation-layer fix), with the first tests for this path.
+- Frontend: three blocks that each had one hand-rolled copy are extracted into shared modules — `bucket-dropdown.js`, `makeTokenBarColor` in `chart-main.js`, and `legend-focus.js`; `intraday-slots.js` gap-fills empty buckets so a category axis doesn't place disjoint timestamps side by side. The default zoom window is now a duration (16h, right-anchored) instead of drifting with the bucket size.
+- Obeys the chart rules pinned in CLAUDE.md: no stacking, `trigger: 'item'`, no series-focus emphasis, one bar per (time, model); the x-axis ascends (a time-of-day axis reads left → right, deliberately opposite to chart-main's newest-first ordering).
+
 ## [v0.1.0-preview.15] - 2026-07-09
 
 > Summarizes the 4 commits after `v0.1.0-preview.14`: Gemini removal, repo hygiene, manual pricing + per-provider suggest, Token Rate control redesign.
