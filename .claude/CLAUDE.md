@@ -78,6 +78,17 @@ These files contain detailed data including:
 
 Claude Code token usage monitoring service. Receives OTEL telemetry data, provides a web dashboard to view token consumption and cost.
 
+## Frontend Taste (Mandatory)
+
+Before any frontend design, implementation, modification, or visual review,
+read `.claude/harness/FRONTEND_TASTE.md` completely. This file is the
+authoritative taste guide for this project's frontend and its instructions are
+mandatory for every UI change.
+
+Functional and data-semantic rules pinned in this `CLAUDE.md` remain
+authoritative. `FRONTEND_TASTE.md` governs visual hierarchy, color, spacing,
+controls, interaction, motion, accessibility, and the standard of finish.
+
 ## Deployment
 
 Production directory: `~/.claude/cc-otel/` (binary, config, database, and logs all in one directory)
