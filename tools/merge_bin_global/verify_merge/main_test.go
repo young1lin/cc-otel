@@ -1,8 +1,11 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/young1lin/cc-otel/internal/dbmerge"
 )
 
 func TestCountQueryEmitsCostSumOnlyWhenChecked(t *testing.T) {
@@ -16,21 +19,17 @@ func TestCountQueryEmitsCostSumOnlyWhenChecked(t *testing.T) {
 	}
 }
 
-func TestContainmentSQLCoversAllCostCheckedTables(t *testing.T) {
-	sqls := containmentSQL()
-	for _, c := range simpleTableChecks() {
-		if !c.CheckCost {
+func TestTableChecksCoverSharedImportRegistry(t *testing.T) {
+	var got []string
+	for _, check := range simpleTableChecks() {
+		got = append(got, check.Name)
+	}
+	for _, spec := range dbmerge.ImportSpecs() {
+		if spec.Name == "pending_ttft_spans" {
 			continue
 		}
-		q, ok := sqls[c.Name]
-		if !ok {
-			t.Fatalf("containmentSQL() missing %s: cost-checked request tables need per-row containment", c.Name)
-		}
-		if !strings.Contains(q, "NOT EXISTS") || !strings.Contains(q, "src."+c.Name) {
-			t.Fatalf("containmentSQL(%s) malformed: %q", c.Name, q)
-		}
-		if strings.Contains(q, "cost_usd") {
-			t.Fatalf("containmentSQL(%s) must not match on cost_usd (recompute_cost rewrites it)", c.Name)
+		if !slices.Contains(got, spec.Name) {
+			t.Fatalf("shared import table %s is missing from CLI diagnostics", spec.Name)
 		}
 	}
 }

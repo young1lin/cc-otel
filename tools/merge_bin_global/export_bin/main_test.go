@@ -7,8 +7,18 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/young1lin/cc-otel/internal/dbmerge"
+
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
+
+func TestTableConfigsExcludeCodexEvents(t *testing.T) {
+	for _, cfg := range tableConfigs() {
+		if cfg.Name == "codex_events" {
+			t.Fatal("codex_events must not be exported")
+		}
+	}
+}
 
 func TestExportTableMapsOldCodexToolTokensToTotalTokens(t *testing.T) {
 	ctx := context.Background()
@@ -99,5 +109,12 @@ func TestExportTableMapsOldCodexToolTokensToTotalTokens(t *testing.T) {
 	}
 	if _, ok := rec.Row["tool_tokens"]; ok {
 		t.Fatalf("export should not expose old tool_tokens field")
+	}
+	wantID, err := dbmerge.LedgerID(dbmerge.Row{Table: rec.Table, Values: rec.Row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.UUID != wantID {
+		t.Fatalf("export id = %q, want shared identity %q", rec.UUID, wantID)
 	}
 }

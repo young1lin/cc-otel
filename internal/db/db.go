@@ -440,6 +440,13 @@ func runMigrations(db *sql.DB) error {
 			fetched_at        INTEGER NOT NULL,
 			updated_at        INTEGER NOT NULL
 		) WITHOUT ROWID;
+
+		CREATE TABLE IF NOT EXISTS import_ledger (
+			uuid TEXT PRIMARY KEY,
+			imported_at INTEGER NOT NULL,
+			source_db TEXT NOT NULL,
+			table_name TEXT NOT NULL
+		);
 	`)
 	if err != nil {
 		return fmt.Errorf("codex sub-event tables: %w", err)
@@ -455,6 +462,7 @@ func runMigrations(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_codex_events_name      ON codex_events(event_name);
 		CREATE INDEX IF NOT EXISTS idx_codex_raw_time         ON codex_raw_otlp_events(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_model_pricing_source   ON model_pricing(source);
+		CREATE INDEX IF NOT EXISTS idx_import_ledger_table_time ON import_ledger(table_name, imported_at);
 	`)
 	if err != nil {
 		return fmt.Errorf("codex sub-event indexes: %w", err)

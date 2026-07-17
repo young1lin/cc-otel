@@ -1465,17 +1465,3 @@ func (r *Repository) CleanupRaw(ctx context.Context, beforeUnix int64) (int64, e
 	r.db.ExecContext(ctx, "PRAGMA incremental_vacuum")
 	return total, nil
 }
-
-// CleanupCodexWebsocketEvents deletes codex.websocket_event rows older than maxAge unix seconds.
-// These events are only needed for real-time duration calculation and are consumed immediately;
-// anything older than maxAge is stale.
-func (r *Repository) CleanupCodexWebsocketEvents(ctx context.Context, maxAge int64) (int64, error) {
-	cutoff := time.Now().Unix() - maxAge
-	res, err := r.db.ExecContext(ctx,
-		`DELETE FROM codex_events WHERE event_name = 'codex.websocket_event' AND timestamp < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
-}

@@ -199,8 +199,8 @@ Current storage mapping:
 
 ### 2. `codex.sse_event` — Streaming Events / 流式事件
 
-Most SSE events are stored in `codex_events` for debugging. The important one
-for usage accounting is `event.kind=response.completed`.
+Only `event.kind=response.completed` is retained through structured accounting
+updates. Non-completion SSE events, including streaming deltas, are not persisted.
 
 | 属性 | 类型 | 说明 |
 |------|------|------|
@@ -237,14 +237,13 @@ Current backfill behavior:
 | `codex.sse_event` + `response.completed` | `codex_api_requests` | Updates newest zero-token row within 5 minutes for same `conversation.id + model` |
 | same | `codex_daily_model_agg` | Adds token deltas without incrementing request count |
 | no pending request row | `codex_api_requests` | Inserts a token-only fallback row and counts it once |
-| non-completion SSE events | `codex_events` | Stored as generic Codex events |
+| non-completion SSE events | not persisted | Parsed only when relevant; streaming deltas are discarded |
 
 ### 3. `codex.websocket_event` — WebSocket Timing / WebSocket 时序
 
-WebSocket events are used for best-effort duration backfill. Individual
-`duration_ms` values are per-event round-trip timings; `cc-otel` prefers the
-timestamp span of stored websocket events for the same `conversation.id + model`
-when it can compute one.
+WebSocket events are used for best-effort TTFT and duration backfill. Request
+metadata is held only in the in-memory tracker and discarded after completion;
+individual WebSocket events are not persisted in `codex_events`.
 
 | 属性 | 类型 | 说明 |
 |------|------|------|
@@ -260,9 +259,10 @@ Current duration backfill behavior:
 
 | Source event | Table | Behavior |
 |--------------|-------|----------|
-| `codex.websocket_event` | `codex_events` | Stored for later span calculation |
+| `codex.websocket_request` | in-memory tracker | Seeds the request start time and correlation metadata |
+| `codex.websocket_event` + `response.created` | `codex_api_requests.ttft_ms` | Updates TTFT from the matching in-memory request |
 | `codex.websocket_event` + `response.completed` | `codex_api_requests.duration_ms` | Updates newest tokenized row with zero duration |
-| available websocket span | `duration_ms = (max(timestamp) - min(timestamp)) * 1000` |
+| available request span | `duration_ms = response.completed - websocket_request` |
 | no span but event `duration_ms` exists | fallback to event `duration_ms` |
 
 This is approximate. The stronger correlation key currently available to
@@ -276,8 +276,13 @@ requests in the same conversation can still be ambiguous.
 | `codex.user_prompt` | `codex_user_prompt_events` | User prompt metadata/content when emitted |
 | `codex.tool_decision` | `codex_tool_decision_events` | Tool approval/decision |
 | `codex.tool_result` | `codex_tool_result_events` | Tool execution result |
-| other Codex logs | `codex_events` | Generic fallback storage |
+| other Codex logs | not persisted | Diagnostic fallback events are discarded |
 | raw OTLP logs | `codex_raw_otlp_events` | Debug/audit copy |
+
+The `codex_events` table remains in the SQLite schema for compatibility, but
+live telemetry no longer writes it and database imports recognize but ignore it.
+Existing rows are not automatically deleted; cleanup requires a separate,
+explicitly approved maintenance operation.
 
 ---
 

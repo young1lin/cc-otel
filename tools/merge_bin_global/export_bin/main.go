@@ -3,9 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/sha1"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/young1lin/cc-otel/internal/dbmerge"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
@@ -27,12 +27,11 @@ type exportRecord struct {
 }
 
 type tableCfg struct {
-	Name       string
-	Columns    []string
-	WhereSQL   string
-	Args       func(fromUnix, toUnix int64) []any
-	TsFromRow  func(row map[string]any) (int64, bool)
-	StableName func(row map[string]any) string
+	Name      string
+	Columns   []string
+	WhereSQL  string
+	Args      func(fromUnix, toUnix int64) []any
+	TsFromRow func(row map[string]any) (int64, bool)
 }
 
 var errMissingTable = errors.New("missing table")
@@ -174,8 +173,10 @@ func exportTable(ctx context.Context, db *sql.DB, enc *json.Encoder, cfg tableCf
 			continue
 		}
 
-		stableName := cfg.StableName(row)
-		u := uuidV5String(exportNamespace(), cfg.Name+"|"+stableName)
+		u, err := dbmerge.LedgerID(dbmerge.Row{Table: cfg.Name, Values: row})
+		if err != nil {
+			return n, err
+		}
 
 		rec := exportRecord{
 			UUID:  u,
@@ -216,12 +217,20 @@ func selectColumns(ctx context.Context, db *sql.DB, cfg tableCfg) ([]string, err
 
 	selectCols := make([]string, 0, len(cfg.Columns))
 	for _, col := range cfg.Columns {
+		if cfg.Name == "codex_api_requests" && col == "total_tokens" && cols["total_tokens"] && cols["tool_tokens"] {
+			selectCols = append(selectCols, "CASE WHEN total_tokens != 0 THEN total_tokens WHEN tool_tokens > 0 THEN tool_tokens ELSE total_tokens END AS total_tokens")
+			continue
+		}
 		if cols[col] {
 			selectCols = append(selectCols, col)
 			continue
 		}
 		if cfg.Name == "codex_api_requests" && col == "total_tokens" && cols["tool_tokens"] {
 			selectCols = append(selectCols, "tool_tokens AS total_tokens")
+			continue
+		}
+		if cfg.Name == "pending_ttft_spans" && col == "request_id" {
+			selectCols = append(selectCols, "'' AS request_id")
 			continue
 		}
 		return nil, fmt.Errorf("%s missing required column %s", cfg.Name, col)
@@ -262,33 +271,6 @@ func tableColumns(ctx context.Context, db *sql.DB, table string) (map[string]boo
 	return cols, rows.Err()
 }
 
-func exportNamespace() [16]byte {
-	return [16]byte{0x7a, 0x4b, 0x2b, 0x93, 0x1f, 0x7a, 0x4f, 0x4f, 0x8f, 0x64, 0x1e, 0x3b, 0xd7, 0xb5, 0xc3, 0xd1}
-}
-
-func uuidV5String(ns [16]byte, name string) string {
-	h := sha1.New() // #nosec G401 - required by UUIDv5 spec
-	_, _ = h.Write(ns[:])
-	_, _ = h.Write([]byte(name))
-	sum := h.Sum(nil)
-
-	var b [16]byte
-	copy(b[:], sum[:16])
-	b[6] = (b[6] & 0x0f) | 0x50
-	b[8] = (b[8] & 0x3f) | 0x80
-
-	hexStr := hex.EncodeToString(b[:])
-	return fmt.Sprintf("%s-%s-%s-%s-%s", hexStr[0:8], hexStr[8:12], hexStr[12:16], hexStr[16:20], hexStr[20:32])
-}
-
-func stableKV(row map[string]any, cols []string) string {
-	parts := make([]string, 0, len(cols))
-	for _, c := range cols {
-		parts = append(parts, fmt.Sprintf("%s=%v", c, row[c]))
-	}
-	return strings.Join(parts, "|")
-}
-
 func tableConfigs() []tableCfg {
 	cfgs := []tableCfg{
 		{
@@ -306,12 +288,6 @@ func tableConfigs() []tableCfg {
 			TsFromRow: func(row map[string]any) (int64, bool) {
 				return toInt64(row["timestamp"])
 			},
-			StableName: func(row map[string]any) string {
-				if rid, _ := row["request_id"].(string); rid != "" {
-					return "request_id=" + rid
-				}
-				return stableKV(row, []string{"timestamp", "session_id", "prompt_id", "event_sequence", "model", "input_tokens", "output_tokens", "cost_usd", "duration_ms"})
-			},
 		},
 		{
 			Name: "user_prompt_events",
@@ -322,9 +298,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "user_id", "prompt_id", "event_sequence", "prompt_length"})
-			},
 		},
 		{
 			Name: "tool_decision_events",
@@ -335,9 +308,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "prompt_id", "event_sequence", "tool_name", "decision", "source"})
-			},
 		},
 		{
 			Name: "tool_result_events",
@@ -349,9 +319,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "prompt_id", "event_sequence", "tool_name", "success", "duration_ms"})
-			},
 		},
 		{
 			Name: "api_error_events",
@@ -364,9 +331,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "prompt_id", "event_sequence", "model", "error_type", "error_code"})
-			},
 		},
 		{
 			Name: "otel_metric_points",
@@ -376,9 +340,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "metric_name", "value", "session_id", "user_id", "model", "attr_type"})
-			},
 		},
 		{
 			Name: "events",
@@ -394,9 +355,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "prompt_id", "event_name", "event_sequence", "tool_name", "success", "error_code"})
-			},
 		},
 		{
 			Name:      "raw_otlp_events",
@@ -404,10 +362,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				h := sha1.Sum([]byte(fmt.Sprintf("%v", row["raw_json"]))) // #nosec G401
-				return fmt.Sprintf("timestamp=%v|event_type=%v|raw_sha1=%x", row["timestamp"], row["event_type"], h[:8])
-			},
 		},
 		{
 			Name:     "pending_ttft_spans",
@@ -419,9 +373,6 @@ func tableConfigs() []tableCfg {
 					return ts, true
 				}
 				return toInt64(row["created_unix"])
-			},
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"session_id", "model", "span_end_unix", "ttft_ms"})
 			},
 		},
 		// --- Codex tables ---
@@ -439,9 +390,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "model", "input_tokens", "output_tokens", "cost_usd", "duration_ms"})
-			},
 		},
 		{
 			Name: "codex_user_prompt_events",
@@ -452,9 +400,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "prompt_length", "event_sequence"})
-			},
 		},
 		{
 			Name: "codex_tool_decision_events",
@@ -465,9 +410,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "tool_name", "call_id", "decision"})
-			},
 		},
 		{
 			Name: "codex_tool_result_events",
@@ -479,22 +421,6 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "tool_name", "call_id", "success", "duration_ms"})
-			},
-		},
-		{
-			Name: "codex_events",
-			Columns: []string{
-				"timestamp", "session_id", "conversation_id", "event_name", "event_kind",
-				"model", "duration_ms", "error_message", "raw_attrs_json",
-			},
-			WhereSQL:  "timestamp BETWEEN ? AND ?",
-			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
-			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				return stableKV(row, []string{"timestamp", "session_id", "event_name", "event_kind", "model"})
-			},
 		},
 		{
 			Name:      "codex_raw_otlp_events",
@@ -502,14 +428,15 @@ func tableConfigs() []tableCfg {
 			WhereSQL:  "timestamp BETWEEN ? AND ?",
 			Args:      func(fromUnix, toUnix int64) []any { return []any{fromUnix, toUnix} },
 			TsFromRow: func(row map[string]any) (int64, bool) { return toInt64(row["timestamp"]) },
-			StableName: func(row map[string]any) string {
-				h := sha1.Sum([]byte(fmt.Sprintf("%v", row["raw_json"]))) // #nosec G401
-				return fmt.Sprintf("timestamp=%v|event_type=%v|raw_sha1=%x", row["timestamp"], row["event_type"], h[:8])
-			},
 		},
 	}
 
 	sort.Slice(cfgs, func(i, j int) bool { return cfgs[i].Name < cfgs[j].Name })
+	for i := range cfgs {
+		if spec, ok := dbmerge.LookupSpec(cfgs[i].Name); ok {
+			cfgs[i].Columns = spec.Columns
+		}
+	}
 	return cfgs
 }
 

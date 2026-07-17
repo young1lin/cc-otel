@@ -190,12 +190,6 @@ func TestCodexSubEvent_Inserts(t *testing.T) {
 		t.Fatalf("tool_result: %v", err)
 	}
 
-	if err := repo.InsertCodexEvent(ctx, &CodexEvent{
-		Timestamp: now, SessionID: "s1", EventName: "codex.sse_event", EventKind: "response.created",
-	}); err != nil {
-		t.Fatalf("event: %v", err)
-	}
-
 	if err := repo.InsertCodexRawEvent(ctx, "log", now.Unix(), `{"e":"x"}`); err != nil {
 		t.Fatalf("raw: %v", err)
 	}
@@ -204,7 +198,6 @@ func TestCodexSubEvent_Inserts(t *testing.T) {
 		"codex_user_prompt_events",
 		"codex_tool_decision_events",
 		"codex_tool_result_events",
-		"codex_events",
 		"codex_raw_otlp_events",
 	} {
 		var n int

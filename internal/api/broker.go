@@ -7,9 +7,9 @@ import (
 
 // Broker manages SSE client channels.
 //
-// Each Notify call broadcasts a "source" tag (`claude` or `codex`) so the web
-// UI can selectively refresh only the active tab. Notify() (no args) is kept
-// for backward compatibility and tags the event as "claude".
+// Each Notify call broadcasts a "source" tag (`claude`, `codex`, or `all`) so
+// the web UI can selectively refresh the active tab. Notify() (no args) is
+// kept for backward compatibility and tags the event as "claude".
 type Broker struct {
 	mu         sync.Mutex
 	clients    map[chan string]struct{}
