@@ -1,5 +1,6 @@
 import { state } from './state.js';
 import { toYMD, getTodayYMD, isValidYMD } from './utils.js';
+import { syncGranularityButtons } from './granularity.js';
 
 const dayDropdownBtn = document.getElementById('day-dropdown-btn');
 const dayDropdown    = document.getElementById('day-dropdown');
@@ -149,9 +150,10 @@ export function syncRangeNavUIFromState() {
         else crw.classList.remove('is-active');
     }
     const granSwitch = document.getElementById('granularity-switch');
-    document.querySelectorAll('#granularity-switch .gran-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.gran === state.chartGranularity);
-    });
+    syncGranularityButtons(
+        document.querySelectorAll('#granularity-switch .gran-btn'),
+        state.chartGranularity,
+    );
     granSwitch.style.display = state.currentRange === 'all' ? '' : 'none';
 
     if (state.currentRange === 'custom') {
@@ -326,9 +328,10 @@ export function initFilters(opts = {}) {
             state.selectedDayDate = '';
             if (state.currentRange !== 'all') {
                 state.chartGranularity = 'day';
-                document.querySelectorAll('#granularity-switch .gran-btn').forEach(b => {
-                    b.classList.toggle('active', b.dataset.gran === 'day');
-                });
+                syncGranularityButtons(
+                    document.querySelectorAll('#granularity-switch .gran-btn'),
+                    state.chartGranularity,
+                );
             }
             if (state.customRangeFlatpickr) state.customRangeFlatpickr.clear();
             const crw = document.getElementById('custom-range-wrap');
@@ -351,9 +354,11 @@ export function initFilters(opts = {}) {
 
     document.querySelectorAll('#granularity-switch .gran-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            document.querySelectorAll('#granularity-switch .gran-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
             state.chartGranularity = btn.dataset.gran;
+            syncGranularityButtons(
+                document.querySelectorAll('#granularity-switch .gran-btn'),
+                state.chartGranularity,
+            );
             onResetPages(); onChange();
             syncURLFromState();
         });

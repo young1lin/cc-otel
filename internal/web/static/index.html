@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=23">
+    <link rel="stylesheet" href="style.css?v=24">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -29,9 +29,9 @@
             <button class="range-btn" data-range="week">7 Days</button>
             <button class="range-btn" data-range="month">30 Days</button>
             <button class="range-btn" data-range="all">All Time</button>
-            <div class="granularity-sw" id="granularity-switch" style="display:none">
-                <button class="gran-btn active" data-gran="day">Day</button>
-                <button class="gran-btn" data-gran="month">Month</button>
+            <div class="granularity-sw" id="granularity-switch" role="group" aria-label="Chart granularity" style="display:none">
+                <button type="button" class="gran-btn active" data-gran="day" aria-pressed="true">Day</button>
+                <button type="button" class="gran-btn" data-gran="month" aria-pressed="false">Month</button>
             </div>
         </div>
         <div class="custom-range" id="custom-range-wrap" title="Pick a date range">
@@ -468,6 +468,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=65"></script>
+<script type="module" src="app.js?v=66"></script>
 </body>
 </html>

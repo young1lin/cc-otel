@@ -597,6 +597,61 @@ body {
     box-shadow: var(--shadow-sm);
 }
 
+/* Chart granularity — independent graphite segmented control. */
+#granularity-switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 10px;
+    padding: 2px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-sm);
+}
+#granularity-switch::before {
+    content: "";
+    position: absolute;
+    left: -6px;
+    top: 50%;
+    width: 1px;
+    height: 16px;
+    background: var(--border-hover);
+    transform: translateY(-50%);
+}
+#granularity-switch .gran-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    min-width: 48px;
+    height: 22px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 22px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+#granularity-switch .gran-btn:hover {
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--text);
+}
+#granularity-switch .gran-btn:active { opacity: 0.72; }
+#granularity-switch .gran-btn:focus-visible {
+    outline: 2px solid var(--border-hover);
+    outline-offset: -1px;
+}
+#granularity-switch .gran-btn.active {
+    background: var(--surface3);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
+}
+
 /* Flatpickr anchor — readable range label (altInput) */
 .custom-range .flatpickr-wrapper {
     display: flex;
