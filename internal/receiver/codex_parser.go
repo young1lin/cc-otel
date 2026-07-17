@@ -3,6 +3,7 @@ package receiver
 import (
 	"context"
 	"encoding/base64"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,86 +72,168 @@ func codexLogUnixNanos(lr *logspb.LogRecord) int64 {
 	return 0
 }
 
-// codexSpanTracker maps span_id to the observed_time of the corresponding
-// websocket_request event. Used to compute precise per-request duration
-// when the matching response.created/response.completed websocket events arrive.
+// codexLogObservedUnixNanos returns the event observed time used for timing
+// math (request-start reconstruction, TTFT fallback, full duration). It prefers
+// ObservedTimeUnixNano and falls back to TimeUnixNano. codexLogUnixNanos keeps
+// the opposite ordering for the persisted event timestamp; changing that
+// historical timestamp semantics is out of scope.
+func codexLogObservedUnixNanos(lr *logspb.LogRecord) int64 {
+	if lr == nil {
+		return 0
+	}
+	if lr.ObservedTimeUnixNano > 0 {
+		return int64(lr.ObservedTimeUnixNano)
+	}
+	if lr.TimeUnixNano > 0 {
+		return int64(lr.TimeUnixNano)
+	}
+	return 0
+}
+
+// codexRequestStartNanos reconstructs the model-request start boundary from the
+// observed time of codex.api_request and its reported duration_ms (setup/header
+// time). It clamps to the observed time when duration_ms is missing, negative,
+// or would underflow the Unix epoch. A zero observed time yields zero.
+func codexRequestStartNanos(observedNanos, reportedDurationMs int64) int64 {
+	if observedNanos <= 0 {
+		return 0
+	}
+	if reportedDurationMs <= 0 {
+		return observedNanos
+	}
+	if reportedDurationMs > observedNanos/int64(time.Millisecond) {
+		return observedNanos
+	}
+	return observedNanos - reportedDurationMs*int64(time.Millisecond)
+}
+
+// codexSpanTracker correlates a successful API/WebSocket request with its
+// structured codex_api_requests row so the later codex.sse_event
+// (response.completed) can write authoritative token/cost/TTFT/duration values
+// onto the exact row. The primary key is the OTLP span_id; entries with an empty
+// span_id are kept under an internal fallback:<n> key so session/model fallback
+// still works. Lookup is non-destructive: state is removed only by an explicit
+// removeRequest after the structured DB write commits.
 type codexSpanTracker struct {
-	mu    sync.Mutex
-	spans map[string]spanInfo // span_id → info
+	mu           sync.Mutex
+	spans        map[string]spanInfo
+	nextFallback uint64
 }
 
 type spanInfo struct {
+	rowID      int64
 	sessionID  string
 	model      string
-	startNanos int64 // observed_time_unix_nano from websocket_request
+	startNanos int64 // reconstructed request-start time in Unix nanoseconds
 }
 
 func newCodexSpanTracker() *codexSpanTracker {
 	return &codexSpanTracker{spans: make(map[string]spanInfo)}
 }
 
-func (t *codexSpanTracker) recordRequest(spanID, sessionID, model string, observedNanos int64) {
-	if spanID == "" {
-		return
-	}
-	t.mu.Lock()
-	t.spans[spanID] = spanInfo{sessionID: sessionID, model: model, startNanos: observedNanos}
-	// Evict entries older than 30 minutes to prevent unbounded growth.
-	cutoff := observedNanos - int64(30*time.Minute)
-	if cutoff > 0 && len(t.spans) > 100 {
-		for k, v := range t.spans {
-			if v.startNanos < cutoff {
-				delete(t.spans, k)
-			}
-		}
-	}
-	t.mu.Unlock()
-}
-
-func (t *codexSpanTracker) peekRequest(spanID string) (spanInfo, bool) {
-	t.mu.Lock()
-	info, ok := t.spans[spanID]
-	t.mu.Unlock()
-	return info, ok
-}
-
-func (t *codexSpanTracker) popRequest(spanID string) (spanInfo, bool) {
-	t.mu.Lock()
-	info, ok := t.spans[spanID]
-	if ok {
-		delete(t.spans, spanID)
-	}
-	t.mu.Unlock()
-	return info, ok
-}
-
-func (t *codexSpanTracker) popLatestRequest(sessionID, model string, observedNanos int64, maxAge time.Duration) (spanInfo, bool) {
-	if sessionID == "" || model == "" || observedNanos <= 0 {
-		return spanInfo{}, false
-	}
-	cutoff := observedNanos - int64(maxAge)
+// recordRequest stores correlation state for one request and returns the
+// internal map key. It evicts entries older than 30 minutes on every call. When
+// an entry for the same key already exists, non-zero fields of the new info are
+// merged onto the existing entry (preserving an earlier rowID and the earliest
+// request-start boundary).
+func (t *codexSpanTracker) recordRequest(spanID string, info spanInfo) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	cutoff := info.startNanos - int64(30*time.Minute)
+	if cutoff > 0 {
+		for key, existing := range t.spans {
+			if existing.startNanos > 0 && existing.startNanos < cutoff {
+				delete(t.spans, key)
+			}
+		}
+	}
+
+	key := spanID
+	if key == "" {
+		t.nextFallback++
+		key = "fallback:" + strconv.FormatUint(t.nextFallback, 10)
+	}
+	if existing, ok := t.spans[key]; ok {
+		if info.rowID == 0 {
+			info.rowID = existing.rowID
+		}
+		if info.sessionID == "" {
+			info.sessionID = existing.sessionID
+		}
+		if info.model == "" {
+			info.model = existing.model
+		}
+		if info.startNanos <= 0 ||
+			(existing.startNanos > 0 && existing.startNanos < info.startNanos) {
+			info.startNanos = existing.startNanos
+		}
+	}
+	t.spans[key] = info
+	return key
+}
+
+// lookupRequest returns the internal map key and span info for the best match. It
+// tries the exact span key first, then the newest eligible entry matching
+// sessionID + model within maxAge and not newer than observedNanos. It never
+// mutates the map.
+func (t *codexSpanTracker) lookupRequest(
+	spanID, sessionID, model string,
+	observedNanos int64,
+	maxAge time.Duration,
+) (string, spanInfo, bool) {
+	if observedNanos <= 0 {
+		return "", spanInfo{}, false
+	}
+	cutoff := observedNanos - int64(maxAge)
+	eligible := func(info spanInfo) bool {
+		if info.startNanos <= 0 || info.startNanos > observedNanos ||
+			info.startNanos < cutoff {
+			return false
+		}
+		if sessionID != "" && info.sessionID != sessionID {
+			return false
+		}
+		if model != "" && info.model != model {
+			return false
+		}
+		return true
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if spanID != "" {
+		if info, ok := t.spans[spanID]; ok && eligible(info) {
+			return spanID, info, true
+		}
+	}
+
 	var bestKey string
 	var best spanInfo
-	for k, v := range t.spans {
-		if v.sessionID != sessionID || v.model != model {
+	for key, info := range t.spans {
+		if !eligible(info) {
 			continue
 		}
-		if v.startNanos <= 0 || v.startNanos > observedNanos || v.startNanos < cutoff {
-			continue
-		}
-		if bestKey == "" || v.startNanos > best.startNanos {
-			bestKey = k
-			best = v
+		if bestKey == "" || info.startNanos > best.startNanos {
+			bestKey = key
+			best = info
 		}
 	}
 	if bestKey == "" {
-		return spanInfo{}, false
+		return "", spanInfo{}, false
 	}
-	delete(t.spans, bestKey)
-	return best, true
+	return bestKey, best, true
+}
+
+// removeRequest deletes the entry for the given internal map key. It is a no-op
+// for an empty or missing key.
+func (t *codexSpanTracker) removeRequest(key string) {
+	if key == "" {
+		return
+	}
+	t.mu.Lock()
+	delete(t.spans, key)
+	t.mu.Unlock()
 }
 
 // dispatchCodexLog handles a single Codex log record. Returns true when the
@@ -189,13 +272,25 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		if attrs["model"] == "" {
 			return false
 		}
+		reportedDurationMs := parseAttrInt(attrs, "duration_ms")
+		status := parseAttrInt(attrs, "http.response.status_code")
+		// A pending successful stream is one without an error and with a 2xx
+		// (or unset) status. Its reported duration_ms is only setup/header time,
+		// not the accepted full duration, so store zero and let the later
+		// completion reconstruct the real duration.
+		pendingStream := attrs["error.message"] == "" &&
+			(status == 0 || (status >= 200 && status <= 299))
+		storedDurationMs := reportedDurationMs
+		if pendingStream {
+			storedDurationMs = 0
+		}
 		req := &db.CodexAPIRequest{
 			Timestamp:      ts,
 			SessionID:      attrs["conversation.id"],
 			ConversationID: attrs["conversation.id"],
 			Model:          attrs["model"],
-			DurationMs:     parseAttrInt(attrs, "duration_ms"),
-			HTTPStatus:     parseAttrInt(attrs, "http.response.status_code"),
+			DurationMs:     storedDurationMs,
+			HTTPStatus:     status,
 			Endpoint:       attrs["endpoint"],
 			EventName:      "codex.api_request",
 			TerminalType:   attrs["terminal.type"],
@@ -206,63 +301,85 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			OSVersion:      attrs["os.version"],
 			ErrorMessage:   attrs["error.message"],
 		}
-		if _, err := repo.InsertCodexAPIRequest(ctx, req); err == nil {
-			notify()
-			return true
+		rowID, err := repo.InsertCodexAPIRequest(ctx, req)
+		if err != nil {
+			return false
 		}
-		return false
+		if pendingStream && tracker != nil {
+			observedNanos := codexLogObservedUnixNanos(lr)
+			if observedNanos == 0 {
+				observedNanos = ts.UnixNano()
+			}
+			tracker.recordRequest(spanIDFromLog(lr), spanInfo{
+				rowID:      rowID,
+				sessionID:  req.SessionID,
+				model:      req.Model,
+				startNanos: codexRequestStartNanos(observedNanos, reportedDurationMs),
+			})
+		}
+		notify()
+		return true
 
 	case "codex.sse_event":
 		if eventKindFromLog(lr, attrs) == "response.completed" {
 			upd := &db.CodexTokenUpdate{
-				SessionID:       attrs["conversation.id"],
-				Model:           attrs["model"],
-				Timestamp:       ts,
-				InputTokens:     parseAttrInt(attrs, "input_token_count"),
-				OutputTokens:    parseAttrInt(attrs, "output_token_count"),
-				CacheReadTokens: parseAttrInt(attrs, "cached_token_count"),
-				ReasoningTokens: parseAttrInt(attrs, "reasoning_token_count"),
-				TotalTokens:     parseAttrInt(attrs, "tool_token_count"),
+				SessionID:           attrs["conversation.id"],
+				Model:               attrs["model"],
+				Timestamp:           ts,
+				InputTokens:         parseAttrInt(attrs, "input_token_count"),
+				OutputTokens:        parseAttrInt(attrs, "output_token_count"),
+				CacheReadTokens:     parseAttrInt(attrs, "cached_token_count"),
+				CacheCreationTokens: parseAttrInt(attrs, "cache_write_token_count"),
+				ReasoningTokens:     parseAttrInt(attrs, "reasoning_token_count"),
+				TotalTokens:         parseAttrInt(attrs, "tool_token_count"),
+				TTFTMs:              parseAttrInt(attrs, "ttft_ms"),
 			}
 			// Compute cost from the local pricing table — Codex never reports
 			// cost_usd. OpenAI's Responses API reports input_token_count as the
-			// TOTAL input including cached tokens (cached_token_count ⊆
-			// input_token_count). pricing.Calc expects uncached input only
-			// (Anthropic convention), so subtract before pricing — otherwise
-			// cached tokens get charged twice (full input rate + cache rate).
+			// TOTAL input side, which already includes both cached_token_count
+			// (cache read) and cache_write_token_count (cache write). pricing.Calc
+			// prices four independent categories, so subtract both cache
+			// categories to get uncached input — otherwise cached tokens get
+			// charged twice (full input rate + cache rate).
 			if pricer != nil && !pricing.IsClaudeModel(upd.Model) {
-				uncachedInput := upd.InputTokens - upd.CacheReadTokens
+				uncachedInput := upd.InputTokens - upd.CacheReadTokens - upd.CacheCreationTokens
 				if uncachedInput < 0 {
 					uncachedInput = 0
 				}
-				upd.CostUSD = pricer.Calc(ctx, upd.Model,
-					uncachedInput, upd.OutputTokens, upd.CacheReadTokens, 0)
+				upd.CostUSD = pricer.Calc(
+					ctx, upd.Model, uncachedInput, upd.OutputTokens,
+					upd.CacheReadTokens, upd.CacheCreationTokens,
+				)
 			}
+
+			trackerKey := ""
 			if tracker != nil {
-				obsNano := codexLogUnixNanos(lr)
-				if obsNano == 0 {
-					obsNano = ts.UnixNano()
+				observedNanos := codexLogObservedUnixNanos(lr)
+				if observedNanos == 0 {
+					observedNanos = ts.UnixNano()
 				}
-				var info spanInfo
-				var ok bool
-				if spanID := spanIDFromLog(lr); spanID != "" {
-					info, ok = tracker.popRequest(spanID)
-				}
-				if !ok {
-					info, ok = tracker.popLatestRequest(upd.SessionID, upd.Model, obsNano, 10*time.Minute)
-				}
+				key, info, ok := tracker.lookupRequest(
+					spanIDFromLog(lr), upd.SessionID, upd.Model,
+					observedNanos, 10*time.Minute,
+				)
 				if ok {
-					durationMs := (obsNano - info.startNanos) / 1e6
+					trackerKey = key
+					upd.RequestRowID = info.rowID
+					durationMs := (observedNanos - info.startNanos) / int64(time.Millisecond)
 					if durationMs > 0 {
 						upd.DurationMs = durationMs
 					}
 				}
 			}
-			if _, err := repo.UpdateCodexAPIRequestTokens(ctx, upd); err == nil {
-				notify()
-				return true
+
+			if _, err := repo.UpdateCodexAPIRequestTokens(ctx, upd); err != nil {
+				return false
 			}
-			return false
+			if tracker != nil {
+				tracker.removeRequest(trackerKey)
+			}
+			notify()
+			return true
 		}
 		return false
 
@@ -329,64 +446,70 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 
 	case "codex.websocket_request":
 		if tracker != nil {
-			spanID := spanIDFromLog(lr)
-			obsNano := codexLogUnixNanos(lr)
-			if obsNano == 0 {
-				obsNano = ts.UnixNano()
+			observedNanos := codexLogObservedUnixNanos(lr)
+			if observedNanos == 0 {
+				observedNanos = ts.UnixNano()
 			}
-			tracker.recordRequest(spanID, attrs["conversation.id"], attrs["model"], obsNano)
+			tracker.recordRequest(spanIDFromLog(lr), spanInfo{
+				sessionID: attrs["conversation.id"],
+				model:     attrs["model"],
+				startNanos: codexRequestStartNanos(
+					observedNanos, parseAttrInt(attrs, "duration_ms"),
+				),
+			})
 		}
 		return false
 
 	case "codex.websocket_event":
-		ek := eventKindFromLog(lr, attrs)
-		spanID := spanIDFromLog(lr)
-		obsNano := codexLogUnixNanos(lr)
-		if obsNano == 0 {
-			obsNano = ts.UnixNano()
+		eventKind := eventKindFromLog(lr, attrs)
+		observedNanos := codexLogObservedUnixNanos(lr)
+		if observedNanos == 0 {
+			observedNanos = ts.UnixNano()
 		}
 
-		if tracker != nil && spanID != "" {
-			if ek == "response.created" {
-				if info, ok := tracker.peekRequest(spanID); ok {
-					ttftMs := (obsNano - info.startNanos) / 1e6
-					if ttftMs > 0 {
-						_ = repo.UpdateCodexRequestTTFT(ctx, info.sessionID, info.model, ts, ttftMs)
-					}
+		if tracker != nil {
+			_, info, found := tracker.lookupRequest(
+				spanIDFromLog(lr), attrs["conversation.id"], attrs["model"],
+				observedNanos, 10*time.Minute,
+			)
+			if found && eventKind == "response.created" {
+				ttftMs := (observedNanos - info.startNanos) / int64(time.Millisecond)
+				if ttftMs > 0 {
+					_ = repo.UpdateCodexRequestTTFT(
+						ctx, info.rowID, info.sessionID, info.model, ts, ttftMs,
+					)
 				}
 			}
-			if ek == "response.completed" {
-				if info, ok := tracker.popRequest(spanID); ok {
-					durationMs := (obsNano - info.startNanos) / 1e6
-					if durationMs < 0 {
-						durationMs = 0
+			if found && eventKind == "response.completed" {
+				durationMs := (observedNanos - info.startNanos) / int64(time.Millisecond)
+				if durationMs < 0 {
+					durationMs = 0
+				}
+				updated, err := repo.UpdateCodexRequestDuration(
+					ctx, info.rowID, info.sessionID, info.model, ts, durationMs,
+				)
+				if err == nil {
+					if updated {
+						notify()
+						return true
 					}
-					if updated, err := repo.UpdateCodexRequestDurationBySession(ctx, info.sessionID, info.model, ts, durationMs); err == nil {
-						if updated {
+					if durationMs > 0 && info.sessionID != "" && info.model != "" {
+						_, insertErr := repo.InsertCodexAPIRequest(ctx, &db.CodexAPIRequest{
+							Timestamp:      ts,
+							SessionID:      info.sessionID,
+							ConversationID: info.sessionID,
+							Model:          info.model,
+							DurationMs:     durationMs,
+							EventName:      "codex.websocket_event:response.completed",
+						})
+						if insertErr == nil {
 							notify()
 							return true
 						}
-						if durationMs > 0 && info.sessionID != "" && info.model != "" {
-							_, err := repo.InsertCodexAPIRequest(ctx, &db.CodexAPIRequest{
-								Timestamp:      ts,
-								SessionID:      info.sessionID,
-								ConversationID: info.sessionID,
-								Model:          info.model,
-								DurationMs:     durationMs,
-								EventName:      "codex.websocket_event:response.completed",
-							})
-							if err == nil {
-								notify()
-								return true
-							}
-						}
 					}
 				}
 			}
 		}
-
-		// websocket_event consumed in real-time by tracker above (TTFT + duration).
-		// No need to persist to codex_events; result already in codex_api_requests.
 		return false
 
 	default:

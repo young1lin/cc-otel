@@ -71,7 +71,7 @@ function metricValueFromRow(r) {
     return tokenParts(r).total;
 }
 
-function intradayLineTooltip(params, c) {
+export function intradayLineTooltip(params, c) {
     const list = Array.isArray(params) ? params : [params];
     const p = list.find((x) => x && x.data && x.data.raw)
         || list.find((x) => x && x.data)
@@ -84,9 +84,10 @@ function intradayLineTooltip(params, c) {
     const cost = Number(raw.cost_usd || 0);
     const reqs = Number(raw.request_count || 0);
     const sub = 'padding:2px 0 2px 16px;font-size:11px';
-    const cacheCreateRow = (state.source === 'codex')
-        ? ''
-        : `<tr><td style="color:${c.mutedText};${sub}">Cache Create</td><td style="font-family:var(--font-mono);text-align:right;${sub}">${fmtNum(parts.cacheCreate)}</td></tr>`;
+    const cacheCreateRow =
+        '<tr><td style="color:' + c.mutedText + ';' + sub +
+        '">Cache Create</td><td style="font-family:var(--font-mono);text-align:right;' + sub + '">' +
+        fmtNum(parts.cacheCreate) + '</td></tr>';
     const header = escapeHtml(String(raw.bucket_label || ''));
     const modelColor = typeof p.color === 'string' ? p.color : getModelColor(raw.model || 'Unknown');
     const modelName = raw.model || p.seriesName || 'Unknown';
@@ -109,6 +110,40 @@ function intradayLineTooltip(params, c) {
         `</table>`;
 }
 
+export function renderIntradayRow(r) {
+    const parts = tokenParts(r);
+    return [
+        '<tr>',
+        '<td class="mono">' + escapeHtml(r.bucket_label || '') + '</td>',
+        '<td><span class="badge">' + escapeHtml(r.model || 'Unknown') + '</span></td>',
+        '<td class="mono">' + fmtNum(parts.total) + '</td>',
+        '<td class="mono">' + fmtNum(parts.inputSide) + '</td>',
+        '<td class="mono">' + fmtNum(parts.uncachedInput) + '</td>',
+        '<td class="mono">' + fmtNum(parts.cacheRead) + '</td>',
+        '<td class="mono">' + fmtNum(parts.cacheCreate) + '</td>',
+        '<td class="mono">' + fmtNum(parts.output) + '</td>',
+        '<td class="cost-val">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>',
+        '<td class="mono">' + Number(r.request_count || 0) + '</td>',
+        '</tr>',
+    ].join('');
+}
+
+export function renderDailyRow(r) {
+    const parts = tokenParts(r);
+    return [
+        '<tr>',
+        '<td class="mono">' + escapeHtml(r.date || '') + '</td>',
+        '<td><span class="badge">' + escapeHtml(r.model || 'Unknown') + '</span></td>',
+        '<td class="mono">' + Number(r.request_count || 0) + '</td>',
+        '<td class="mono">' + fmtNum(parts.uncachedInput) + '</td>',
+        '<td class="mono">' + fmtNum(parts.cacheRead) + '</td>',
+        '<td class="mono">' + fmtNum(parts.cacheCreate) + '</td>',
+        '<td class="mono">' + fmtNum(parts.output) + '</td>',
+        '<td class="cost-val">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>',
+        '</tr>',
+    ].join('');
+}
+
 export async function loadIntraday() {
     const { from, to } = rangeToFromTo(state.currentRange);
     const tbody = document.getElementById('hourly-tbody');
@@ -117,7 +152,7 @@ export async function loadIntraday() {
 
     const span = spanDaysInclusive(from, to);
     if (span < 1 || span > INTRADAY_MAX_DAYS) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:24px">Intraday view is only available for a single day (Today / Yesterday / a single custom date).</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">Intraday view is only available for a single day (Today / Yesterday / a single custom date).</td></tr>`;
         return;
     }
 
@@ -135,29 +170,14 @@ export async function loadIntraday() {
         const models = [...byModel.keys()].sort((a, b) => a.localeCompare(b));
 
         if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:24px">No data in this range</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">No data in this range</td></tr>';
         } else {
             const sortedRows = [...rows].sort((a, b) => {
                 const ts = Number(a.bucket_start_unix) - Number(b.bucket_start_unix);
                 if (ts !== 0) return ts;
                 return metricValueFromRow(b) - metricValueFromRow(a);
             });
-            const hideCC = state.source === 'codex';
-            tbody.innerHTML = sortedRows.map(r => {
-                const parts = tokenParts(r);
-                return `<tr>
-                    <td class="mono">${escapeHtml(r.bucket_label || '')}</td>
-                    <td><span class="badge">${escapeHtml(r.model || 'Unknown')}</span></td>
-                    <td class="mono">${fmtNum(parts.total)}</td>
-                    <td class="mono">${fmtNum(parts.inputSide)}</td>
-                    <td class="mono">${fmtNum(parts.uncachedInput)}</td>
-                    <td class="mono">${fmtNum(parts.cacheRead)}</td>
-                    ${hideCC ? '' : `<td class="mono">${fmtNum(parts.cacheCreate)}</td>`}
-                    <td class="mono">${fmtNum(parts.output)}</td>
-                    <td class="cost-val">$${Number(r.cost_usd || 0).toFixed(4)}</td>
-                    <td class="mono">${r.request_count || 0}</td>
-                </tr>`;
-            }).join('');
+            tbody.innerHTML = sortedRows.map(renderIntradayRow).join('');
         }
 
         const isCost = state.chartMetric === 'cost';
@@ -402,7 +422,7 @@ export async function loadIntraday() {
         });
     } catch (e) {
         console.error('intraday:', e);
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:24px">Failed to load intraday data</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">Failed to load intraday data</td></tr>';
     }
 }
 
@@ -419,17 +439,7 @@ export async function loadDailyTable() {
             renderPagination('daily-pagination', paging.daily, loadDailyTable);
             return;
         }
-        const hideCC = state.source === 'codex';
-        tbody.innerHTML = rows.map(r => `<tr>
-            <td class="mono">${escapeHtml(r.date)}</td>
-            <td><span class="badge">${escapeHtml(r.model)}</span></td>
-            <td class="mono">${r.request_count}</td>
-            <td class="mono">${fmtNum(r.input_tokens)}</td>
-            <td class="mono">${fmtNum(r.cache_read_tokens)}</td>
-            ${hideCC ? '' : `<td class="mono">${fmtNum(r.cache_creation_tokens)}</td>`}
-            <td class="mono">${fmtNum(r.output_tokens)}</td>
-            <td class="cost-val">$${r.cost_usd.toFixed(4)}</td>
-        </tr>`).join('');
+        tbody.innerHTML = rows.map(renderDailyRow).join('');
         renderPagination('daily-pagination', paging.daily, loadDailyTable);
     } catch (e) { console.error('daily table:', e); }
 }

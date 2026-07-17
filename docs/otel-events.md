@@ -161,13 +161,16 @@ Unlike Claude Code, Codex does not put complete request usage into a single
 
 ```
 codex.api_request
-  -> insert codex_api_requests row with network/request metadata
+  -> insert request metadata with duration_ms=0 for a successful stream
+  -> retain row id + reconstructed request start in the in-memory tracker
 
 codex.sse_event kind=response.completed
-  -> backfill token fields into the newest pending row for same session+model
+  -> exact-row-first transaction for tokens, cache write, cost, TTFT, duration
+  -> remove tracker state only after commit
 
-codex.websocket_event kind=response.completed
-  -> best-effort backfill duration_ms when duration is not already known
+codex.websocket_event kind=response.created/response.completed
+  -> best-effort exact-row-first TTFT/duration fallback
+  -> never consumes tracker state before structured SSE completion
 ```
 
 ### 1. `codex.api_request` — Request Metadata / 请求元数据
@@ -181,7 +184,7 @@ event arrives.
 | `event.name` | string | `"codex.api_request"` |
 | `conversation.id` | string | Codex session/conversation key; stored as `session_id` |
 | `model` | string | Model name |
-| `duration_ms` | int | API request duration if Codex reports it |
+| `duration_ms` | int | Successful stream setup/header duration used only to reconstruct request start; failed requests retain it as their final available duration |
 | `http.response.status_code` | int | HTTP status |
 | `endpoint` | string | API endpoint |
 | `attempt` | int | Retry attempt |
@@ -211,20 +214,32 @@ updates. Non-completion SSE events, including streaming deltas, are not persiste
 | `input_token_count` | int | Total input tokens; **includes cached input** |
 | `output_token_count` | int | Output tokens |
 | `cached_token_count` | int | Cached input token subset |
+| `cache_write_token_count` | int | Cache-write input token subset; zero when omitted by older clients |
 | `reasoning_token_count` | int | Reasoning output tokens |
 | `tool_token_count` | int | Codex currently sends `usage.total_tokens` here; not tool tokens |
+| `ttft_ms` | int | Codex-measured time to first output item; authoritative when positive |
 
 Token semantics for Codex:
 
 | UI / DB concept | Formula |
 |-----------------|---------|
 | Total input | `input_token_count` |
-| Cached input | `cached_token_count` |
-| Uncached input | `max(input_token_count - cached_token_count, 0)` |
+| Cache read | `cached_token_count` |
+| Cache write | `cache_write_token_count` |
+| Uncached input | `max(input_token_count - cached_token_count - cache_write_token_count, 0)` |
 | Output | `output_token_count` |
 | Reported total | `tool_token_count` from Codex, stored as `total_tokens` |
 | Fallback total | `input_token_count + output_token_count` |
 | Cache hit rate | `cached_token_count / input_token_count` |
+
+Cost recomputes from four independent categories (Codex never reports `cost_usd`):
+
+```
+cost = uncached_input * input_price
+     + output * output_price
+     + cache_read * cache_read_price
+     + cache_write * cache_create_price
+```
 
 This differs from Claude Code. Claude input-side total is
 `input_tokens + cache_read_tokens + cache_creation_tokens`; Codex must not add
@@ -234,9 +249,10 @@ Current backfill behavior:
 
 | Source event | Table | Behavior |
 |--------------|-------|----------|
-| `codex.sse_event` + `response.completed` | `codex_api_requests` | Updates newest zero-token row within 5 minutes for same `conversation.id + model` |
-| same | `codex_daily_model_agg` | Adds token deltas without incrementing request count |
-| no pending request row | `codex_api_requests` | Inserts a token-only fallback row and counts it once |
+| `codex.sse_event` + `response.completed` with tracked row ID | `codex_api_requests` | Updates that exact `session_id + model + id` row |
+| completion without a usable row ID | `codex_api_requests` | Updates newest zero-token row within five minutes for the same session/model |
+| same completion | `codex_daily_model_agg` | Adds input, output, cache read, cache write, reasoning, total, and cost deltas without incrementing request count |
+| no pending request row | `codex_api_requests` | Inserts one token-only fallback row and counts it once; duration stays zero without correlation |
 | non-completion SSE events | not persisted | Parsed only when relevant; streaming deltas are discarded |
 
 ### 3. `codex.websocket_event` — WebSocket Timing / WebSocket 时序
@@ -255,19 +271,14 @@ individual WebSocket events are not persisted in `codex_events`.
 | `success` | bool | Whether the websocket event succeeded |
 | `error.message` | string | Error message, if any |
 
-Current duration backfill behavior:
+Timing boundaries (authoritative):
 
-| Source event | Table | Behavior |
-|--------------|-------|----------|
-| `codex.websocket_request` | in-memory tracker | Seeds the request start time and correlation metadata |
-| `codex.websocket_event` + `response.created` | `codex_api_requests.ttft_ms` | Updates TTFT from the matching in-memory request |
-| `codex.websocket_event` + `response.completed` | `codex_api_requests.duration_ms` | Updates newest tokenized row with zero duration |
-| available request span | `duration_ms = response.completed - websocket_request` |
-| no span but event `duration_ms` exists | fallback to event `duration_ms` |
-
-This is approximate. The stronger correlation key currently available to
-`cc-otel` is `conversation.id + model + time window`; concurrent same-model
-requests in the same conversation can still be ambiguous.
+- Request start is `request_event_observed_time - request_event.duration_ms`.
+- Full duration is `response.completed_observed_time - request_start`.
+- Direct completion `ttft_ms` overwrites a positive WebSocket fallback.
+- WebSocket timing targets the tracked row ID first, then session/model within ten minutes.
+- Tracker lookup is non-destructive; successful structured completion removes it, database failure retains it, and abandoned state expires after 30 minutes.
+- Tool execution duration stays in `codex_tool_result_events` and is never added to model-call duration.
 
 ### 4. Other Codex Events / 其他 Codex 事件
 

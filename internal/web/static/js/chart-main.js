@@ -22,9 +22,10 @@ export function buildBarTooltip(params, c) {
 
     const parts = tokenParts(raw);
     const sub = 'padding:2px 0 2px 16px;font-size:11px';
-    const cacheCreateRow = (state.source === 'codex')
-        ? ''
-        : `<tr><td style="color:${c.mutedText};${sub}">Cache Create</td><td style="font-family:var(--font-mono);text-align:right;padding:2px 0">${fmtNum(parts.cacheCreate)}</td></tr>`;
+    const cacheCreateRow =
+        '<tr><td style="color:' + c.mutedText + ';' + sub +
+        '">Cache Create</td><td style="font-family:var(--font-mono);text-align:right;padding:2px 0">' +
+        fmtNum(parts.cacheCreate) + '</td></tr>';
     const dayLabel = raw.date != null
         ? escapeHtml(String(raw.date))
         : (p.name != null ? escapeHtml(String(p.name)) : '');

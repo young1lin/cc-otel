@@ -41,16 +41,19 @@ type CodexAPIRequest struct {
 // (Codex never reports cost_usd itself). Pass 0 to leave cost untouched on
 // both the row and the daily aggregate.
 type CodexTokenUpdate struct {
-	SessionID       string
-	Model           string
-	Timestamp       time.Time
-	InputTokens     int64
-	OutputTokens    int64
-	CacheReadTokens int64
-	ReasoningTokens int64
-	TotalTokens     int64
-	CostUSD         float64
-	DurationMs      int64
+	RequestRowID        int64
+	SessionID           string
+	Model               string
+	Timestamp           time.Time
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	ReasoningTokens     int64
+	TotalTokens         int64
+	CostUSD             float64
+	DurationMs          int64
+	TTFTMs              int64
 }
 
 // CodexEvent is a parsed Codex log record. Carries fields used by all
