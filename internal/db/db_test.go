@@ -2,6 +2,7 @@ package db
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/young1lin/cc-otel/internal/config"
@@ -24,6 +25,28 @@ func TestMigrationIdempotency(t *testing.T) {
 		t.Fatalf("second Init failed: %v", err)
 	}
 	db2.Close()
+}
+
+func TestInitCreatesImportLedger(t *testing.T) {
+	cfg := &config.Config{DBPath: filepath.Join(t.TempDir(), "ledger.db")}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	var sqlText string
+	err = database.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='import_ledger'`,
+	).Scan(&sqlText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"uuid", "imported_at", "source_db", "table_name"} {
+		if !strings.Contains(sqlText, column) {
+			t.Fatalf("ledger DDL missing %s: %s", column, sqlText)
+		}
+	}
 }
 
 func TestWALMode(t *testing.T) {

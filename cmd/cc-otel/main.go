@@ -438,20 +438,6 @@ func cmdServe() {
 		}
 	}()
 
-	// Periodic cleanup: codex.websocket_event rows older than 10 minutes are stale.
-	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			n, err := repo.CleanupCodexWebsocketEvents(context.Background(), 600)
-			if err != nil {
-				log.Printf("codex ws event cleanup error: %v", err)
-			} else if n > 0 {
-				log.Printf("codex ws event cleanup: deleted %d stale websocket_events", n)
-			}
-		}
-	}()
-
 	broker := api.NewBroker()
 
 	// Pricing registry: layered lookup (user YAML → model_pricing table →
@@ -481,6 +467,10 @@ func cmdServe() {
 	handler := api.NewHandler(repo, broker, cfg, absCfgPath)
 	handler.SetPricer(priceReg)
 	handler.SetShutdownContext(ctx)
+	if err := handler.InitImports(); err != nil {
+		log.Printf("database import disabled: %v", err)
+	}
+	defer handler.Close()
 	// The production registry implements pricing.Writer (List/Upsert/Delete);
 	// expose it to the HTTP layer so /api/pricing CRUD works. If a future
 	// registry impl skips the Writer interface, the collection endpoint

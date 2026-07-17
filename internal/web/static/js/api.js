@@ -3,11 +3,20 @@
 
 import { state } from './state.js';
 
+async function responseError(res) {
+    let body = null;
+    try { body = await res.json(); } catch {}
+    const err = new Error(body?.error?.message || `HTTP ${res.status}`);
+    err.code = body?.error?.code || 'http_error';
+    err.status = res.status;
+    err.details = body?.error?.details || null;
+    return err;
+}
+
 async function fetchJSON(url) {
     const res = await fetch(url);
     if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(body || `HTTP ${res.status}`);
+        throw await responseError(res);
     }
     return res.json();
 }
@@ -21,8 +30,7 @@ async function sendJSON(url, method, body) {
         body: body == null ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `HTTP ${res.status}`);
+        throw await responseError(res);
     }
     return res.status === 204 ? null : res.json();
 }
@@ -97,3 +105,42 @@ export const suggestPricing = (model) =>
     fetchJSON('/api/pricing/suggest' + qs({ model }));
 export const startRecompute = () => sendJSON('/api/pricing/recompute', 'POST', {});
 export const recomputeStatus = () => fetchJSON('/api/pricing/recompute');
+
+export function uploadDatabase(file, { onProgress = () => {}, signal } = {}) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const form = new FormData();
+        form.append('file', file, file.name);
+        xhr.open('POST', '/api/import/inspect');
+        xhr.responseType = 'json';
+        xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) onProgress(event.loaded, event.total);
+        };
+        xhr.onerror = () => reject(Object.assign(new Error('Upload failed'), { code: 'network_error' }));
+        xhr.onabort = () => reject(Object.assign(new Error('Upload cancelled'), { code: 'upload_cancelled' }));
+        xhr.onload = () => {
+            const body = xhr.response || {};
+            if (xhr.status >= 200 && xhr.status < 300) {
+                resolve(body);
+                return;
+            }
+            reject(Object.assign(
+                new Error(body?.error?.message || `HTTP ${xhr.status}`),
+                { code: body?.error?.code || 'http_error', status: xhr.status },
+            ));
+        };
+        const abort = () => xhr.abort();
+        signal?.addEventListener('abort', abort, { once: true });
+        xhr.onloadend = () => signal?.removeEventListener('abort', abort);
+        xhr.send(form);
+    });
+}
+
+export const loadDatabaseImportStatus = (jobID = '') =>
+    fetchJSON('/api/import/status' + qs({ job_id: jobID }));
+
+export const startDatabaseImport = (jobID) =>
+    sendJSON('/api/import/start', 'POST', { job_id: jobID });
+
+export const deleteDatabaseImport = (jobID) =>
+    sendJSON('/api/import' + qs({ job_id: jobID }), 'DELETE', null);

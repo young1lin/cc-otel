@@ -122,6 +122,11 @@ type Handler struct {
 	pricingWriter pricing.Writer  // optional; nil disables /api/pricing CRUD
 	recompute     *recomputeJob   // singleton background recompute; never nil after NewHandler
 	shutdownCtx   context.Context // cancels the background recompute goroutine on shutdown
+
+	importsMu      sync.Mutex
+	imports        *importManager
+	importInitErr  error
+	importsStarted bool
 }
 
 // NewHandler creates a Handler with the given database repository, SSE broker, config,
@@ -150,6 +155,38 @@ func (h *Handler) SetPricingWriter(w pricing.Writer) { h.pricingWriter = w }
 // runs against context.Background.
 func (h *Handler) SetShutdownContext(ctx context.Context) { h.shutdownCtx = ctx }
 
+// InitImports initializes the singleton database-import manager. Initialization
+// failure does not prevent the dashboard from starting; import endpoints report
+// the stored error as unavailable.
+func (h *Handler) InitImports() error {
+	h.importsMu.Lock()
+	defer h.importsMu.Unlock()
+	if h.importsStarted {
+		return h.importInitErr
+	}
+	h.importsStarted = true
+	if h.repo == nil || h.repo.DB() == nil || h.cfg == nil || strings.TrimSpace(h.cfg.DBPath) == "" {
+		h.importInitErr = fmt.Errorf("database import requires an initialized repository and database path")
+		return h.importInitErr
+	}
+	parent := h.shutdownCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	h.imports, h.importInitErr = newImportManager(parent, h.repo.DB(), h.cfg.DBPath, h.broker, defaultImportEngine{})
+	return h.importInitErr
+}
+
+// Close cancels active inspection/import work and waits for file users to exit.
+func (h *Handler) Close() {
+	h.importsMu.Lock()
+	manager := h.imports
+	h.importsMu.Unlock()
+	if manager != nil {
+		manager.close()
+	}
+}
+
 // Register wires all API and static-file routes onto the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", h.Health)
@@ -170,6 +207,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/sessions", h.Sessions)
 	mux.HandleFunc("/api/models", h.Models)
 	mux.HandleFunc("/api/events", h.Events)
+	mux.HandleFunc("/api/import/inspect", h.ImportInspect)
+	mux.HandleFunc("/api/import/status", h.ImportStatus)
+	mux.HandleFunc("/api/import/start", h.ImportStart)
+	mux.HandleFunc("/api/import", h.ImportDelete)
 
 	// Codex telemetry mirror routes (Task 11). Paths follow /api/codex/<name>.
 	mux.HandleFunc("/api/codex/dashboard", h.CodexDashboard)

@@ -267,19 +267,6 @@ func (r *Repository) UpdateCodexRequestTTFT(ctx context.Context, sessionID, mode
 	return err
 }
 
-// InsertCodexEvent inserts a fallback Codex log record into codex_events.
-func (r *Repository) InsertCodexEvent(ctx context.Context, e *CodexEvent) error {
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO codex_events
-			(timestamp, session_id, conversation_id, event_name, event_kind,
-			 model, duration_ms, error_message, raw_attrs_json)
-		VALUES (?,?,?,?,?, ?,?,?,?)`,
-		e.Timestamp.Unix(), e.SessionID, e.ConversationID, e.EventName, e.EventKind,
-		e.Model, e.DurationMs, e.ErrorMessage, e.RawAttrsJSON,
-	)
-	return err
-}
-
 // InsertCodexRawEvent inserts the raw OTLP payload into codex_raw_otlp_events.
 func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, timestampUnix int64, rawJSON string) error {
 	_, err := r.db.ExecContext(ctx, `

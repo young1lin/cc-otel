@@ -43,6 +43,18 @@
             <span class="status-dot" id="status-dot"></span>
             <span id="status-label">connecting…</span>
         </button>
+        <button type="button" class="database-import-toggle" id="database-import-btn"
+                title="Import database" aria-label="Import database">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true">
+                <ellipse cx="10" cy="12.2" rx="5.8" ry="2.2"/>
+                <path d="M4.2 12.2v3.1c0 1.2 2.6 2.2 5.8 2.2s5.8-1 5.8-2.2v-3.1"/>
+                <path d="M10 2.5v6.1"/>
+                <path d="m7.7 6.5 2.3 2.3 2.3-2.3"/>
+            </svg>
+            <span class="database-import-badge" id="database-import-badge" aria-hidden="true"></span>
+        </button>
         <button type="button" class="pricing-toggle" id="pricing-btn" title="Pricing Table">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>
         </button>
@@ -313,6 +325,72 @@
     </div>
 </div>
 
+<!-- Online database import modal -->
+<div class="modal-backdrop" id="database-import-modal" style="display:none" aria-hidden="true">
+    <div class="modal database-import-modal" role="dialog" aria-modal="true"
+         aria-labelledby="database-import-title">
+        <div class="modal-header">
+            <div>
+                <div class="modal-title" id="database-import-title">Import database</div>
+                <div class="dbi-subtitle">Merge missing cc-otel data into this database</div>
+            </div>
+            <button type="button" class="modal-close" id="database-import-close"
+                    title="Close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+            <input id="database-import-file" type="file" accept=".db" hidden>
+
+            <section class="dbi-panel" data-dbi-panel="empty">
+                <button type="button" class="dbi-drop" id="dbi-drop">
+                    <span class="dbi-drop-icon" aria-hidden="true">↓</span>
+                    <strong>Drop a cc-otel database here</strong>
+                    <span>or choose a .db file · up to 2 GB</span>
+                </button>
+            </section>
+
+            <section class="dbi-panel" data-dbi-panel="working" hidden>
+                <div class="dbi-file-row">
+                    <span class="dbi-file-name" id="dbi-file-name"></span>
+                    <span class="dbi-file-size" id="dbi-file-size"></span>
+                </div>
+                <div class="dbi-status" id="dbi-status" aria-live="polite"></div>
+                <div class="dbi-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                    <span class="dbi-progress-fill" id="dbi-progress-fill"></span>
+                </div>
+                <div class="dbi-progress-meta">
+                    <span id="dbi-progress-count"></span>
+                    <span id="dbi-progress-percent"></span>
+                </div>
+            </section>
+
+            <section class="dbi-panel" data-dbi-panel="ready" hidden>
+                <div class="dbi-summary">
+                    <div><span>New</span><strong id="dbi-new-count">0</strong></div>
+                    <div><span>Duplicate</span><strong id="dbi-duplicate-count">0</strong></div>
+                    <div><span>Total</span><strong id="dbi-total-count">0</strong></div>
+                </div>
+                <div class="dbi-table-wrap">
+                    <table class="dbi-table">
+                        <thead><tr><th>Table</th><th>New</th><th>Duplicate</th></tr></thead>
+                        <tbody id="dbi-table-body"></tbody>
+                    </table>
+                </div>
+                <div class="dbi-warnings" id="dbi-warnings"></div>
+            </section>
+
+            <section class="dbi-panel" data-dbi-panel="result" hidden>
+                <div class="dbi-result-icon" id="dbi-result-icon" aria-hidden="true"></div>
+                <strong class="dbi-result-title" id="dbi-result-title"></strong>
+                <p class="dbi-result-message" id="dbi-result-message" aria-live="polite"></p>
+            </section>
+        </div>
+        <div class="dbi-footer">
+            <button type="button" class="dbi-secondary" id="dbi-secondary">Cancel</button>
+            <button type="button" class="dbi-primary" id="dbi-primary">Choose database</button>
+        </div>
+    </div>
+</div>
+
 <!-- Pricing Table admin modal (opened from #pricing-btn) -->
 <div class="modal-backdrop" id="pricing-modal" style="display:none" aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" style="width:min(1200px,96vw)">
@@ -390,6 +468,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=64"></script>
+<script type="module" src="app.js?v=65"></script>
 </body>
 </html>

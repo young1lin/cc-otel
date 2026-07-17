@@ -264,17 +264,6 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			}
 			return false
 		}
-		ev := &db.CodexEvent{
-			Timestamp:      ts,
-			SessionID:      attrs["conversation.id"],
-			ConversationID: attrs["conversation.id"],
-			EventName:      "codex.sse_event",
-			EventKind:      eventKindFromLog(lr, attrs),
-			Model:          attrs["model"],
-			DurationMs:     parseAttrInt(attrs, "duration_ms"),
-			ErrorMessage:   attrs["error.message"],
-		}
-		_ = repo.InsertCodexEvent(ctx, ev)
 		return false
 
 	case "codex.user_prompt":
@@ -347,15 +336,6 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			}
 			tracker.recordRequest(spanID, attrs["conversation.id"], attrs["model"], obsNano)
 		}
-		ev := &db.CodexEvent{
-			Timestamp:      ts,
-			SessionID:      attrs["conversation.id"],
-			ConversationID: attrs["conversation.id"],
-			EventName:      "codex.websocket_request",
-			EventKind:      eventKindFromLog(lr, attrs),
-			Model:          attrs["model"],
-		}
-		_ = repo.InsertCodexEvent(ctx, ev)
 		return false
 
 	case "codex.websocket_event":
@@ -410,18 +390,6 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		return false
 
 	default:
-		if strings.HasPrefix(eventName, "codex.") {
-			ev := &db.CodexEvent{
-				Timestamp:      ts,
-				SessionID:      attrs["conversation.id"],
-				ConversationID: attrs["conversation.id"],
-				EventName:      eventName,
-				Model:          attrs["model"],
-				DurationMs:     parseAttrInt(attrs, "duration_ms"),
-				ErrorMessage:   attrs["error.message"],
-			}
-			_ = repo.InsertCodexEvent(ctx, ev)
-		}
 		return false
 	}
 }

@@ -1,6 +1,33 @@
 package main
 
-import "testing"
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"testing"
+)
+
+func TestDaemonDoesNotScheduleCodexEventsDeletion(t *testing.T) {
+	packages, err := parser.ParseDir(token.NewFileSet(), ".", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range packages {
+		for _, file := range pkg.Files {
+			ast.Inspect(file, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if ok && selector.Sel.Name == "CleanupCodexWebsocketEvents" {
+					t.Fatal("daemon must not automatically delete compatibility codex_events rows")
+				}
+				return true
+			})
+		}
+	}
+}
 
 func TestFormatTokens(t *testing.T) {
 	tests := []struct {

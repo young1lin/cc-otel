@@ -32,6 +32,7 @@ import {
 } from './js/panel-requests.js';
 import { loadRate, initPanelRate } from './js/panel-rate.js';
 import { initPanelPricing } from './js/panel-pricing.js';
+import { initDatabaseImport } from './js/import-db.js';
 import { renderPagination } from './js/pagination.js';
 
 // ── Popover positioner — shared by status / breakdown / insights modals ────
@@ -45,7 +46,11 @@ function openPopover(backdropEl, anchorEl) {
     backdropEl.setAttribute('aria-hidden', 'false');
 
     // Insights: centered by flex on .modal-backdrop; avoid fixed+transform so native resize works.
-    if (backdropEl.id === 'insights-modal' || backdropEl.id === 'pricing-modal') {
+    if (
+        backdropEl.id === 'insights-modal' ||
+        backdropEl.id === 'pricing-modal' ||
+        backdropEl.id === 'database-import-modal'
+    ) {
         modalEl.style.left = '';
         modalEl.style.top = '';
         modalEl.style.transform = '';
@@ -286,6 +291,11 @@ initPanelDaily();
 initPanelRequests();
 initPanelRate();
 initPanelPricing({ openPopover, closePopover });
+initDatabaseImport({
+    openPopover,
+    closePopover,
+    onImported: () => loadAll(),
+});
 initCustomRangePicker();
 applySourceFromURL();
 syncSourceTabsUI();

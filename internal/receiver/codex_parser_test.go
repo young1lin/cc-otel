@@ -252,6 +252,36 @@ func readCount(t *testing.T, repo *db.Repository, sqlStr string) int64 {
 	return n
 }
 
+func TestDispatchCodexLog_DiagnosticEventsAreNotPersisted(t *testing.T) {
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}}
+	tracker := newCodexSpanTracker()
+
+	logs := []*logspb.LogRecord{
+		{Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.sse_event"),
+			attr("event.kind", "response.output_text.delta"),
+			attr("conversation.id", "conversation-a"),
+		}},
+		{SpanId: []byte{1, 2, 3, 4, 5, 6, 7, 8}, Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.websocket_request"),
+			attr("conversation.id", "conversation-a"),
+			attr("model", "gpt-5.5"),
+		}},
+		{Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.startup_phase"),
+			attr("conversation.id", "conversation-a"),
+		}},
+	}
+	for _, record := range logs {
+		dispatchCodexLog(ctx, repo, record, res, nil, tracker, nil)
+	}
+	if got := readCount(t, repo, `SELECT COUNT(*) FROM codex_events`); got != 0 {
+		t.Fatalf("codex_events rows = %d, want 0", got)
+	}
+}
+
 func TestDispatchCodexLog_OtherEvents(t *testing.T) {
 	repo := newCodexReceiverRepo(t)
 	ctx := context.Background()
@@ -295,15 +325,6 @@ func TestDispatchCodexLog_OtherEvents(t *testing.T) {
 				attr("success", "true"),
 			},
 			`SELECT COUNT(*) FROM codex_tool_result_events`,
-		},
-		{
-			"sse_event_non_completion",
-			[]*commontpb.KeyValue{
-				attr("event.name", "codex.sse_event"),
-				attr("event.kind", "response.created"),
-				attr("conversation.id", "c1"),
-			},
-			`SELECT COUNT(*) FROM codex_events`,
 		},
 	}
 	for _, c := range cases {

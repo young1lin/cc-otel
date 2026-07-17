@@ -1,16 +1,16 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/young1lin/cc-otel/internal/dbmerge"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
@@ -56,15 +56,15 @@ func main() {
 	flag.StringVar(&dstPath, "dst", "", "destination global db path (write)")
 	flag.StringVar(&inPath, "in", "", "input JSONL path from export_bin")
 	flag.StringVar(&sourceTag, "source", "bin", "source tag written to ledger")
-	flag.IntVar(&batchSize, "batch", 1000, "rows per transaction commit")
+	flag.IntVar(&batchSize, "batch", dbmerge.MaxBatchSize, "rows per logical transaction batch (maximum 10000)")
 	flag.Parse()
 
 	if dstPath == "" || inPath == "" {
-		fmt.Fprintln(os.Stderr, "usage: import_global -dst <global.db> -in <merge.jsonl> [-source <tag>] [-batch 1000]")
+		fmt.Fprintln(os.Stderr, "usage: import_global -dst <global.db> -in <merge.jsonl> [-source <tag>] [-batch 10000]")
 		os.Exit(2)
 	}
 	if batchSize <= 0 {
-		batchSize = 1000
+		batchSize = dbmerge.MaxBatchSize
 	}
 
 	db, err := openSQLiteWritable(dstPath)
@@ -75,145 +75,20 @@ func main() {
 	defer db.Close()
 
 	ctx := context.Background()
-	if err := ensureLedger(ctx, db); err != nil {
-		fmt.Fprintf(os.Stderr, "ensure ledger: %v\n", err)
-		os.Exit(1)
-	}
-	if err := ensureTargetSchema(ctx, db); err != nil {
-		fmt.Fprintf(os.Stderr, "ensure schema: %v\n", err)
-		os.Exit(1)
-	}
-
-	inF, err := os.Open(inPath)
+	source := dbmerge.NewJSONLSource(inPath)
+	result, err := dbmerge.Import(ctx, db, source, dbmerge.Options{
+		BatchSize: batchSize,
+		SourceID:  sourceTag,
+		Location:  time.Local,
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "open input: %v\n", err)
+		fmt.Fprintf(os.Stderr, "import failed after %d committed row(s): %v\n", result.InsertedRows, err)
 		os.Exit(1)
 	}
-	defer inF.Close()
-
-	deltas := make(map[aggKey]*aggDelta)
-	codexDeltas := make(map[aggKey]*codexAggDelta)
-
-	sc := bufio.NewScanner(inF)
-	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
-
-	var (
-		tx        *sql.Tx
-		txCount   int
-		total     int64
-		imported  int64
-		skipped   int64
-		batchErr  error
-		commitNow = func() error {
-			if tx == nil {
-				return nil
-			}
-			err := tx.Commit()
-			tx = nil
-			txCount = 0
-			return err
-		}
+	fmt.Printf(
+		"Processed %d lines. Imported %d new rows. Skipped %d duplicate rows. Verified %d identities.\n",
+		result.ScannedRows, result.InsertedRows, result.DuplicateRows, result.VerifiedIdentities,
 	)
-
-	beginTx := func() error {
-		if tx != nil {
-			return nil
-		}
-		txx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		tx = txx
-		return nil
-	}
-
-	for sc.Scan() {
-		total++
-		var rec exportRecord
-		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
-			batchErr = fmt.Errorf("decode line %d: %w", total, err)
-			break
-		}
-		if rec.UUID == "" || rec.Table == "" || rec.Row == nil {
-			skipped++
-			continue
-		}
-
-		if err := beginTx(); err != nil {
-			batchErr = err
-			break
-		}
-
-		// Record the UUID in the ledger, but never let a ledger hit alone skip
-		// the row: a stale ledger entry (row pruned after an earlier merge)
-		// would silently drop data. Only the actual row's existence decides.
-		if _, err := tryLedger(ctx, tx, rec.UUID, sourceTag, rec.Table); err != nil {
-			batchErr = err
-			break
-		}
-
-		exists, err := recordExists(ctx, tx, rec)
-		if err != nil {
-			batchErr = err
-			break
-		}
-		if exists {
-			skipped++
-			continue
-		}
-
-		insertedRow, err := insertRecord(ctx, tx, rec)
-		if err != nil {
-			batchErr = err
-			break
-		}
-		if insertedRow {
-			imported++
-			if rec.Table == "api_requests" {
-				addAggDelta(deltas, rec.Row)
-			} else if rec.Table == "codex_api_requests" {
-				addCodexAggDelta(codexDeltas, rec.Row)
-			}
-		} else {
-			skipped++
-		}
-
-		txCount++
-		if txCount >= batchSize {
-			if err := commitNow(); err != nil {
-				batchErr = err
-				break
-			}
-		}
-	}
-
-	if err := sc.Err(); err != nil && batchErr == nil {
-		batchErr = err
-	}
-
-	if batchErr != nil {
-		if tx != nil {
-			_ = tx.Rollback()
-		}
-		fmt.Fprintf(os.Stderr, "import failed: %v\n", batchErr)
-		os.Exit(1)
-	}
-
-	if err := commitNow(); err != nil {
-		fmt.Fprintf(os.Stderr, "commit: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := applyAggDeltas(ctx, db, deltas); err != nil {
-		fmt.Fprintf(os.Stderr, "apply daily_model_agg: %v\n", err)
-		os.Exit(1)
-	}
-	if err := applyCodexAggDeltas(ctx, db, codexDeltas); err != nil {
-		fmt.Fprintf(os.Stderr, "apply codex_daily_model_agg: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Processed %d lines. Imported %d new rows. Skipped %d (already in ledger).\n", total, imported, skipped)
 }
 
 func openSQLiteWritable(path string) (*sql.DB, error) {
@@ -671,48 +546,7 @@ func tryLedger(ctx context.Context, tx *sql.Tx, uuid, sourceTag, table string) (
 }
 
 func recordExists(ctx context.Context, tx *sql.Tx, rec exportRecord) (bool, error) {
-	cfg, ok := tableInsertConfigs()[rec.Table]
-	if !ok {
-		return false, fmt.Errorf("unknown table %q", rec.Table)
-	}
-
-	// api_requests rows carry a globally unique request_id when present; match
-	// on it alone so a repriced copy of the same request is not re-imported.
-	if rec.Table == "api_requests" {
-		if rid, _ := rec.Row["request_id"].(string); rid != "" {
-			var one int
-			err := tx.QueryRowContext(ctx, `SELECT 1 FROM api_requests WHERE request_id = ? LIMIT 1`, rid).Scan(&one)
-			if err == nil {
-				return true, nil
-			}
-			if err == sql.ErrNoRows {
-				return false, nil
-			}
-			return false, err
-		}
-	}
-
-	keyCols := cfg.KeyColumns
-	if len(keyCols) == 0 {
-		keyCols = cfg.Columns
-	}
-	clauses := make([]string, 0, len(keyCols))
-	args := make([]any, 0, len(keyCols))
-	for _, col := range keyCols {
-		clauses = append(clauses, col+" IS ?")
-		args = append(args, normalizeForSQLite(rec.Row[col]))
-	}
-
-	q := fmt.Sprintf("SELECT 1 FROM %s WHERE %s LIMIT 1", rec.Table, strings.Join(clauses, " AND "))
-	var one int
-	err := tx.QueryRowContext(ctx, q, args...).Scan(&one)
-	if err == nil {
-		return true, nil
-	}
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	return false, err
+	return dbmerge.RecordExists(ctx, tx, dbmerge.Row{Table: rec.Table, Values: rec.Row})
 }
 
 func insertRecord(ctx context.Context, tx *sql.Tx, rec exportRecord) (bool, error) {
@@ -747,14 +581,10 @@ func insertRecord(ctx context.Context, tx *sql.Tx, rec exportRecord) (bool, erro
 type insertCfg struct {
 	Columns      []string
 	InsertPrefix string
-	// KeyColumns is the natural identity used by recordExists. Columns that
-	// recompute_cost rewrites (cost_usd) are excluded so a repriced copy of the
-	// same logical row is still recognized as existing. Empty = all columns.
-	KeyColumns []string
 }
 
 func tableInsertConfigs() map[string]insertCfg {
-	return map[string]insertCfg{
+	configs := map[string]insertCfg{
 		"api_requests": {
 			InsertPrefix: "OR IGNORE",
 			Columns: []string{
@@ -764,13 +594,6 @@ func tableInsertConfigs() map[string]insertCfg {
 				"event_name", "event_sequence", "speed", "terminal_type", "tool_name", "decision", "source",
 				"service_name", "service_version", "host_arch", "os_type", "os_version",
 				"error_type", "error_message", "error_code", "error_retryable",
-			},
-			// Fallback identity when request_id is empty (recordExists matches
-			// non-empty request_id directly); mirrors export_bin's StableName
-			// fallback minus cost_usd.
-			KeyColumns: []string{
-				"timestamp", "session_id", "prompt_id", "event_sequence",
-				"model", "input_tokens", "output_tokens", "duration_ms",
 			},
 		},
 		"user_prompt_events": {
@@ -833,10 +656,6 @@ func tableInsertConfigs() map[string]insertCfg {
 				"service_name", "service_version", "host_arch", "os_type", "os_version",
 				"error_message",
 			},
-			// export_bin's StableName fields minus cost_usd.
-			KeyColumns: []string{
-				"timestamp", "session_id", "model", "input_tokens", "output_tokens", "duration_ms",
-			},
 		},
 		"codex_user_prompt_events": {
 			Columns: []string{
@@ -867,6 +686,13 @@ func tableInsertConfigs() map[string]insertCfg {
 			Columns: []string{"timestamp", "event_type", "raw_json"},
 		},
 	}
+	for name, cfg := range configs {
+		if spec, ok := dbmerge.LookupSpec(name); ok {
+			cfg.Columns = spec.Columns
+			configs[name] = cfg
+		}
+	}
+	return configs
 }
 
 func normalizeForSQLite(v any) any {

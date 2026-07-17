@@ -14,6 +14,10 @@ function scheduleRefresh() {
     }, 500);
 }
 
+export function shouldRefreshForSSE(incomingSource, currentSource) {
+    return incomingSource === 'all' || incomingSource === currentSource;
+}
+
 function connectSSE() {
     const es = new EventSource('/api/events');
 
@@ -24,7 +28,7 @@ function connectSSE() {
 
     es.onmessage = e => {
         const incomingSource = e.data || 'claude';
-        if (incomingSource !== state.source) return;
+        if (!shouldRefreshForSSE(incomingSource, state.source)) return;
         scheduleRefresh();
     };
 

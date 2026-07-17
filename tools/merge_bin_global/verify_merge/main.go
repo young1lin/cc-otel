@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/young1lin/cc-otel/internal/dbmerge"
+
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
@@ -61,41 +63,31 @@ func main() {
 	globalDB := mustOpen(ctx, globalPath, false)
 	defer globalDB.Close()
 
-	// Attach the bin db so request tables can be checked row-by-row
-	// (NOT EXISTS containment) instead of by raw counts: a deduplicating
-	// merge legitimately produces fewer rows than a source with duplicates.
-	if _, err := globalDB.ExecContext(ctx, `ATTACH DATABASE ? AS src`, filepath.ToSlash(filepath.Clean(binPath))); err != nil {
-		panic(fmt.Sprintf("attach bin db: %v", err))
-	}
-
 	fmt.Printf("Window: from=%s (%d) to=%s (%d)\n", fromT.Format(time.RFC3339), fromUnix, toT.Format(time.RFC3339), toUnix)
 	fmt.Println()
 
 	var failed bool
+	schema, err := dbmerge.ValidateSQLite(ctx, binPath)
+	if err != nil {
+		panic(err)
+	}
+	source := dbmerge.NewSQLiteSource(binPath, schema, &dbmerge.TimeWindow{FromUnix: fromUnix, ToUnix: toUnix})
+	verified, err := dbmerge.Verify(ctx, globalDB, source, nil)
+	if err != nil {
+		failed = true
+		fmt.Printf("containment FAIL: %v\n", err)
+	} else {
+		fmt.Printf("containment OK: verified %d unique logical identities\n", verified)
+	}
+	fmt.Println()
+
 	check := func(name string, q string, checkCost bool) {
 		b := mustStats(ctx, binDB, q, fromUnix, toUnix)
 		g := mustStats(ctx, globalDB, q, fromUnix, toUnix)
 		fmt.Printf("%-30s bin=%s  global=%s\n", name, b, g)
 
-		if mq, ok := containmentSQL()[name]; ok && hasTable(ctx, binDB, name) {
-			// Row-by-row containment on the natural key (cost_usd excluded:
-			// recompute_cost may have repriced one side). Raw counts can
-			// differ when the source holds duplicate rows that merge dedupes.
-			var missing int64
-			if err := globalDB.QueryRowContext(ctx, mq, fromUnix, toUnix).Scan(&missing); err != nil {
-				failed = true
-				fmt.Printf("%-30s FAIL: containment query: %v\n", name, err)
-				return
-			}
-			if missing > 0 {
-				failed = true
-				fmt.Printf("%-30s FAIL: %d local row(s) missing from global for this window\n", name, missing)
-			} else if g.Count < b.Count {
-				fmt.Printf("%-30s NOTE: counts differ (bin holds %d duplicate row(s) deduped in merged); per-row containment OK\n", name, b.Count-g.Count)
-			}
-		} else if !containedAtLeast(b, g) {
-			failed = true
-			fmt.Printf("%-30s FAIL: global does not contain at least the local rows for this window\n", name)
+		if !containedAtLeast(b, g) {
+			fmt.Printf("%-30s NOTE: raw counts differ; shared identity containment result above is authoritative\n", name)
 		}
 
 		if checkCost && b.Err == "" && g.Err == "" && g.CostUnits < b.CostUnits {
@@ -132,8 +124,7 @@ func main() {
 		g := mustStats4(ctx, globalDB, q, fromUnix, toUnix)
 		fmt.Printf("%-30s bin=%s  global=%s\n", "pending_ttft_spans", b, g)
 		if !containedAtLeast(b, g) {
-			failed = true
-			fmt.Printf("%-30s FAIL: global does not contain at least the local rows for this window\n", "pending_ttft_spans")
+			fmt.Printf("%-30s NOTE: raw counts differ; shared identity containment result above is authoritative\n", "pending_ttft_spans")
 		}
 	}
 
@@ -195,54 +186,7 @@ func simpleTableChecks() []tableCheck {
 		{"codex_user_prompt_events", "codex", false},
 		{"codex_tool_decision_events", "codex", false},
 		{"codex_tool_result_events", "codex", false},
-		{"codex_events", "codex", false},
 		{"codex_raw_otlp_events", "codex", false},
-	}
-}
-
-// containmentSQL maps request tables to a per-row NOT EXISTS probe run on the
-// global connection (bin attached as src). Keys mirror import_global's
-// KeyColumns: the natural identity minus cost_usd, which recompute_cost may
-// rewrite on either side. Event tables stay on count checks (no mutable cols).
-func containmentSQL() map[string]string {
-	return map[string]string{
-		// Two indexable probes (request_id unique index / timestamp index);
-		// a single NOT EXISTS with an OR of both branches defeats the planner
-		// and degenerates into an O(n*m) scan on large dbs.
-		"api_requests": `
-			SELECT
-			  (SELECT COUNT(*) FROM src.api_requests s
-				WHERE s.timestamp BETWEEN ?1 AND ?2 AND s.request_id != ''
-				  AND NOT EXISTS (
-					SELECT 1 FROM main.api_requests m WHERE m.request_id = s.request_id
-				  ))
-			+ (SELECT COUNT(*) FROM src.api_requests s
-				WHERE s.timestamp BETWEEN ?1 AND ?2 AND s.request_id = ''
-				  AND NOT EXISTS (
-					SELECT 1 FROM main.api_requests m
-					WHERE m.timestamp = s.timestamp AND
-					  m.session_id IS s.session_id AND
-					  m.prompt_id IS s.prompt_id AND
-					  m.event_sequence IS s.event_sequence AND
-					  m.model IS s.model AND
-					  m.input_tokens IS s.input_tokens AND
-					  m.output_tokens IS s.output_tokens AND
-					  m.duration_ms IS s.duration_ms
-				  ))`,
-		"codex_api_requests": `
-			SELECT COUNT(*)
-			FROM src.codex_api_requests s
-			WHERE s.timestamp BETWEEN ? AND ?
-			  AND NOT EXISTS (
-				SELECT 1 FROM main.codex_api_requests m
-				WHERE
-				  m.timestamp = s.timestamp AND
-				  m.session_id IS s.session_id AND
-				  m.model IS s.model AND
-				  m.input_tokens IS s.input_tokens AND
-				  m.output_tokens IS s.output_tokens AND
-				  m.duration_ms IS s.duration_ms
-			  )`,
 	}
 }
 

@@ -10,11 +10,15 @@
 |---|---|
 | `tools/merge_bin_global/run_merge` | 一键编排 9 步合并：backup → stop → snapshot → export jsonl → import → repair daily_agg → verify → replace bin |
 | `tools/merge_bin_global/export_bin` | 把 bin/local.db 在指定时间窗口内的行导出为 JSONL |
-| `tools/merge_bin_global/import_global` | 把 JSONL 行 INSERT OR IGNORE 进 global 副本 |
+| `tools/merge_bin_global/import_global` | 通过共享合并引擎把 JSONL 行按自然键合入 global 副本 |
 | `tools/merge_bin_global/repair_daily_agg` | 重建 `daily_model_agg` / `codex_daily_model_agg` |
-| `tools/merge_bin_global/verify_merge` | 比对两库行数 / 成本和 / 时间范围，确认合并无丢失 |
+| `tools/merge_bin_global/verify_merge` | 用共享自然键检查全部导入表的包含性，并输出行数 / 成本诊断 |
 | `tools/recompute_cost` | 按本地 pricing registry 重算非 Claude 行的 `cost_usd`，rebuild 聚合表。dry-run 默认 |
 | `bin/cc-otel.yaml` `pricing:` 块 | 用户覆盖层，最高优先级，立即生效 |
+
+### 共享合并引擎
+
+Web 数据库导入和 `tools/merge_bin_global` 都使用 `internal/dbmerge` 维护受支持 schema、自然键、聚合增量、ledger 写入和包含性验证。ledger 命中本身永远不会导致跳过明细行。
 
 ### 默认假设
 
@@ -98,7 +102,7 @@ go run bin/tmp/verify.go
 4. **PID 校验**：`run_merge` 会读 `bin/cc-otel.pid`，然后用 PowerShell 查那个 PID 的 ExecutablePath，**只有匹配 `bin/cc-otel.exe` 才会 taskkill**。如果你的 daemon 是别的路径起的，它会报错而不是误杀。
 5. **WAL 一致性**：`snapshotDB` 用 `VACUUM INTO`（SQLite 在线 backup 等价物），不直接拷贝 .db / .db-wal / .db-shm，避免热文件不一致。
 6. **重复行按自然键去重，ledger 只记账不拦路**：`import_global` 对每行先查目标库是否已有同一逻辑行（`api_requests` 优先 `request_id`；codex 用时间戳+会话+token 等自然键，**刻意排除 `cost_usd`**，因为清洗会改写它），不存在才插入。`import_ledger` 命中**不会**单独跳过行——历史上 ledger 有残留（行被 prune 后 ledger 还在）会导致丢数据，这个坑已修。两库同一 `request_id` 的行以目标库现有的为准。
-6b. **verify 的行数差 ≠ 丢数据**：`verify_merge` 对两张 request 表做逐行 NOT EXISTS 包含性检查（同样排除 `cost_usd`）；源库自身的重复行被合并去重时会打印 `NOTE: counts differ (... deduped in merged)`，这是正常的。cost 总和短缺只 WARN（清洗不对称），行缺失才 FAIL。
+6b. **verify 的行数差 ≠ 丢数据**：`verify_merge` 使用 `internal/dbmerge` 对全部 14 张导入表做自然键包含性检查；`codex_events` 作为兼容表被识别但忽略。源库自身的重复行被合并去重时，原始行数可以不同。cost 总和短缺只 WARN（清洗不对称），共享身份验证发现缺行才 FAIL。
 7. **Codex 缓存计费**：清洗时 `recompute_cost` 自动从 `input_tokens` 减去 `cache_read_tokens` 再传给 pricer（OpenAI 的 `input_token_count` 包含缓存，与 Anthropic 约定不同），不需要手动调整。
 8. **价目表覆盖优先级**：`bin/cc-otel.yaml` `pricing:` > `model_pricing` 表 > seed.json fallback。要改某个模型价，改 YAML 然后 `recompute_cost --apply` 一次即可。
 
@@ -171,7 +175,7 @@ go run bin/tmp/verify.go
 3. `run_merge` does not recompute. Recompute is a separate step.
 4. PID safety: `run_merge` refuses to kill a process whose ExecutablePath does not point at `bin/cc-otel.exe`.
 5. Snapshots use `VACUUM INTO`, not raw file copy, so WAL consistency is preserved.
-6. Duplicate rows are deduped by natural key (`request_id` for api_requests; timestamp+session+tokens for codex, deliberately excluding `cost_usd` which recompute rewrites). A ledger hit alone never skips a row — stale ledger entries used to drop data; fixed. `verify_merge` does per-row NOT EXISTS containment on the request tables; source-side duplicates deduped by the merge print a NOTE, cost-sum shortfalls print a WARN, and only genuinely missing rows FAIL.
+6. Duplicate rows are deduped by natural key (`request_id` for api_requests; timestamp+session+tokens for codex, deliberately excluding `cost_usd` which recompute rewrites). A ledger hit alone never skips a row — stale ledger entries used to drop data; fixed. Web import and the CLI share `internal/dbmerge`; `verify_merge` checks natural-identity containment across all 14 imported tables. `codex_events` is recognized as a compatibility table but ignored. Raw count differences and cost-sum shortfalls are diagnostics, while a genuinely missing identity fails verification.
 7. Codex cache subtraction (`input_tokens − cache_read_tokens`) is applied automatically inside `recompute_cost` for `codex_api_requests`.
 
 ### Rollback
