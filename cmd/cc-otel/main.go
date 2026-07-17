@@ -31,6 +31,8 @@ import (
 
 var version = "dev"
 
+const legacyCodexEventsCleanupBatchSize = 10_000
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -487,6 +489,7 @@ func cmdServe() {
 			log.Fatalf("web server error: %v", err)
 		}
 	}()
+	startLegacyCodexEventsCleanup(repo)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -510,6 +513,37 @@ func cmdServe() {
 	defer shutdownCancel()
 	webSrv.Shutdown(shutdownCtx)
 	log.Println("done")
+}
+
+type legacyCodexEventsCleaner interface {
+	CleanupLegacyCodexEventsBatch(context.Context, int) (int64, error)
+}
+
+func cleanupLegacyCodexEvents(ctx context.Context, cleaner legacyCodexEventsCleaner) (int64, error) {
+	var total int64
+	for {
+		deleted, err := cleaner.CleanupLegacyCodexEventsBatch(ctx, legacyCodexEventsCleanupBatchSize)
+		if err != nil {
+			return total, err
+		}
+		total += deleted
+		if deleted == 0 {
+			return total, nil
+		}
+	}
+}
+
+func startLegacyCodexEventsCleanup(cleaner legacyCodexEventsCleaner) {
+	go func() {
+		total, err := cleanupLegacyCodexEvents(context.Background(), cleaner)
+		if err != nil {
+			log.Printf("legacy Codex events cleanup failed after deleting %d rows: %v", total, err)
+			return
+		}
+		if total > 0 {
+			log.Printf("legacy Codex events cleanup complete: deleted %d rows", total)
+		}
+	}()
 }
 
 // --- helpers ---

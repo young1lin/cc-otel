@@ -19,6 +19,49 @@ func newCodexTestRepo(t *testing.T) *Repository {
 	return NewRepository(d)
 }
 
+func TestCleanupLegacyCodexEventsBatchDeletesBoundedBatches(t *testing.T) {
+	repo := newCodexTestRepo(t)
+	ctx := context.Background()
+	if _, err := repo.db.ExecContext(ctx, `
+		INSERT INTO codex_events (timestamp) VALUES (1), (2), (3), (4), (5)`); err != nil {
+		t.Fatalf("insert legacy events: %v", err)
+	}
+
+	for i, want := range []int64{2, 2, 1, 0} {
+		got, err := repo.CleanupLegacyCodexEventsBatch(ctx, 2)
+		if err != nil {
+			t.Fatalf("cleanup batch %d: %v", i+1, err)
+		}
+		if got != want {
+			t.Fatalf("cleanup batch %d deleted %d rows, want %d", i+1, got, want)
+		}
+	}
+
+	var remaining int64
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_events`).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining events: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("remaining legacy events = %d, want 0", remaining)
+	}
+}
+
+func TestCleanupLegacyCodexEventsBatchIgnoresNonPositiveLimit(t *testing.T) {
+	repo := newCodexTestRepo(t)
+	ctx := context.Background()
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO codex_events (timestamp) VALUES (1)`); err != nil {
+		t.Fatalf("insert legacy event: %v", err)
+	}
+
+	deleted, err := repo.CleanupLegacyCodexEventsBatch(ctx, 0)
+	if err != nil {
+		t.Fatalf("cleanup with zero limit: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted %d rows with zero limit, want 0", deleted)
+	}
+}
+
 func TestInsertCodexAPIRequest_RoundTrip(t *testing.T) {
 	repo := newCodexTestRepo(t)
 	ctx := context.Background()
