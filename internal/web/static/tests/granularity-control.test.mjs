@@ -10,8 +10,6 @@ test('toolbar granularity control exposes segmented-control semantics', () => {
     assert.match(html, /id="granularity-switch"[^>]*role="group"[^>]*aria-label="Chart granularity"/);
     assert.match(html, /type="button" class="gran-btn active" data-gran="day" aria-pressed="true"/);
     assert.match(html, /type="button" class="gran-btn" data-gran="month" aria-pressed="false"/);
-    assert.match(html, /style\.css\?v=24/);
-    assert.match(html, /app\.js\?v=66/);
 });
 
 test('toolbar granularity control uses scoped graphite styling', () => {

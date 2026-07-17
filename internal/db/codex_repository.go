@@ -548,8 +548,8 @@ func (r *Repository) GetCodexCalendarDays(ctx context.Context, from, to string) 
 // GetCodexIntradayStatsByModel returns per-(bucket, model) Codex stats. Codex
 // input_tokens already includes cached input; cache_read_tokens is a subset.
 func (r *Repository) GetCodexIntradayStatsByModel(ctx context.Context, fromYMD, toYMD string, bucketMinutes int, model string) ([]IntradayModelSummary, error) {
-	if bucketMinutes != 15 && bucketMinutes != 30 && bucketMinutes != 60 {
-		return nil, fmt.Errorf("bucket_minutes must be 15, 30, or 60 (got %d)", bucketMinutes)
+	if !ValidRateBucketMinutes(bucketMinutes) {
+		return nil, fmt.Errorf("bucket_minutes must be 5, 10, 15, 30, or 60 (got %d)", bucketMinutes)
 	}
 	fromUnix, toExclusiveUnix, err := localDateRangeToUnix(fromYMD, toYMD)
 	if err != nil {

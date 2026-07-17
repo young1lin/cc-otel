@@ -125,7 +125,7 @@ func (h *Handler) CodexIntraday(w http.ResponseWriter, r *http.Request) {
 	bucket := 30
 	if v := q.Get("bucket"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err == nil && (n == 15 || n == 30 || n == 60) {
+		if err == nil && db.ValidRateBucketMinutes(n) {
 			bucket = n
 		}
 	}

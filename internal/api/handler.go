@@ -911,13 +911,13 @@ type IntradayResponse struct {
 }
 
 // Intraday returns per-(time-bucket, model) stats across a [from, to] window of
-// at most 7 local days, bucketed at 15/30/60 minutes. Designed for the new
-// line-chart "Intraday by Model" view; defaults to today + 30-min buckets.
+// at most 7 local days, bucketed at 5/10/15/30/60 minutes. Designed for the
+// Intraday bar-chart view; defaults to today + 30-min buckets.
 //
 // Query params:
 //   - from=YYYY-MM-DD, to=YYYY-MM-DD (optional; default = today)
 //   - range=<today|week|month|all> (used only if from/to omitted)
-//   - bucket=15|30|60 (default 30)
+//   - bucket=5|10|15|30|60 (default 30)
 //   - model=<name> (optional filter)
 func (h *Handler) Intraday(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -949,7 +949,7 @@ func (h *Handler) Intraday(w http.ResponseWriter, r *http.Request) {
 	bucket := 30
 	if v := q.Get("bucket"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err == nil && (n == 15 || n == 30 || n == 60) {
+		if err == nil && db.ValidRateBucketMinutes(n) {
 			bucket = n
 		}
 	}

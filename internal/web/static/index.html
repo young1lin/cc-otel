@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=24">
+    <link rel="stylesheet" href="style.css?v=26">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -161,28 +161,23 @@
             <div class="chart-section hourly-section">
                 <div class="chart-section-header">
                     <span class="chart-section-title">Intraday by Model</span>
-                    <span class="hourly-hint">One line per model · 30-min buckets · single day only</span>
+                    <span class="hourly-hint">One bar per bucket × model · max 7 days</span>
+                    <div class="select-wrap" id="intraday-bucket-dd">
+                        <button type="button" class="rate-select" data-trigger title="Time bucket size" aria-haspopup="listbox" aria-expanded="false" aria-label="Intraday time bucket">
+                            <span data-label>5 min</span>
+                            <span class="rate-caret" aria-hidden="true"></span>
+                        </button>
+                        <ul class="rate-menu" role="listbox">
+                            <li class="rate-item" role="option" data-value="5" aria-selected="true">5 min</li>
+                            <li class="rate-item" role="option" data-value="10">10 min</li>
+                            <li class="rate-item" role="option" data-value="15">15 min</li>
+                            <li class="rate-item" role="option" data-value="30">30 min</li>
+                            <li class="rate-item" role="option" data-value="60">60 min</li>
+                        </ul>
+                    </div>
+                    <button type="button" id="intraday-legend-all-btn" class="rate-btn" style="display:none" title="Show every model">All models</button>
                 </div>
                 <div class="chart-wrap" id="hourly-chart"></div>
-            </div>
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Model</th>
-                            <th>Total Tokens</th>
-                            <th>Input</th>
-                            <th>Uncached</th>
-                            <th>Cache Read</th>
-                            <th class="col-cache-create">Cache Create</th>
-                            <th>Output</th>
-                            <th>Cost</th>
-                            <th>Reqs</th>
-                        </tr>
-                    </thead>
-                    <tbody id="hourly-tbody"></tbody>
-                </table>
             </div>
         </div>
     </div>
@@ -468,6 +463,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=66"></script>
+<script type="module" src="app.js?v=68"></script>
 </body>
 </html>

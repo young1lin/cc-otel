@@ -2,6 +2,8 @@ import { state } from './state.js';
 import { fmtNum, escapeHtml, rangeToFromTo } from './utils.js';
 import { chartColors, getModelColor } from './theme.js';
 import { loadRateData } from './api.js';
+import { makeBucketDropdown, normalizeBucket, recommendedBucketForSpan } from './bucket-dropdown.js';
+import { legendOption, legendGridTop, makeLegendFocus } from './legend-focus.js';
 
 const MAX_DAYS = 7;
 
@@ -22,63 +24,8 @@ function spanDaysInclusive(from, to) {
     return Math.round((t - f) / 86400000) + 1;
 }
 
-const BUCKET_CHOICES = new Set([5, 10, 15, 30, 60]);
-
-function normalizeBucket(n) {
-    return BUCKET_CHOICES.has(n) ? n : 30;
-}
-
-function recommendedBucketForSpan(spanDays) {
-    return spanDays <= 1 ? 5 : 30;
-}
-
 function syncBucketSelect(bucket) {
     bucketDropdown?.setValue(String(bucket));
-}
-
-// makeRateDropdown wires a custom .select-wrap dropdown — a trigger button
-// plus a .rate-menu popover — and returns { setValue, setOpen }. Native
-// <select> option popups can't be rounded on Windows Chromium, so the open
-// menu is a styled list. setValue updates the trigger label and the selected
-// item WITHOUT firing onPick (used to sync the control to state, e.g. when
-// loadRate normalizes the bucket). The output/total tok toggle was removed
-// as not meaningful; only the bucket dropdown remains.
-function makeRateDropdown(wrap, onPick) {
-    if (!wrap) return null;
-    const trigger = wrap.querySelector('[data-trigger]');
-    const label = wrap.querySelector('[data-label]');
-    const items = wrap.querySelectorAll('.rate-item');
-    if (!trigger || !label) return null;
-
-    const setOpen = (open) => {
-        wrap.classList.toggle('open', open);
-        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
-    };
-
-    trigger.addEventListener('click', () => {
-        setOpen(!wrap.classList.contains('open'));
-    });
-    items.forEach((item) => {
-        item.addEventListener('click', () => {
-            setValue(item.dataset.value);
-            setOpen(false);
-            if (onPick) onPick(item.dataset.value);
-        });
-    });
-    // Close when clicking outside this dropdown, or on Escape.
-    document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) setOpen(false); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
-
-    function setValue(value) {
-        let matched = null;
-        items.forEach((item) => {
-            const sel = item.dataset.value === String(value);
-            item.setAttribute('aria-selected', sel ? 'true' : 'false');
-            if (sel) matched = item;
-        });
-        if (matched) label.textContent = matched.textContent;
-    }
-    return { setValue, setOpen };
 }
 
 // Which RateBucket field to plot, from the two toggles.
@@ -155,37 +102,18 @@ function rateSeriesData(sortedPoints, spanDays) {
     return out;
 }
 
-function legendSelectedMap(models, focus) {
-    const sel = {};
-    for (const m of models) sel[m] = !focus || m === focus;
-    return sel;
-}
+// Shared with the Intraday chart — see legend-focus.js. The hover refresh is
+// this panel's own concern: isolating a model changes which lines the cursor
+// can snap to.
+const rateLegendFocus = makeLegendFocus({
+    getFocus: () => state.rateLegendFocus,
+    setFocus: (v) => { state.rateLegendFocus = v; },
+    getAllBtn: () => document.getElementById('rate-legend-all-btn'),
+    onApplied: (chart) => refreshRateHover(chart),
+});
 
-function syncRateLegendAllBtn() {
-    const btn = document.getElementById('rate-legend-all-btn');
-    if (btn) btn.style.display = state.rateLegendFocus ? '' : 'none';
-}
-
-function applyLegendFocus(chart, models) {
-    if (state.rateLegendFocus && !models.includes(state.rateLegendFocus)) {
-        state.rateLegendFocus = null;
-    }
-    chart.__rateLegendApplying = true;
-    chart.setOption({ legend: { selected: legendSelectedMap(models, state.rateLegendFocus) } });
-    chart.__rateLegendApplying = false;
-    syncRateLegendAllBtn();
-    refreshRateHover(chart);
-}
-
-function bindLegendIsolate(chart, models) {
-    chart.off('legendselectchanged');
-    chart.on('legendselectchanged', (params) => {
-        if (chart.__rateLegendApplying) return;
-        const name = params.name;
-        state.rateLegendFocus = state.rateLegendFocus === name ? null : name;
-        applyLegendFocus(chart, models);
-    });
-}
+const applyLegendFocus = rateLegendFocus.apply;
+const bindLegendIsolate = rateLegendFocus.bind;
 
 // Make the whole line hoverable: snap to the time bucket under the cursor, then
 // pick the nearest line **among models that actually have data in that bucket**.
@@ -321,11 +249,9 @@ export async function loadRate() {
     });
 
     const span1 = span > 1;
-    const useScrollLegend = models.length > 7;
-    const gridTop = useScrollLegend ? 56 : 44;
     const option = {
         backgroundColor: c.bg,
-        grid: { left: 60, right: 24, top: gridTop, bottom: 56, containLabel: true },
+        grid: { left: 60, right: 24, top: legendGridTop(models), bottom: 56, containLabel: true },
         tooltip: {
             // Axis trigger + manual control (triggerOn:'none'): bindHoverIsolate drives
             // showTip from the cursor so the whole line is hoverable, not just its points.
@@ -338,13 +264,7 @@ export async function loadRate() {
             extraCssText: `box-shadow: ${c.shadow};`,
             formatter(params) { return rateTooltip(params, c); },
         },
-        legend: {
-            type: useScrollLegend ? 'scroll' : 'plain', top: 4, left: 'center', width: '92%',
-            selectedMode: 'multiple',
-            itemGap: 14, itemHeight: 10, textStyle: { color: c.legendText, fontSize: 11 },
-            data: models.map(m => ({ name: m, icon: 'roundRect', itemStyle: { color: getModelColor(m) } })),
-            selected: legendSelectedMap(models, state.rateLegendFocus),
-        },
+        legend: legendOption(models, c, state.rateLegendFocus),
         xAxis: {
             type: 'time',
             axisLabel: {
@@ -418,15 +338,14 @@ export function initPanelRate() {
             loadRate();
         });
     });
-    bucketDropdown = makeRateDropdown(document.getElementById('rate-bucket-dd'), (value) => {
+    bucketDropdown = makeBucketDropdown(document.getElementById('rate-bucket-dd'), (value) => {
         state.rateBucket = normalizeBucket(parseInt(value, 10));
         loadRate();
     });
     document.getElementById('rate-legend-all-btn')?.addEventListener('click', () => {
-        state.rateLegendFocus = null;
         if (state.rateChart) {
             const names = (state.rateChart.getOption().series || []).map(s => s.name).filter(Boolean);
-            applyLegendFocus(state.rateChart, names);
+            rateLegendFocus.clear(state.rateChart, names);
         }
     });
     document.getElementById('rate-refresh-btn')?.addEventListener('click', () => loadRate());

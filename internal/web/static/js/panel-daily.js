@@ -1,12 +1,51 @@
 import { state, paging } from './state.js';
 import { fmtNum, escapeHtml, rangeToFromTo } from './utils.js';
-import { chartColors, getModelColor } from './theme.js';
+import { chartColors } from './theme.js';
 import { loadDailyData, loadIntradayData } from './api.js';
 import { renderPagination } from './pagination.js';
 import { tokenParts } from './token-math.js';
+import { buildBarTooltip, makeTokenBarColor } from './chart-main.js';
+import { fillIntradaySlots, defaultVisibleSlots } from './intraday-slots.js';
+import { makeBucketDropdown, normalizeBucket, recommendedBucketForSpan } from './bucket-dropdown.js';
+import { legendOption, legendGridTop, makeLegendFocus } from './legend-focus.js';
 
-const INTRADAY_BUCKET_MIN = 30;
-const INTRADAY_MAX_DAYS = 1;
+const INTRADAY_MAX_DAYS = 7;
+
+// Shared with the Rate chart — see legend-focus.js. Isolating one model is what
+// makes a dense window readable: 192 slots x 11 models leaves each bar under a
+// pixel, while one model over the same window is comfortably wide.
+const intradayLegendFocus = makeLegendFocus({
+    getFocus: () => state.intradayLegendFocus,
+    setFocus: (v) => { state.intradayLegendFocus = v; },
+    getAllBtn: () => document.getElementById('intraday-legend-all-btn'),
+});
+
+// Custom bucket dropdown instance (set in initIntradayBucketDropdown).
+// syncBucketSelect keeps the control's label in step with state when
+// loadIntraday normalizes the bucket for the selected span.
+let bucketDropdown = null;
+
+function syncBucketSelect(bucket) {
+    bucketDropdown?.setValue(String(bucket));
+}
+
+export function initIntradayBucketDropdown() {
+    bucketDropdown = makeBucketDropdown(
+        document.getElementById('intraday-bucket-dd'),
+        (value) => {
+            state.intradayBucket = normalizeBucket(parseInt(value, 10));
+            loadIntraday();
+        },
+    );
+    syncBucketSelect(state.intradayBucket);
+
+    document.getElementById('intraday-legend-all-btn')?.addEventListener('click', () => {
+        if (state.hourlyChart) {
+            const names = (state.hourlyChart.getOption().series || []).map((s) => s.name).filter(Boolean);
+            intradayLegendFocus.clear(state.hourlyChart, names);
+        }
+    });
+}
 
 function spanDaysInclusive(from, to) {
     if (!from || !to) return 0;
@@ -30,8 +69,8 @@ export function updateDailyViewControls() {
     const canHour = isIntradayRangeSelected();
     hourBtn.disabled = !canHour;
     hourBtn.title = canHour
-        ? `Intraday view (${INTRADAY_BUCKET_MIN}-min buckets)`
-        : `Intraday view requires a single day (Today / Yesterday / a single custom date)`;
+        ? 'Intraday view (per-bucket bars)'
+        : `Intraday view supports up to ${INTRADAY_MAX_DAYS} days (Today / Yesterday / 7 Days / a custom span ≤ ${INTRADAY_MAX_DAYS} days)`;
 
     if (!canHour && state.dailyDetailView === 'hour') state.dailyDetailView = 'day';
 
@@ -71,63 +110,6 @@ function metricValueFromRow(r) {
     return tokenParts(r).total;
 }
 
-export function intradayLineTooltip(params, c) {
-    const list = Array.isArray(params) ? params : [params];
-    const p = list.find((x) => x && x.data && x.data.raw)
-        || list.find((x) => x && x.data)
-        || list[0];
-    if (!p || !p.data) return '';
-    const raw = p.data.raw;
-    if (!raw) return '';
-
-    const parts = tokenParts(raw);
-    const cost = Number(raw.cost_usd || 0);
-    const reqs = Number(raw.request_count || 0);
-    const sub = 'padding:2px 0 2px 16px;font-size:11px';
-    const cacheCreateRow =
-        '<tr><td style="color:' + c.mutedText + ';' + sub +
-        '">Cache Create</td><td style="font-family:var(--font-mono);text-align:right;' + sub + '">' +
-        fmtNum(parts.cacheCreate) + '</td></tr>';
-    const header = escapeHtml(String(raw.bucket_label || ''));
-    const modelColor = typeof p.color === 'string' ? p.color : getModelColor(raw.model || 'Unknown');
-    const modelName = raw.model || p.seriesName || 'Unknown';
-    const swatch = `<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${modelColor};margin-right:6px;vertical-align:middle"></span>`;
-
-    return `<div style="margin-bottom:6px;font-weight:600;color:${c.tooltipText}">${header}</div>` +
-        `<div style="color:${c.tooltipText};font-weight:600;margin-bottom:8px">${swatch}<span style="color:${modelColor}">${escapeHtml(modelName)}</span></div>` +
-        `<table style="width:100%;font-size:12px;border-collapse:collapse">` +
-        `<tr><td style="color:${c.mutedText};padding:2px 0">Total</td><td style="font-family:var(--font-mono);text-align:right;padding:2px 0;font-weight:600">${fmtNum(parts.total)}</td></tr>` +
-        `<tr><td colspan="2" style="height:4px"></td></tr>` +
-        `<tr><td style="color:${c.tooltipText};padding:2px 0;font-weight:600">Input</td><td style="font-family:var(--font-mono);text-align:right;padding:2px 0;font-weight:600">${fmtNum(parts.inputSide)}</td></tr>` +
-        `<tr><td style="color:${c.mutedText};${sub}">Uncached</td><td style="font-family:var(--font-mono);text-align:right;${sub}">${fmtNum(parts.uncachedInput)}</td></tr>` +
-        `<tr><td style="color:${c.mutedText};${sub}">Cache Read</td><td style="font-family:var(--font-mono);text-align:right;${sub}">${fmtNum(parts.cacheRead)}</td></tr>` +
-        cacheCreateRow +
-        `<tr><td colspan="2" style="height:4px"></td></tr>` +
-        `<tr><td style="color:${c.mutedText};padding:2px 0">Output</td><td style="font-family:var(--font-mono);text-align:right;padding:2px 0">${fmtNum(parts.output)}</td></tr>` +
-        `<tr><td colspan="2" style="height:4px"></td></tr>` +
-        `<tr><td style="color:${c.mutedText};padding:2px 0">Requests</td><td style="font-family:var(--font-mono);text-align:right;padding:2px 0">${fmtNum(reqs)}</td></tr>` +
-        `<tr><td style="color:${c.mutedText};padding:2px 0">Cost</td><td style="font-family:var(--font-mono);text-align:right;padding:2px 0">$${cost.toFixed(4)}</td></tr>` +
-        `</table>`;
-}
-
-export function renderIntradayRow(r) {
-    const parts = tokenParts(r);
-    return [
-        '<tr>',
-        '<td class="mono">' + escapeHtml(r.bucket_label || '') + '</td>',
-        '<td><span class="badge">' + escapeHtml(r.model || 'Unknown') + '</span></td>',
-        '<td class="mono">' + fmtNum(parts.total) + '</td>',
-        '<td class="mono">' + fmtNum(parts.inputSide) + '</td>',
-        '<td class="mono">' + fmtNum(parts.uncachedInput) + '</td>',
-        '<td class="mono">' + fmtNum(parts.cacheRead) + '</td>',
-        '<td class="mono">' + fmtNum(parts.cacheCreate) + '</td>',
-        '<td class="mono">' + fmtNum(parts.output) + '</td>',
-        '<td class="cost-val">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>',
-        '<td class="mono">' + Number(r.request_count || 0) + '</td>',
-        '</tr>',
-    ].join('');
-}
-
 export function renderDailyRow(r) {
     const parts = tokenParts(r);
     return [
@@ -145,159 +127,122 @@ export function renderDailyRow(r) {
 }
 
 export async function loadIntraday() {
-    const { from, to } = rangeToFromTo(state.currentRange);
-    const tbody = document.getElementById('hourly-tbody');
     const chartEl = document.getElementById('hourly-chart');
-    if (!tbody || !chartEl) return;
+    if (!chartEl) return;
 
+    const { from, to } = rangeToFromTo(state.currentRange);
     const span = spanDaysInclusive(from, to);
     if (span < 1 || span > INTRADAY_MAX_DAYS) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">Intraday view is only available for a single day (Today / Yesterday / a single custom date).</td></tr>`;
+        showIntradayMessage(chartEl, `Intraday view supports up to ${INTRADAY_MAX_DAYS} days. Pick a shorter range (Today / 7 Days / a custom span ≤ ${INTRADAY_MAX_DAYS} days).`);
         return;
     }
 
+    // Mirrors panel-rate.js: a bucket chosen for one span must not leak into
+    // another — 5-minute buckets over 7 days would render ~2000 slots x model.
+    if (state.intradaySpan !== span) {
+        state.intradaySpan = span;
+        state.intradayBucket = recommendedBucketForSpan(span);
+    }
+    const useBucket = normalizeBucket(state.intradayBucket);
+    state.intradayBucket = useBucket;
+    syncBucketSelect(useBucket);
+
+    const sourceAtStart = state.source;
+    let json;
     try {
-        const json = await loadIntradayData({ from, to, bucket: INTRADAY_BUCKET_MIN });
-        const rows = json.data || [];
+        json = await loadIntradayData({ from, to, bucket: useBucket });
+    } catch (e) {
+        showIntradayMessage(chartEl, 'Failed to load intraday data.');
+        return;
+    }
+    if (state.source !== sourceAtStart) return; // user switched tabs mid-flight
 
-        // Group by model -> Map<bucketStartUnix, row>
-        const byModel = new Map();
-        for (const r of rows) {
-            const model = r.model || 'Unknown';
-            if (!byModel.has(model)) byModel.set(model, new Map());
-            byModel.get(model).set(Number(r.bucket_start_unix) * 1000, r);
-        }
-        const models = [...byModel.keys()].sort((a, b) => a.localeCompare(b));
+    const rows = json.data || [];
+    if (rows.length === 0) {
+        showIntradayMessage(chartEl, 'No data in this range.');
+        return;
+    }
 
-        if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">No data in this range</td></tr>';
-        } else {
-            const sortedRows = [...rows].sort((a, b) => {
-                const ts = Number(a.bucket_start_unix) - Number(b.bucket_start_unix);
-                if (ts !== 0) return ts;
-                return metricValueFromRow(b) - metricValueFromRow(a);
-            });
-            tbody.innerHTML = sortedRows.map(renderIntradayRow).join('');
-        }
+    const bucketMinutes = json.bucket_minutes || useBucket;
+    const { slots, rowAt } = fillIntradaySlots(rows, bucketMinutes);
+    const models = [...new Set(rows.map((r) => r.model))].sort();
+    const c = chartColors();
 
-        const isCost = state.chartMetric === 'cost';
-        const c = chartColors();
+    // Ascending time: a time-of-day axis must read left to right. This is the
+    // opposite of chart-main.js, which sorts dates newest-first on purpose.
+    const categories = slots.map((s) => s.label);
 
-        const series = models.map(model => {
-            const map = byModel.get(model);
-            const color = getModelColor(model);
-            // One line per model: keep only buckets where this model actually
-            // has data, sorted by time. ECharts then draws straight segments
-            // between consecutive points — no `connectNulls` games, no
-            // sparse-grid stair-step artifacts. The trade-off is that a long
-            // idle gap is bridged by a single diagonal segment; for token
-            // usage that reads as "model wasn't used in between", which is
-            // correct.
-            const points = [...map.entries()]
-                .sort((a, b) => a[0] - b[0])
-                .map(([t, r]) => ({
-                    value: [t, metricValueFromRow(r)],
-                    raw: r,
-                }));
-            return {
-                name: model,
-                type: 'line',
-                smooth: false,
-                showSymbol: true,
-                symbol: 'circle',
-                symbolSize: 5,
-                sampling: 'lttb',
-                // Make the entire line hit-testable instead of just the point
-                // markers — without this, mousing over the segment between
-                // two markers does nothing under trigger:'item'.
-                triggerLineEvent: true,
-                lineStyle: { color, width: 2.4 },
-                itemStyle: { color },
-                emphasis: {
-                    focus: 'none',
-                    scale: 1.8,
-                    lineStyle: { width: 3.2 },
-                },
-                data: points,
-            };
-        });
+    const isCost = state.chartMetric === 'cost';
+    const fmtVal = (v) => (isCost ? '$' + Number(v).toFixed(4) : fmtNum(v));
 
-        const useScrollLegend = models.length > 7;
-        const gridTop = useScrollLegend ? 56 : 44;
+    const series = models.map((model) => ({
+        name: model,
+        type: 'bar',
+        barMaxWidth: 44,
+        // Shared with the main chart — see makeTokenBarColor in chart-main.js.
+        itemStyle: { color: makeTokenBarColor(model) },
+        data: slots.map((s) => {
+            const r = rowAt.get(s.unix + '|' + model);
+            // metricValueFromRow, not tokenParts: Intraday honors the top-bar
+            // Tokens / Cost / Requests switch.
+            return r ? { value: metricValueFromRow(r), raw: r } : 0;
+        }),
+    }));
 
-        const option = {
-            backgroundColor: c.bg,
-            grid: {
-                left: 60,
-                right: 24,
-                top: gridTop,
-                bottom: 56,
-                containLabel: true,
-            },
-            tooltip: {
-                trigger: 'item',
-                confine: false,
-                appendToBody: true,
-                backgroundColor: c.tooltipBg,
-                borderColor: c.tooltipBorder,
-                borderWidth: 1,
-                borderRadius: 10,
-                padding: [12, 14],
-                textStyle: { color: c.tooltipText, fontSize: 12 },
-                extraCssText: `box-shadow: ${c.shadow};`,
-                formatter(params) {
-                    return intradayLineTooltip(params, c);
-                },
-            },
-            legend: {
-                type: useScrollLegend ? 'scroll' : 'plain',
-                top: 4,
-                left: 'center',
-                width: '92%',
-                itemGap: 14,
-                itemHeight: 10,
-                textStyle: { color: c.legendText, fontSize: 11 },
-                data: models.map(m => ({ name: m, icon: 'roundRect', itemStyle: { color: getModelColor(m) } })),
-            },
-            xAxis: {
-                type: 'time',
-                axisLabel: {
-                    color: c.axisLabel,
-                    fontSize: 11,
-                    hideOverlap: true,
-                    formatter: span > 1
-                        ? { day: '{MM}-{dd}', hour: '{HH}:{mm}' }
-                        : { hour: '{HH}:{mm}', minute: '{HH}:{mm}' },
-                },
-                axisLine: { lineStyle: { color: c.axisLine } },
-                axisTick: { lineStyle: { color: c.axisLine } },
-                splitLine: { show: false },
-            },
-            yAxis: {
-                type: 'value',
-                name: metricLabel(),
-                nameTextStyle: { color: c.axisLabel, fontSize: 11 },
-                axisLabel: {
-                    color: c.axisLabel,
-                    fontSize: 11,
-                    formatter: v => isCost ? ('$' + Number(v || 0).toFixed(2)) : fmtNum(v),
-                },
-                splitLine: { lineStyle: { color: c.splitLine } },
-            },
-            dataZoom: [
+    // Open on a working day's worth of buckets; the rest is a pan away. See
+    // DEFAULT_WINDOW_MINUTES in intraday-slots.js for why this is a duration
+    // rather than a bar count.
+    const visibleBuckets = defaultVisibleSlots(bucketMinutes, slots.length);
+    const hasZoom = slots.length > visibleBuckets;
+    // Ascending time: the newest buckets are on the right, so anchor there.
+    const winPct = hasZoom ? Math.round((visibleBuckets / slots.length) * 100) : 100;
+
+    if (!state.hourlyChart) {
+        state.hourlyChart = echarts.init(chartEl, null, { renderer: 'canvas' });
+        window.addEventListener('resize', () => state.hourlyChart && state.hourlyChart.resize());
+    }
+    state.hourlyChart.setOption({
+        backgroundColor: 'transparent',
+        // The legend sits outside the grid, so the plot must start below it.
+        grid: { left: 56, right: 20, top: legendGridTop(models), bottom: hasZoom ? 56 : 32 },
+        legend: legendOption(models, c, state.intradayLegendFocus),
+        tooltip: {
+            trigger: 'item',
+            backgroundColor: c.tooltipBg,
+            borderColor: c.tooltipBorder,
+            textStyle: { color: c.tooltipText },
+            formatter: (params) => buildBarTooltip(params, c),
+        },
+        xAxis: {
+            type: 'category',
+            data: categories,
+            axisLine: { lineStyle: { color: c.axisLine } },
+            axisLabel: { color: c.axisLabel, hideOverlap: true },
+        },
+        yAxis: {
+            type: 'value',
+            // metricLabel() keeps the axis honest when the metric switch flips.
+            name: metricLabel(),
+            nameTextStyle: { color: c.axisLabel },
+            axisLabel: { color: c.axisLabel, formatter: (v) => fmtVal(v) },
+            splitLine: { lineStyle: { color: c.splitLine } },
+        },
+        // Styling mirrors chart-main.js so both charts' zoom sliders match.
+        // The eight dz* colors are theme-aware; an unstyled slider would render
+        // as ECharts' default and look foreign next to the main chart.
+        dataZoom: hasZoom
+            ? [
                 {
                     type: 'inside',
                     xAxisIndex: 0,
-                    start: 0,
+                    start: 100 - winPct,
                     end: 100,
-                    zoomOnMouseWheel: 'shift',
-                    moveOnMouseWheel: false,
-                    moveOnMouseMove: true,
+                    zoomLock: true,
                 },
                 {
                     type: 'slider',
                     xAxisIndex: 0,
-                    start: 0,
+                    start: 100 - winPct,
                     end: 100,
                     height: 14,
                     bottom: 4,
@@ -306,124 +251,33 @@ export async function loadIntraday() {
                     fillerColor: c.dzFill,
                     handleStyle: { color: c.dzHandle, borderColor: c.dzHandle },
                     moveHandleStyle: { color: c.dzHandle },
-                    selectedDataBackground: { lineStyle: { color: c.dzSelLine }, areaStyle: { color: c.dzSelArea } },
-                    dataBackground: { lineStyle: { color: c.dzBgLine }, areaStyle: { color: c.dzBgArea } },
                     textStyle: { color: c.legendText, fontSize: 10 },
+                    dataBackground: {
+                        lineStyle: { color: c.dzBgLine },
+                        areaStyle: { color: c.dzBgArea },
+                    },
+                    selectedDataBackground: {
+                        lineStyle: { color: c.dzSelLine },
+                        areaStyle: { color: c.dzSelArea },
+                    },
                 },
-            ],
-            series,
-        };
+            ]
+            : [],
+        series,
+    }, true);
+    // After setOption: the notMerge above replaces the legend, so re-bind and
+    // re-assert the focus against the models this range actually returned.
+    intradayLegendFocus.bind(state.hourlyChart, models);
+    intradayLegendFocus.apply(state.hourlyChart, models);
+    state.hourlyChart.resize();
+}
 
-        if (!state.hourlyChart) {
-            state.hourlyChart = echarts.init(chartEl, null, { renderer: 'canvas' });
-            window.addEventListener('resize', () => state.hourlyChart && state.hourlyChart.resize());
-
-            // ECharts' trigger:'item' only fires when the cursor is exactly
-            // on a vertex marker — line segments are dead. We bridge that
-            // gap ourselves: on every mousemove inside the canvas, pick the
-            // line whose interpolated y at the cursor's x is closest to the
-            // cursor's y, then dispatch showTip on the nearest data point of
-            // that line. Result: the tooltip tracks whichever line you
-            // graze, segment or marker, without using trigger:'axis' (which
-            // CLAUDE.md forbids because it merges all series into one
-            // popup).
-            // Generous vertical hit zone: with 11 lines + sparse data the
-            // segment between two distant points can sit 80-100 px from the
-            // cursor, and a tighter cap would leave the user with no
-            // feedback in exactly the empty stretches they're trying to
-            // probe. 120 px ≈ ~1/3 of the visible plot height — beyond that
-            // the cursor is clearly off-line and we suppress the popup.
-            const PIXEL_HIT_VERTICAL_PX = 120;
-            const findNearestSeriesAtCursor = (zEv) => {
-                const ec = state.hourlyChart;
-                if (!ec) return null;
-                const opt = ec.getOption();
-                const seriesArr = opt.series || [];
-                const cursorXData = ec.convertFromPixel({ xAxisIndex: 0 }, zEv.offsetX);
-                if (cursorXData == null || !Number.isFinite(cursorXData)) return null;
-                let best = null;
-                for (let si = 0; si < seriesArr.length; si++) {
-                    const s = seriesArr[si];
-                    if (!s || s.type !== 'line') continue;
-                    const data = s.data || [];
-                    if (data.length === 0) continue;
-                    // Find the two adjacent data points bracketing cursorXData.
-                    // Data is sorted ascending by x in loadIntraday().
-                    let hi = data.length - 1, lo = 0;
-                    while (lo < hi) {
-                        const mid = (lo + hi) >> 1;
-                        const xm = data[mid].value && data[mid].value[0];
-                        if (xm < cursorXData) lo = mid + 1; else hi = mid;
-                    }
-                    const ihi = lo;
-                    const ilo = Math.max(0, ihi - 1);
-                    const a = data[ilo] && data[ilo].value;
-                    const b = data[ihi] && data[ihi].value;
-                    if (!a || !b || a[1] == null || b[1] == null) continue;
-                    let yData;
-                    if (cursorXData <= a[0]) yData = a[1];
-                    else if (cursorXData >= b[0]) yData = b[1];
-                    else if (a[0] === b[0]) yData = a[1];
-                    else {
-                        const t = (cursorXData - a[0]) / (b[0] - a[0]);
-                        yData = a[1] + t * (b[1] - a[1]);
-                    }
-                    const yPx = ec.convertToPixel({ yAxisIndex: 0 }, yData);
-                    if (yPx == null || !Number.isFinite(yPx)) continue;
-                    const dy = Math.abs(yPx - zEv.offsetY);
-                    if (best == null || dy < best.dy) {
-                        const aPx = ec.convertToPixel({ xAxisIndex: 0 }, a[0]);
-                        const bPx = ec.convertToPixel({ xAxisIndex: 0 }, b[0]);
-                        const da = Math.abs((aPx == null ? Infinity : aPx) - zEv.offsetX);
-                        const db = Math.abs((bPx == null ? Infinity : bPx) - zEv.offsetX);
-                        const di = da <= db ? ilo : ihi;
-                        best = { si, di, dy };
-                    }
-                }
-                if (best == null || best.dy > PIXEL_HIT_VERTICAL_PX) return null;
-                return best;
-            };
-            const zr = state.hourlyChart.getZr();
-            zr.on('mousemove', (e) => {
-                const hit = findNearestSeriesAtCursor(e);
-                // ECharts' own zr listeners run in the same event tick and
-                // call hideTip for non-item hovers, undoing our showTip
-                // before paint. queueMicrotask defers our action to the
-                // tail of the same task so it lands AFTER the built-in
-                // handlers and the tooltip actually sticks.
-                queueMicrotask(() => {
-                    if (!state.hourlyChart) return;
-                    if (hit) {
-                        state.hourlyChart.dispatchAction({
-                            type: 'showTip',
-                            seriesIndex: hit.si,
-                            dataIndex: hit.di,
-                        });
-                    } else {
-                        state.hourlyChart.dispatchAction({ type: 'hideTip' });
-                    }
-                });
-            });
-            zr.on('globalout', () => {
-                state.hourlyChart.dispatchAction({ type: 'hideTip' });
-            });
-        }
-        state.hourlyChart.setOption(option, true);
-        const syncSize = () => {
-            try {
-                state.hourlyChart.resize();
-            } catch (e) {
-                /* empty */
-            }
-        };
-        requestAnimationFrame(() => {
-            syncSize();
-            requestAnimationFrame(syncSize);
-        });
-    } catch (e) {
-        console.error('intraday:', e);
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">Failed to load intraday data</td></tr>';
+function showIntradayMessage(chartEl, msg) {
+    if (state.hourlyChart) {
+        state.hourlyChart.dispose();
+        state.hourlyChart = null;
     }
+    chartEl.innerHTML = `<div style="text-align:center;color:var(--text-muted);padding:48px 24px">${msg}</div>`;
 }
 
 export async function loadDailyTable() {
