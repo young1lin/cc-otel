@@ -24,7 +24,7 @@ import { loadInsights, setInsightsVisible, initInsightsModal } from './js/insigh
 import { loadChart, buildBarTooltip } from './js/chart-main.js';
 import {
     loadDailyTable, refreshDailyPanel,
-    setDailyDetailView, updateDailyViewControls, initPanelDaily,
+    setDailyDetailView, updateDailyViewControls, initPanelDaily, initIntradayBucketDropdown,
 } from './js/panel-daily.js';
 import { loadSessions } from './js/panel-sessions.js';
 import {
@@ -284,6 +284,7 @@ initFilters({
 initBreakdownModal({ openPopover, closePopover });
 initInsightsModal({ openPopover, closePopover, onSelectDate: selectCalendarDate });
 initPanelDaily();
+initIntradayBucketDropdown();
 initPanelRequests();
 initPanelRate();
 initPanelPricing({ openPopover, closePopover });

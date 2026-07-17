@@ -171,7 +171,7 @@ type HourlyModelSummary struct {
 }
 
 // IntradayModelSummary holds per-(time-bucket, model) aggregated stats for the
-// new intraday line-chart view, supporting 15/30/60-minute buckets and a span
+// intraday bar-chart view, supporting 5/10/15/30/60-minute buckets and a span
 // of up to 7 days. BucketStartUnix is the inclusive start of the bucket (UTC
 // seconds); BucketLabel is the same instant rendered in local time as
 // "MM-DD HH:MM" and is what the frontend displays.
@@ -944,14 +944,14 @@ func (r *Repository) GetHourlyStatsByModel(ctx context.Context, date string, mod
 }
 
 // GetIntradayStatsByModel returns per-(bucket, model) stats for [fromYMD, toYMD]
-// (inclusive local days), using a fixed bucket size in minutes (15, 30, or 60).
+// (inclusive local days), using a fixed bucket size in minutes (5, 10, 15, 30, or 60).
 // Buckets are computed by flooring api_requests.timestamp to the nearest
 // bucket boundary in UTC seconds; for whole-hour-offset timezones (the common
 // case) this aligns to local clock buckets exactly. The label is rendered in
 // the server's time.Local zone so the frontend gets a display-ready string.
 func (r *Repository) GetIntradayStatsByModel(ctx context.Context, fromYMD, toYMD string, bucketMinutes int, model string) ([]IntradayModelSummary, error) {
-	if bucketMinutes != 15 && bucketMinutes != 30 && bucketMinutes != 60 {
-		return nil, fmt.Errorf("bucket_minutes must be 15, 30, or 60 (got %d)", bucketMinutes)
+	if !ValidRateBucketMinutes(bucketMinutes) {
+		return nil, fmt.Errorf("bucket_minutes must be 5, 10, 15, 30, or 60 (got %d)", bucketMinutes)
 	}
 	fromUnix, toExclusiveUnix, err := localDateRangeToUnix(fromYMD, toYMD)
 	if err != nil {

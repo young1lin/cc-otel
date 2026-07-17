@@ -1230,6 +1230,12 @@ span.flatpickr-weekday {
     margin-left: auto;
 }
 
+/* The Intraday bucket dropdown shares the header row with the hint. The hint's
+   margin-left:auto already right-aligns the pair; this fixed gap keeps the
+   control from sitting flush against the hint. Scoped to the component so the
+   shared .select-wrap / .rate-select styles are untouched. */
+#intraday-bucket-dd { margin-left: 12px; }
+
 .panel-tabs {
     display: flex;
     gap: 0;

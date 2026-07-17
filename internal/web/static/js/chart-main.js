@@ -57,6 +57,39 @@ export function buildBarTooltip(params, c) {
         `</table>`;
 }
 
+/**
+ * Shared itemStyle.color callback for token bars, used by the daily and
+ * intraday charts. Cost and Requests are single quantities, so they render
+ * flat; only Tokens carries the input/output split worth encoding.
+ *
+ * Reads state.chartMetric and state.isDark directly so both call sites stay
+ * one argument wide, and so the pinned gradient rule lives in exactly one
+ * place.
+ */
+export function makeTokenBarColor(model) {
+    return function tokenBarColor(params) {
+        const base = getModelColor(model);
+        if (state.chartMetric === 'cost' || state.chartMetric === 'requests') return base;
+        const raw = params?.data?.raw;
+        if (!raw) return base;
+        const parts = tokenParts(raw);
+        if (!(parts.total > 0)) return base;
+        // One bar: bottom = all input-side tokens; top = output (light).
+        if (!(parts.output > 0)) return base;
+        const light = mixHex(base, '#ffffff', state.isDark ? 0.28 : 0.35);
+        if (!(parts.inputSide > 0)) return light;
+        const exactRatio = parts.output / parts.total;
+        const minVis = 0.06;
+        const outputRatio = exactRatio < minVis ? minVis : exactRatio;
+        return new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: light },
+            { offset: outputRatio, color: light },
+            { offset: outputRatio, color: base },
+            { offset: 1, color: base },
+        ]);
+    };
+}
+
 export async function loadChart() {
     const { from, to } = rangeToFromTo(state.currentRange);
     try {
@@ -97,29 +130,7 @@ export async function loadChart() {
             name: model,
             type: 'bar',
             barMaxWidth: barMaxW,
-            itemStyle: {
-                color(params) {
-                    if (isCost || isReqs) return getModelColor(model);
-                    const raw = params?.data?.raw;
-                    if (!raw) return getModelColor(model);
-                    const parts = tokenParts(raw);
-                    const base = getModelColor(model);
-                    if (!(parts.total > 0)) return base;
-                    // One bar: bottom = all input-side tokens; top = output (light).
-                    if (!(parts.output > 0)) return base;
-                    const light = mixHex(base, '#ffffff', state.isDark ? 0.28 : 0.35);
-                    if (!(parts.inputSide > 0)) return light;
-                    const exactRatio = parts.output / parts.total;
-                    const minVis = 0.06;
-                    const outputRatio = exactRatio < minVis ? minVis : exactRatio;
-                    return new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                        { offset: 0, color: light },
-                        { offset: outputRatio, color: light },
-                        { offset: outputRatio, color: base },
-                        { offset: 1, color: base },
-                    ]);
-                },
-            },
+            itemStyle: { color: makeTokenBarColor(model) },
             data: dates.map(d => {
                 const r = rowIndex.get(d + '|' + model);
                 return r ? { value: getVal(r), raw: r } : 0;
