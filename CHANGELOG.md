@@ -6,6 +6,46 @@
 
 ---
 
+## [v0.1.0-preview.16] - 2026-07-17
+
+> 汇总 `v0.1.0-preview.15` 之后的 6 个提交：在线数据库导入、Codex 结构化计费关联、启动清理遗留 Codex 事件、前端视觉规范、粒度分段控件、Intraday 重做为按桶柱状图。
+
+### 在线数据库导入（新）
+
+- 在运行中的服务里直接合并一个 `.db` 文件到主库——**不停进程、不替换文件**。目标库保持 WAL 在线，上传的库以只读方式打开、绝不挂到可写连接上。
+- 合并**只增不改**：既有行不删、不覆盖、不更新，仅插入目标库缺失的逻辑记录，重复行保留目标库版本；导入账本（ledger）使重传 / 断点续传安全、不双写。
+- 新增 `internal/dbmerge` 作为 schema 识别、自然键去重、暂存、分批、聚合、校验的单一实现；`tools/merge_bin_global` 的离线 CLI 改为委托给它，离线与在线路径不再各写一套。
+- 性能：基于暂存摘要的集合式处理，每批上限 1 万行或 ~128 MiB；端到端门槛——~55 万行预览 2 分钟内、导入 + 校验 5 分钟内。`codex_events` 被识别并跳过。
+- 前端：`js/import-db.js` 驱动 上传 → 预检 → 预览 → 确认 → 进度 → 结果，对应 `/api/import{,/inspect,/start,/status}`。
+
+### Codex 结构化计费关联
+
+- 把 Codex 流式事件关联成**每个模型请求一行**结构化记账：分别记录未缓存输入、缓存读、缓存写、输出、推理 token，以及上游上报总量、TTFT、从请求开始到 `response.completed` 的完整模型调用耗时（不含本地工具执行）。费用按四个独立计价的 token 类别计算。
+- 关联状态在内存中维护，结构化事务提交后即丢弃，30 分钟后清理被遗弃状态。
+- 字段映射对照上游 Codex 源码钉死：注意 `tool_token_count` 实为总用量（不是工具 token 类别），不得单独计价；`cache_write_token_count` 来自 `input_tokens_details.cache_write_tokens`，旧载荷默认 0。
+
+### 启动清理遗留 Codex 事件
+
+- 每次 daemon 启动后，后台 goroutine 分批（每批 ≤ 1 万行）删除兼容专用的 `codex_events` 表里的遗留行，直到清空；出错即记日志并停止，剩余行留待下次启动。该表接收器已不再写入、导入也会跳过，故剩余行按定义都是遗留数据。
+- 属临时措施，待部署库经过若干次启动自清后移除。
+
+### 前端视觉规范（FRONTEND_TASTE）
+
+- 新增 `.claude/harness/FRONTEND_TASTE.md` 作为前端视觉口径，要求在任何前端设计 / 实现 / 修改 / 审阅前先读。把项目既有视觉语言成文化：石墨 / 中性灰为默认、先靠间距与层次再考虑饱和色、紧凑控件优于浏览器原生、深色 / 浅色作为同一系统。
+
+### 图表粒度分段控件
+
+- 工具栏 Day / Month 粒度切换从浏览器原生按钮改为紧凑的 macOS 风格石墨分段控件，与应用整体一致；样式限定在 `#granularity-switch`，不影响 Token Rate 面板的 Weighted / Avg 控件。
+- 无障碍：补 `type="button"`、`role="group"`、`aria-label`，并保持 `aria-pressed` 与 active 状态三路同步（init / URL 恢复 / 点击）。
+- 抽出 `syncGranularityButtons` 到 `js/granularity.js`，filters.js 三处调用共用一套实现，杜绝此前 `aria-pressed` 与视觉态漂移。
+
+### Intraday 重做为按桶柱状图
+
+- Intraday 视图从「按模型折线图 + 明细表」改为**每个 (桶, 模型) 一根柱**，带 5 / 10 / 15 / 30 / 60 分钟选择器，跨度最长 7 天；明细表移除。
+- 后端：四处 intraday 桶白名单（Claude repo + handler、Codex repo + handler）此前硬编码 15 / 30 / 60，会把 5 和 10 静默强转成 30；现统一复用 `db.ValidRateBucketMinutes`（SQL 本就支持任意桶宽，纯属校验层修复），并补上该路径首批测试。
+- 前端：抽出三个此前各写一份的共用块——`bucket-dropdown.js`、`chart-main.js` 的 `makeTokenBarColor`、`legend-focus.js`；`intraday-slots.js` 为空桶补齐，避免类目轴把不连续时间点相邻错置。默认缩放窗改为按时长（16h，右锚），不再随桶宽漂移。
+- 遵守 CLAUDE.md 图表硬规则：不堆叠、`trigger:'item'`、不 series 高亮、每个 (时间, 模型) 一根柱；x 轴升序（时间轴左→右，与 chart-main 的最新在前相反）。
+
 ## [v0.1.0-preview.15] - 2026-07-09
 
 > 汇总 `v0.1.0-preview.14` 之后的 4 个提交：Gemini 移除、仓库整理、价目表手动管理 + 按 Provider 选价、Token Rate 控件重设计。
