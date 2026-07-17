@@ -118,7 +118,6 @@ export async function loadRequests() {
             renderPagination('requests-pagination', paging.requests, loadRequests);
             return;
         }
-        const hideCC = state.source === 'codex';
         tbody.innerHTML = data.map(r => `<tr>
             <td class="mono">${fmtDateTime(r.timestamp)}</td>
             <td><span class="badge">${escapeHtml(r.model)}</span></td>
@@ -126,7 +125,7 @@ export async function loadRequests() {
             <td class="mono">${fmtNum(r.input_tokens)}</td>
             <td class="mono">${fmtNum(r.output_tokens)}</td>
             <td class="mono">${fmtNum(r.cache_read_tokens)}</td>
-            ${hideCC ? '' : `<td class="mono">${fmtNum(r.cache_creation_tokens)}</td>`}
+            <td class="mono">${fmtNum(r.cache_creation_tokens)}</td>
             <td class="cost-val">$${r.cost_usd.toFixed(4)}</td>
             <td class="mono" title="${escapeHtml(
                 r.ttft_ms

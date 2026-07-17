@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { state } from '../js/state.js';
-import { cacheHitParts } from '../js/token-math.js';
+import { cacheHitParts, tokenParts } from '../js/token-math.js';
 
 // Helper: cache hit ratio from parts.
 const ratio = (row) => {
@@ -30,5 +30,25 @@ test('codex cache hit unchanged: cache_read / input_tokens (input already includ
     // For codex, input_tokens already includes cached portion.
     const row = { input_tokens: 1000, cache_read_tokens: 400, cache_creation_tokens: 0 };
     assert.ok(Math.abs(ratio(row) - 0.4) < 1e-9);
+    state.source = 'claude';
+});
+
+test('codex token parts subtract cache read and cache write once', () => {
+    state.source = 'codex';
+    const parts = tokenParts({
+        input_tokens: 100,
+        cache_read_tokens: 40,
+        cache_creation_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 110,
+    });
+    assert.deepEqual(parts, {
+        inputSide: 100,
+        uncachedInput: 40,
+        cacheRead: 40,
+        cacheCreate: 20,
+        output: 10,
+        total: 110,
+    });
     state.source = 'claude';
 });

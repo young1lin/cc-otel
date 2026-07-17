@@ -8,12 +8,12 @@ export function tokenParts(row) {
     const reportedTotal = Number(row?.total_tokens || 0);
 
     if (state.source === 'codex') {
-        const uncachedInput = Math.max(input - cacheRead, 0);
+        const uncachedInput = Math.max(input - cacheRead - cacheCreate, 0);
         return {
             inputSide: input,
             uncachedInput,
             cacheRead,
-            cacheCreate: 0,
+            cacheCreate,
             output,
             total: reportedTotal > 0 ? reportedTotal : input + output,
         };

@@ -91,7 +91,7 @@ test('Codex request log keeps duration summary when duration rows exist', async 
                         input_tokens: 70844,
                         output_tokens: 70,
                         cache_read_tokens: 70528,
-                        cache_creation_tokens: 0,
+                        cache_creation_tokens: 321,
                         cost_usd: 0.03894,
                         ttft_ms: 0,
                         duration_ms: 0,
@@ -110,6 +110,7 @@ test('Codex request log keeps duration summary when duration rows exist', async 
         assert.equal(dom.durationWrap.style.display, '');
         assert.match(dom.durationBody.innerHTML, /4200ms/);
         assert.match(dom.requestBody.innerHTML, /gpt-5\.5/);
+        assert.match(dom.requestBody.innerHTML, />321<\/td>/);
     } finally {
         global.document = oldDocument;
         global.fetch = oldFetch;

@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,78 +32,331 @@ func attrInt(k string, v int64) *commontpb.KeyValue {
 	return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_IntValue{IntValue: v}}}
 }
 
-func TestDispatchCodexLog_APIRequest(t *testing.T) {
-	repo := newCodexReceiverRepo(t)
-	lr := &logspb.LogRecord{
-		TimeUnixNano: uint64(1700000000) * 1e9,
-		Attributes: []*commontpb.KeyValue{
-			attr("event.name", "codex.api_request"),
-			attr("conversation.id", "conv-1"),
-			attr("model", "gpt-5.1"),
-			attrInt("duration_ms", 1234),
-			attrInt("http.response.status_code", 200),
-			attr("endpoint", "/v1/responses"),
-		},
+type codexPricingCall struct {
+	model       string
+	input       int64
+	output      int64
+	cacheRead   int64
+	cacheCreate int64
+}
+
+type recordingCodexPricer struct {
+	call codexPricingCall
+}
+
+func (p *recordingCodexPricer) Calc(
+	_ context.Context,
+	model string,
+	input, output, cacheRead, cacheCreate int64,
+) float64 {
+	p.call = codexPricingCall{
+		model: model, input: input, output: output,
+		cacheRead: cacheRead, cacheCreate: cacheCreate,
 	}
+	return 0.0123
+}
+
+func TestCodexLogObservedUnixNanosPrefersObservedTime(t *testing.T) {
+	lr := &logspb.LogRecord{
+		TimeUnixNano:         100,
+		ObservedTimeUnixNano: 200,
+	}
+	if got := codexLogObservedUnixNanos(lr); got != 200 {
+		t.Fatalf("observed nanos = %d, want 200", got)
+	}
+	if got := codexLogUnixNanos(lr); got != 100 {
+		t.Fatalf("persisted timestamp helper changed: got %d, want 100", got)
+	}
+}
+
+func TestCodexRequestStartNanosClampsInvalidDuration(t *testing.T) {
+	observed := int64(300 * time.Millisecond)
+	if got := codexRequestStartNanos(observed, 300); got != 0 {
+		t.Fatalf("start = %d, want 0", got)
+	}
+	if got := codexRequestStartNanos(observed, 301); got != observed {
+		t.Fatalf("underflow was not clamped: got %d want %d", got, observed)
+	}
+	if got := codexRequestStartNanos(observed, -1); got != observed {
+		t.Fatalf("negative duration changed start: got %d want %d", got, observed)
+	}
+}
+
+func TestCodexSpanTrackerLookupRemoveFallbackMergeAndExpiry(t *testing.T) {
+	tracker := newCodexSpanTracker()
+	base := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC).UnixNano()
+
+	fallbackKey := tracker.recordRequest("", spanInfo{
+		rowID: 7, sessionID: "fallback-session", model: "gpt-5.1", startNanos: base,
+	})
+	if !strings.HasPrefix(fallbackKey, "fallback:") {
+		t.Fatalf("fallback key = %q", fallbackKey)
+	}
+	key, info, ok := tracker.lookupRequest(
+		"", "fallback-session", "gpt-5.1", base+int64(time.Second), 10*time.Minute,
+	)
+	if !ok || key != fallbackKey || info.rowID != 7 {
+		t.Fatalf("fallback lookup: key=%q info=%+v ok=%v", key, info, ok)
+	}
+	if key2, _, ok2 := tracker.lookupRequest(
+		"", "fallback-session", "gpt-5.1", base+int64(time.Second), 10*time.Minute,
+	); !ok2 || key2 != fallbackKey {
+		t.Fatal("lookup destructively removed tracker state")
+	}
+
+	spanKey := "AQIDBAUGBwg="
+	tracker.recordRequest(spanKey, spanInfo{
+		rowID: 99, sessionID: "merge-session", model: "gpt-5.1",
+		startNanos: base + int64(500*time.Millisecond),
+	})
+	tracker.recordRequest(spanKey, spanInfo{
+		sessionID: "merge-session", model: "gpt-5.1",
+		startNanos: base + int64(600*time.Millisecond),
+	})
+	_, merged, ok := tracker.lookupRequest(
+		spanKey, "merge-session", "gpt-5.1", base+int64(time.Second), 10*time.Minute,
+	)
+	if !ok || merged.rowID != 99 ||
+		merged.startNanos != base+int64(500*time.Millisecond) {
+		t.Fatalf("span merge lost row/start: %+v ok=%v", merged, ok)
+	}
+
+	tracker.removeRequest(fallbackKey)
+	if _, _, ok := tracker.lookupRequest(
+		"", "fallback-session", "gpt-5.1", base+int64(time.Second), 10*time.Minute,
+	); ok {
+		t.Fatal("explicit removal left fallback entry")
+	}
+	if _, _, ok := tracker.lookupRequest(
+		spanKey, "merge-session", "gpt-5.1", base+int64(time.Second), 10*time.Minute,
+	); !ok {
+		t.Fatal("removing one key removed another entry")
+	}
+
+	tracker.recordRequest("old-span", spanInfo{
+		sessionID: "old", model: "gpt-5.1", startNanos: base,
+	})
+	tracker.recordRequest("new-span", spanInfo{
+		sessionID: "new", model: "gpt-5.1",
+		startNanos: base + int64(31*time.Minute),
+	})
+	if _, _, ok := tracker.lookupRequest(
+		"old-span", "old", "gpt-5.1", base+int64(31*time.Minute), 60*time.Minute,
+	); ok {
+		t.Fatal("30-minute eviction did not run below 100 entries")
+	}
+}
+
+func TestDispatchCodexLog_APIRequestAnchorsSuccessfulStream(t *testing.T) {
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	tracker := newCodexSpanTracker()
+	base := time.Date(2026, 7, 17, 13, 0, 0, 0, time.UTC)
+	observed := base.Add(300 * time.Millisecond)
 	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
 		attr("service.name", "codex-cli"),
 	}}
 
-	ok := dispatchCodexLog(context.Background(), repo, lr, res, nil, nil, nil)
+	ok := dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		TimeUnixNano:         uint64(observed.UnixNano()),
+		ObservedTimeUnixNano: uint64(observed.UnixNano()),
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", "anchor-session"),
+			attr("model", "gpt-5.1"),
+			attrInt("duration_ms", 300),
+		},
+	}, res, nil, tracker, nil)
 	if !ok {
-		t.Fatal("expected dispatch to return true (insert happened)")
+		t.Fatal("status-omitted successful request was not inserted")
 	}
 
-	var n int
-	repo.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM codex_api_requests`).Scan(&n)
-	if n != 1 {
-		t.Fatalf("expected 1 row, got %d", n)
+	var rowID, duration int64
+	if err := repo.DB().QueryRowContext(ctx,
+		`SELECT id, duration_ms FROM codex_api_requests WHERE session_id = 'anchor-session'`,
+	).Scan(&rowID, &duration); err != nil {
+		t.Fatalf("read request: %v", err)
+	}
+	if duration != 0 {
+		t.Fatalf("successful setup duration persisted as final duration: %d", duration)
+	}
+	key, info, found := tracker.lookupRequest(
+		"", "anchor-session", "gpt-5.1",
+		observed.Add(time.Second).UnixNano(), 10*time.Minute,
+	)
+	if !found || !strings.HasPrefix(key, "fallback:") ||
+		info.rowID != rowID || info.startNanos != base.UnixNano() {
+		t.Fatalf("wrong empty-span anchor: key=%q info=%+v found=%v", key, info, found)
 	}
 }
 
-func TestDispatchCodexLog_SSECompletedUpdatesTokens(t *testing.T) {
+func TestDispatchCodexLog_APIRequestFailureKeepsReportedDuration(t *testing.T) {
 	repo := newCodexReceiverRepo(t)
 	ctx := context.Background()
-	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}}
+	tracker := newCodexSpanTracker()
+	when := time.Date(2026, 7, 17, 13, 5, 0, 0, time.UTC)
 
-	// 1. api_request first
-	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
-		TimeUnixNano: uint64(1700000000) * 1e9,
+	ok := dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		ObservedTimeUnixNano: uint64(when.UnixNano()),
+		SpanId:               []byte{1, 2, 3, 4, 5, 6, 7, 8},
 		Attributes: []*commontpb.KeyValue{
 			attr("event.name", "codex.api_request"),
-			attr("conversation.id", "conv-X"),
+			attr("conversation.id", "failed-session"),
 			attr("model", "gpt-5.1"),
-			attrInt("duration_ms", 555),
+			attrInt("duration_ms", 300),
+			attrInt("http.response.status_code", 500),
+			attr("error.message", "upstream failed"),
 		},
-	}, res, nil, nil, nil)
+	}, nil, nil, tracker, nil)
+	if !ok {
+		t.Fatal("failed request row was not inserted")
+	}
+	var duration int64
+	if err := repo.DB().QueryRowContext(ctx,
+		`SELECT duration_ms FROM codex_api_requests WHERE session_id = 'failed-session'`,
+	).Scan(&duration); err != nil {
+		t.Fatalf("read failed request: %v", err)
+	}
+	if duration != 300 {
+		t.Fatalf("failed request duration = %d, want 300", duration)
+	}
+	if _, _, found := tracker.lookupRequest(
+		spanIDFromLog(&logspb.LogRecord{SpanId: []byte{1, 2, 3, 4, 5, 6, 7, 8}}),
+		"failed-session", "gpt-5.1", when.Add(time.Second).UnixNano(), 10*time.Minute,
+	); found {
+		t.Fatal("failed request must not wait for completion")
+	}
+}
 
-	// 2. sse_event response.completed second
-	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
-		TimeUnixNano: uint64(1700000005) * 1e9,
+func TestDispatchCodexLog_SSECompletedPersistsAccountingAndFullDuration(t *testing.T) {
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	tracker := newCodexSpanTracker()
+	pricer := &recordingCodexPricer{}
+	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+		attr("service.name", "codex-cli"),
+	}}
+	spanID := []byte{1, 3, 5, 7, 9, 11, 13, 15}
+	base := time.Date(2026, 7, 17, 14, 0, 0, 0, time.Local)
+
+	if ok := dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		TimeUnixNano:         uint64(base.Add(300 * time.Millisecond).UnixNano()),
+		ObservedTimeUnixNano: uint64(base.Add(300 * time.Millisecond).UnixNano()),
+		SpanId:               spanID,
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", "completion-session"),
+			attr("model", "gpt-5.1"),
+			attrInt("duration_ms", 300),
+			attrInt("http.response.status_code", 200),
+		},
+	}, res, nil, tracker, pricer); !ok {
+		t.Fatal("request insert failed")
+	}
+
+	if ok := dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		TimeUnixNano:         uint64(base.Add(2300 * time.Millisecond).UnixNano()),
+		ObservedTimeUnixNano: uint64(base.Add(2300 * time.Millisecond).UnixNano()),
+		SpanId:               spanID,
 		Attributes: []*commontpb.KeyValue{
 			attr("event.name", "codex.sse_event"),
 			attr("event.kind", "response.completed"),
-			attr("conversation.id", "conv-X"),
+			attr("conversation.id", "completion-session"),
 			attr("model", "gpt-5.1"),
-			attrInt("input_token_count", 1234),
-			attrInt("output_token_count", 567),
-			attrInt("cached_token_count", 100),
-			attrInt("reasoning_token_count", 42),
-			attrInt("tool_token_count", 13),
+			attrInt("input_token_count", 100),
+			attrInt("cached_token_count", 40),
+			attrInt("cache_write_token_count", 20),
+			attrInt("output_token_count", 10),
+			attrInt("reasoning_token_count", 5),
+			attrInt("tool_token_count", 110),
+			attrInt("ttft_ms", 250),
 		},
-	}, res, nil, nil, nil)
+	}, res, nil, tracker, pricer); !ok {
+		t.Fatal("completion update failed")
+	}
 
-	var n, input, total int64
-	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_api_requests WHERE input_tokens > 0`).Scan(&n)
-	if n != 1 {
-		t.Fatalf("expected 1 tokenised row, got %d", n)
+	var input, output, cacheRead, cacheCreate, reasoning, total, duration, ttft int64
+	if err := repo.DB().QueryRowContext(ctx, `
+		SELECT input_tokens, output_tokens, cache_read_tokens,
+		       cache_creation_tokens, reasoning_tokens, total_tokens,
+		       duration_ms, ttft_ms
+		FROM codex_api_requests WHERE session_id = 'completion-session'`,
+	).Scan(&input, &output, &cacheRead, &cacheCreate, &reasoning, &total, &duration, &ttft); err != nil {
+		t.Fatalf("read request: %v", err)
 	}
-	repo.DB().QueryRowContext(ctx, `SELECT input_tokens, total_tokens FROM codex_api_requests`).Scan(&input, &total)
-	if input != 1234 {
-		t.Fatalf("input_tokens not updated, got %d", input)
+	if input != 100 || output != 10 || cacheRead != 40 || cacheCreate != 20 ||
+		reasoning != 5 || total != 110 || duration != 2300 || ttft != 250 {
+		t.Fatalf("wrong completion row: in=%d out=%d read=%d create=%d reasoning=%d total=%d duration=%d ttft=%d",
+			input, output, cacheRead, cacheCreate, reasoning, total, duration, ttft)
 	}
-	if total != 13 {
-		t.Fatalf("total_tokens not updated, got %d", total)
+	if pricer.call != (codexPricingCall{
+		model: "gpt-5.1", input: 40, output: 10, cacheRead: 40, cacheCreate: 20,
+	}) {
+		t.Fatalf("wrong pricing arguments: %+v", pricer.call)
+	}
+	var aggregateCreate int64
+	if err := repo.DB().QueryRowContext(ctx, `
+		SELECT cache_creation_tokens FROM codex_daily_model_agg
+		WHERE date = ? AND model = 'gpt-5.1'`,
+		base.Format("2006-01-02"),
+	).Scan(&aggregateCreate); err != nil {
+		t.Fatalf("read aggregate: %v", err)
+	}
+	if aggregateCreate != 20 {
+		t.Fatalf("aggregate cache creation = %d, want 20", aggregateCreate)
+	}
+	if _, _, found := tracker.lookupRequest(
+		spanIDFromLog(&logspb.LogRecord{SpanId: spanID}),
+		"completion-session", "gpt-5.1",
+		base.Add(2400*time.Millisecond).UnixNano(), 10*time.Minute,
+	); found {
+		t.Fatal("successful completion did not remove tracker entry")
+	}
+}
+
+func TestDispatchCodexLog_SSEDatabaseFailureRetainsTracker(t *testing.T) {
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	tracker := newCodexSpanTracker()
+	span := []byte{8, 6, 4, 2, 1, 3, 5, 7}
+	base := time.Date(2026, 7, 17, 14, 10, 0, 0, time.UTC)
+
+	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		ObservedTimeUnixNano: uint64(base.Add(100 * time.Millisecond).UnixNano()),
+		SpanId:               span,
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", "db-failure-session"),
+			attr("model", "gpt-5.1"),
+			attrInt("duration_ms", 100),
+			attrInt("http.response.status_code", 200),
+		},
+	}, nil, nil, tracker, nil)
+	if err := repo.DB().Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	ok := dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		ObservedTimeUnixNano: uint64(base.Add(time.Second).UnixNano()),
+		SpanId:               span,
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.sse_event"),
+			attr("event.kind", "response.completed"),
+			attr("conversation.id", "db-failure-session"),
+			attr("model", "gpt-5.1"),
+			attrInt("input_token_count", 10),
+			attrInt("output_token_count", 1),
+		},
+	}, nil, nil, tracker, nil)
+	if ok {
+		t.Fatal("database failure reported success")
+	}
+	if _, _, found := tracker.lookupRequest(
+		spanIDFromLog(&logspb.LogRecord{SpanId: span}),
+		"db-failure-session", "gpt-5.1",
+		base.Add(1100*time.Millisecond).UnixNano(), 10*time.Minute,
+	); !found {
+		t.Fatal("database failure removed retryable tracker state")
 	}
 }
 
@@ -135,6 +389,14 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 		},
 	}, res, nil, tracker, nil)
 
+	trackerSpan := spanIDFromLog(&logspb.LogRecord{SpanId: spanID})
+	if _, _, found := tracker.lookupRequest(
+		trackerSpan, "conv-duration", "gpt-5.5",
+		start.Add(2450*time.Millisecond).UnixNano(), 10*time.Minute,
+	); !found {
+		t.Fatal("websocket completion consumed state before structured SSE completion")
+	}
+
 	var rows, duration int64
 	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM codex_api_requests`).Scan(&rows, &duration); err != nil {
 		t.Fatalf("duration row query: %v", err)
@@ -159,8 +421,14 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM codex_api_requests`).Scan(&rows, &input, &output, &duration); err != nil {
 		t.Fatalf("merged row query: %v", err)
 	}
-	if rows != 1 || input != 1234 || output != 567 || duration != 2408 {
-		t.Fatalf("expected SSE tokens to merge into duration row; rows=%d input=%d output=%d duration=%d", rows, input, output, duration)
+	if rows != 1 || input != 1234 || output != 567 || duration != 2500 {
+		t.Fatalf("expected SSE to finalize the row at 2500ms; rows=%d input=%d output=%d duration=%d", rows, input, output, duration)
+	}
+	if _, _, found := tracker.lookupRequest(
+		trackerSpan, "conv-duration", "gpt-5.5",
+		start.Add(2600*time.Millisecond).UnixNano(), 10*time.Minute,
+	); found {
+		t.Fatal("structured SSE completion did not remove state")
 	}
 }
 
@@ -201,6 +469,13 @@ func TestDispatchCodexLog_WebsocketEventNameCanComeFromBody(t *testing.T) {
 	}
 	if rows != 1 || duration != 4200 {
 		t.Fatalf("expected body-derived websocket duration row with 4200ms; rows=%d duration=%d", rows, duration)
+	}
+	if _, _, found := tracker.lookupRequest(
+		spanIDFromLog(&logspb.LogRecord{SpanId: spanID}),
+		"conv-body-kind", "gpt-5.5",
+		start.Add(4300*time.Millisecond).UnixNano(), 10*time.Minute,
+	); !found {
+		t.Fatal("body-derived websocket completion consumed tracker state")
 	}
 }
 

@@ -95,15 +95,22 @@ func (r *Repository) getCodexAPIRequestByID(ctx context.Context, id int64) (*Cod
 	return out, nil
 }
 
-// UpdateCodexAPIRequestTokens looks for the newest codex_api_requests row
-// matching (session_id, model) within the last 5 minutes that still has zero
-// tokens. If found, updates its token columns and adds the same tokens to the
-// matching codex_daily_model_agg row (date keyed off the *row's* timestamp so
-// midnight drift between codex.api_request and codex.sse_event lands on the
-// correct day). Otherwise inserts a new token-only row via InsertCodexAPIRequest,
-// which counts the request itself.
+// UpdateCodexAPIRequestTokens finalizes a Codex request row with completion
+// accounting. When u.RequestRowID > 0 it targets that exact row first (and
+// only that row), otherwise it falls back to the newest zero-token row matching
+// (session_id, model) within the last 5 minutes. The matched row is updated with
+// token columns, cost, full duration, and direct TTFT, and the same deltas are
+// added to codex_daily_model_agg (date keyed off the *row's* timestamp so
+// midnight drift lands on the correct day, request count unchanged).
 //
-// Returns true if an UPDATE happened, false if a fallback INSERT happened.
+// An exact row that already carries token data is treated as already-finalized:
+// the transaction commits as a no-op and returns true without re-applying deltas.
+// If no pending row exists at all, a token-only fallback row is inserted via
+// InsertCodexAPIRequest (which bumps request_count) and the method returns false.
+//
+// Returns true for an exact/fallback UPDATE or an idempotent exact-row no-op,
+// and false for the fallback INSERT. Either value lets the receiver drop the
+// matched in-memory tracker state.
 func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTokenUpdate) (bool, error) {
 	cutoff := u.Timestamp.Unix() - 300
 
@@ -114,36 +121,63 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	defer tx.Rollback()
 
 	var rowID, rowTs int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, timestamp FROM codex_api_requests
-		WHERE session_id = ? AND model = ?
-		  AND input_tokens = 0 AND output_tokens = 0
-		  AND timestamp >= ?
-		ORDER BY id DESC LIMIT 1`,
-		u.SessionID, u.Model, cutoff,
-	).Scan(&rowID, &rowTs)
+	if u.RequestRowID > 0 {
+		var input, output, cacheRead, cacheCreate, reasoning, total int64
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, timestamp, input_tokens, output_tokens, cache_read_tokens,
+			       cache_creation_tokens, reasoning_tokens, total_tokens
+			FROM codex_api_requests
+			WHERE id = ? AND session_id = ? AND model = ?`,
+			u.RequestRowID, u.SessionID, u.Model,
+		).Scan(&rowID, &rowTs, &input, &output, &cacheRead, &cacheCreate, &reasoning, &total)
+		if err == nil && (input != 0 || output != 0 || cacheRead != 0 ||
+			cacheCreate != 0 || reasoning != 0 || total != 0) {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return false, fmt.Errorf("commit idempotent codex update: %w", commitErr)
+			}
+			return true, nil
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return false, fmt.Errorf("lookup exact codex row: %w", err)
+		}
+		if err == sql.ErrNoRows {
+			rowID = 0
+			rowTs = 0
+		}
+	}
+
+	if rowID == 0 {
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, timestamp FROM codex_api_requests
+			WHERE session_id = ? AND model = ?
+			  AND input_tokens = 0 AND output_tokens = 0
+			  AND timestamp >= ?
+			ORDER BY id DESC LIMIT 1`,
+			u.SessionID, u.Model, cutoff,
+		).Scan(&rowID, &rowTs)
+	}
 
 	if err == sql.ErrNoRows {
-		// No pending row → commit empty tx and fall back to InsertCodexAPIRequest,
-		// which has its own transaction and bumps request_count.
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit empty codex update tx: %w", err)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return false, fmt.Errorf("commit empty codex update tx: %w", commitErr)
 		}
-		_, ierr := r.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
-			Timestamp:       u.Timestamp,
-			SessionID:       u.SessionID,
-			Model:           u.Model,
-			InputTokens:     u.InputTokens,
-			OutputTokens:    u.OutputTokens,
-			CacheReadTokens: u.CacheReadTokens,
-			ReasoningTokens: u.ReasoningTokens,
-			TotalTokens:     u.TotalTokens,
-			CostUSD:         u.CostUSD,
-			DurationMs:      u.DurationMs,
-			EventName:       "codex.sse_event:response.completed",
+		_, insertErr := r.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
+			Timestamp:           u.Timestamp,
+			SessionID:           u.SessionID,
+			Model:               u.Model,
+			InputTokens:         u.InputTokens,
+			OutputTokens:        u.OutputTokens,
+			CacheReadTokens:     u.CacheReadTokens,
+			CacheCreationTokens: u.CacheCreationTokens,
+			ReasoningTokens:     u.ReasoningTokens,
+			TotalTokens:         u.TotalTokens,
+			CostUSD:             u.CostUSD,
+			DurationMs:          u.DurationMs,
+			TTFTMs:              u.TTFTMs,
+			EventName:           "codex.sse_event:response.completed",
 		})
-		if ierr != nil {
-			return false, ierr
+		if insertErr != nil {
+			return false, insertErr
 		}
 		return false, nil
 	}
@@ -154,12 +188,17 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE codex_api_requests
 		SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-		    reasoning_tokens = ?, total_tokens = ?, cost_usd = ?,
-		    duration_ms = CASE WHEN duration_ms = 0 AND ? > 0 THEN ? ELSE duration_ms END
+		    cache_creation_tokens = ?, reasoning_tokens = ?, total_tokens = ?,
+		    cost_usd = ?,
+		    duration_ms = CASE WHEN ? > 0 THEN ? ELSE duration_ms END,
+		    ttft_ms = CASE WHEN ? > 0 THEN ? ELSE ttft_ms END
 		WHERE id = ?`,
 		u.InputTokens, u.OutputTokens, u.CacheReadTokens,
-		u.ReasoningTokens, u.TotalTokens, costToInt64(u.CostUSD),
-		u.DurationMs, u.DurationMs, rowID,
+		u.CacheCreationTokens, u.ReasoningTokens, u.TotalTokens,
+		costToInt64(u.CostUSD),
+		u.DurationMs, u.DurationMs,
+		u.TTFTMs, u.TTFTMs,
+		rowID,
 	); err != nil {
 		return false, fmt.Errorf("update codex tokens: %w", err)
 	}
@@ -167,9 +206,8 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	dateKey := time.Unix(rowTs, 0).Local().Format("2006-01-02")
 	if _, err := tx.StmtContext(ctx, r.stmtUpsCodexAggToks).ExecContext(ctx,
 		dateKey, u.Model,
-		u.InputTokens, u.OutputTokens, u.CacheReadTokens,
-		u.ReasoningTokens, u.TotalTokens,
-		costToInt64(u.CostUSD),
+		u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens,
+		u.ReasoningTokens, u.TotalTokens, costToInt64(u.CostUSD),
 	); err != nil {
 		return false, fmt.Errorf("upsert codex agg tokens: %w", err)
 	}
@@ -218,13 +256,50 @@ func (r *Repository) InsertCodexToolResult(ctx context.Context, e *CodexEvent) e
 	return err
 }
 
-// UpdateCodexRequestDurationBySession sets duration_ms on the most recent
-// codex_api_requests row matching (session_id, model) within 10 minutes of ts
-// that has duration_ms = 0.
-func (r *Repository) UpdateCodexRequestDurationBySession(ctx context.Context, sessionID, model string, ts time.Time, durationMs int64) (bool, error) {
+// UpdateCodexRequestDuration sets duration_ms for a Codex request row. When
+// requestRowID > 0 it targets that exact (id, session_id, model) row first,
+// replacing duration only when it is still zero; a positive existing duration
+// is treated as authoritative and left untouched. If no exact row matches it
+// falls back to the newest zero-duration row for (session_id, model) within 10
+// minutes of ts. Returns true when an exact identity was handled (updated or
+// already authoritative) or a fallback row was updated; false only for a genuine
+// no-match, which lets the caller decide to insert a duration-only row.
+func (r *Repository) UpdateCodexRequestDuration(
+	ctx context.Context,
+	requestRowID int64,
+	sessionID, model string,
+	ts time.Time,
+	durationMs int64,
+) (bool, error) {
 	if sessionID == "" || model == "" || durationMs <= 0 {
 		return false, nil
 	}
+	if requestRowID > 0 {
+		res, err := r.db.ExecContext(ctx, `
+			UPDATE codex_api_requests
+			SET duration_ms = ?
+			WHERE id = ? AND session_id = ? AND model = ? AND duration_ms = 0`,
+			durationMs, requestRowID, sessionID, model,
+		)
+		if err != nil {
+			return false, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return true, nil
+		}
+		var exists int
+		if err := r.db.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM codex_api_requests
+				WHERE id = ? AND session_id = ? AND model = ?
+			)`, requestRowID, sessionID, model).Scan(&exists); err != nil {
+			return false, err
+		}
+		if exists == 1 {
+			return true, nil
+		}
+	}
+
 	cutoff := ts.Unix() - 600
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE codex_api_requests
@@ -245,12 +320,48 @@ func (r *Repository) UpdateCodexRequestDurationBySession(ctx context.Context, se
 	return n > 0, nil
 }
 
-// UpdateCodexRequestTTFT sets ttft_ms on the most recent codex_api_requests
-// row matching (session_id, model) within 10 minutes of ts that has ttft_ms = 0.
-func (r *Repository) UpdateCodexRequestTTFT(ctx context.Context, sessionID, model string, ts time.Time, ttftMs int64) error {
+// UpdateCodexRequestTTFT sets ttft_ms for a Codex request row. When
+// requestRowID > 0 it targets that exact (id, session_id, model) row first,
+// filling TTFT only when it is zero/null; a positive existing TTFT is
+// authoritative and left untouched. Otherwise it falls back to the newest
+// zero/null-TTFT row for (session_id, model) within 10 minutes of ts.
+func (r *Repository) UpdateCodexRequestTTFT(
+	ctx context.Context,
+	requestRowID int64,
+	sessionID, model string,
+	ts time.Time,
+	ttftMs int64,
+) error {
 	if sessionID == "" || model == "" || ttftMs <= 0 {
 		return nil
 	}
+	if requestRowID > 0 {
+		res, err := r.db.ExecContext(ctx, `
+			UPDATE codex_api_requests
+			SET ttft_ms = ?
+			WHERE id = ? AND session_id = ? AND model = ?
+			  AND (ttft_ms = 0 OR ttft_ms IS NULL)`,
+			ttftMs, requestRowID, sessionID, model,
+		)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+		var exists int
+		if err := r.db.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM codex_api_requests
+				WHERE id = ? AND session_id = ? AND model = ?
+			)`, requestRowID, sessionID, model).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 1 {
+			return nil
+		}
+	}
+
 	cutoff := ts.Unix() - 600
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE codex_api_requests

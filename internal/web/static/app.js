@@ -121,16 +121,12 @@ function syncSourceTabsUI() {
     document.querySelectorAll('.source-tab').forEach(btn => {
         btn.classList.toggle('is-active', btn.dataset.source === state.source);
     });
-    // Hide Cache Create header cells for sources that don't have it (Codex).
-    // Data rows are handled at render time (they skip the <td> entirely).
-    const hide = state.source === 'codex';
     document.querySelectorAll('.col-cache-create').forEach(el => {
-        el.style.display = hide ? 'none' : '';
+        el.style.display = '';
     });
-    // Adjust Input colspan to match: 3 (Claude) or 2 (Codex — no Cache Create).
     document.querySelectorAll('.th-group').forEach(el => {
         if (el.textContent.trim() === 'Input') {
-            el.setAttribute('colspan', hide ? '2' : '3');
+            el.setAttribute('colspan', '3');
         }
     });
 }

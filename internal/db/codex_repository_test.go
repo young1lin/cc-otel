@@ -107,14 +107,18 @@ func TestUpdateCodexAPIRequestTokens_UpdatesNewestZeroTokenRow(t *testing.T) {
 	}
 
 	updated, err := repo.UpdateCodexAPIRequestTokens(ctx, &CodexTokenUpdate{
-		SessionID:       "sess-A",
-		Model:           "gpt-5.1",
-		Timestamp:       t0.Add(3 * time.Second),
-		InputTokens:     1000,
-		OutputTokens:    200,
-		CacheReadTokens: 50,
-		ReasoningTokens: 20,
-		TotalTokens:     1200,
+		SessionID:           "sess-A",
+		Model:               "gpt-5.1",
+		Timestamp:           t0.Add(3 * time.Second),
+		InputTokens:         1000,
+		OutputTokens:        200,
+		CacheReadTokens:     50,
+		CacheCreationTokens: 25,
+		ReasoningTokens:     20,
+		TotalTokens:         1200,
+		CostUSD:             0.125,
+		DurationMs:          2300,
+		TTFTMs:              250,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -138,6 +142,23 @@ func TestUpdateCodexAPIRequestTokens_UpdatesNewestZeroTokenRow(t *testing.T) {
 	repo.db.QueryRowContext(ctx, `SELECT id   FROM codex_api_requests WHERE session_id='sess-A' AND input_tokens > 0`).Scan(&tokenisedID)
 	if maxID != tokenisedID {
 		t.Fatalf("expected newest row %d to be tokenised, but row %d was tokenised", maxID, tokenisedID)
+	}
+
+	var input, output, cacheRead, cacheCreate, reasoning, total, duration, ttft int64
+	var costUnits int64
+	err = repo.db.QueryRowContext(ctx, `
+		SELECT input_tokens, output_tokens, cache_read_tokens,
+		       cache_creation_tokens, reasoning_tokens, total_tokens,
+		       cost_usd, duration_ms, ttft_ms
+		FROM codex_api_requests WHERE id = ?`, tokenisedID,
+	).Scan(&input, &output, &cacheRead, &cacheCreate, &reasoning, &total, &costUnits, &duration, &ttft)
+	if err != nil {
+		t.Fatalf("read tokenised row: %v", err)
+	}
+	if input != 1000 || output != 200 || cacheRead != 50 || cacheCreate != 25 ||
+		reasoning != 20 || total != 1200 || duration != 2300 || ttft != 250 {
+		t.Fatalf("unexpected tokenised row: in=%d out=%d read=%d create=%d reasoning=%d total=%d duration=%d ttft=%d",
+			input, output, cacheRead, cacheCreate, reasoning, total, duration, ttft)
 	}
 }
 
@@ -209,16 +230,21 @@ func TestCodexSubEvent_Inserts(t *testing.T) {
 }
 
 // readCodexAgg fetches the agg row for (date, model). Returns false if missing.
-func readCodexAgg(t *testing.T, repo *Repository, date, model string) (input, output, cacheRead, reasoning, totalTokens, count int64, ok bool) {
+func readCodexAgg(t *testing.T, repo *Repository, date, model string) (
+	input, output, cacheRead, cacheCreate, reasoning, totalTokens, count int64,
+	ok bool,
+) {
 	t.Helper()
 	row := repo.db.QueryRow(`
 		SELECT input_tokens, output_tokens, cache_read_tokens,
-		       reasoning_tokens, total_tokens, request_count
+		       cache_creation_tokens, reasoning_tokens, total_tokens, request_count
 		FROM codex_daily_model_agg WHERE date = ? AND model = ?`, date, model)
-	if err := row.Scan(&input, &output, &cacheRead, &reasoning, &totalTokens, &count); err != nil {
-		return 0, 0, 0, 0, 0, 0, false
+	if err := row.Scan(
+		&input, &output, &cacheRead, &cacheCreate, &reasoning, &totalTokens, &count,
+	); err != nil {
+		return 0, 0, 0, 0, 0, 0, 0, false
 	}
-	return input, output, cacheRead, reasoning, totalTokens, count, true
+	return input, output, cacheRead, cacheCreate, reasoning, totalTokens, count, true
 }
 
 func TestCodexAgg_InsertAndUpdate_PopulatesAggExactlyOnce(t *testing.T) {
@@ -239,25 +265,26 @@ func TestCodexAgg_InsertAndUpdate_PopulatesAggExactlyOnce(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	in, out, cache, reason, totalTokens, count, ok := readCodexAgg(t, repo, dateKey, "gpt-5.1")
+	in, out, cache, cacheCreate, reason, totalTokens, count, ok := readCodexAgg(t, repo, dateKey, "gpt-5.1")
 	if !ok {
 		t.Fatalf("expected agg row after insert")
 	}
-	if in != 0 || out != 0 || cache != 0 || reason != 0 || totalTokens != 0 || count != 1 {
-		t.Fatalf("after insert: tokens should be 0 and count=1, got in=%d out=%d cache=%d reasoning=%d total=%d count=%d",
-			in, out, cache, reason, totalTokens, count)
+	if in != 0 || out != 0 || cache != 0 || cacheCreate != 0 || reason != 0 || totalTokens != 0 || count != 1 {
+		t.Fatalf("after insert: tokens should be 0 and count=1, got in=%d out=%d cache=%d create=%d reasoning=%d total=%d count=%d",
+			in, out, cache, cacheCreate, reason, totalTokens, count)
 	}
 
 	// Step 2: codex.sse_event(response.completed) → UPDATE the row, add tokens to agg, count unchanged.
 	updated, err := repo.UpdateCodexAPIRequestTokens(ctx, &CodexTokenUpdate{
-		SessionID:       "sess-1",
-		Model:           "gpt-5.1",
-		Timestamp:       day.Add(2 * time.Second),
-		InputTokens:     1000,
-		OutputTokens:    200,
-		CacheReadTokens: 50,
-		ReasoningTokens: 20,
-		TotalTokens:     1200,
+		SessionID:           "sess-1",
+		Model:               "gpt-5.1",
+		Timestamp:           day.Add(2 * time.Second),
+		InputTokens:         1000,
+		OutputTokens:        200,
+		CacheReadTokens:     50,
+		CacheCreationTokens: 25,
+		ReasoningTokens:     20,
+		TotalTokens:         1200,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -266,10 +293,81 @@ func TestCodexAgg_InsertAndUpdate_PopulatesAggExactlyOnce(t *testing.T) {
 		t.Fatal("expected UPDATE branch (matching pending row exists)")
 	}
 
-	in, out, cache, reason, totalTokens, count, _ = readCodexAgg(t, repo, dateKey, "gpt-5.1")
-	if in != 1000 || out != 200 || cache != 50 || reason != 20 || totalTokens != 1200 || count != 1 {
-		t.Fatalf("after update: expected tokens=(1000,200,50,20,1200) count=1; got in=%d out=%d cache=%d reasoning=%d total=%d count=%d",
-			in, out, cache, reason, totalTokens, count)
+	in, out, cache, cacheCreate, reason, totalTokens, count, _ = readCodexAgg(t, repo, dateKey, "gpt-5.1")
+	if in != 1000 || out != 200 || cache != 50 || cacheCreate != 25 || reason != 20 || totalTokens != 1200 || count != 1 {
+		t.Fatalf("after update: expected tokens=(1000,200,50,25,20,1200) count=1; got in=%d out=%d cache=%d create=%d reasoning=%d total=%d count=%d",
+			in, out, cache, cacheCreate, reason, totalTokens, count)
+	}
+}
+
+func TestUpdateCodexAPIRequestTokens_ExactRowIsIdempotent(t *testing.T) {
+	repo := newCodexTestRepo(t)
+	ctx := context.Background()
+	day := time.Date(2026, 7, 17, 10, 0, 0, 0, time.Local)
+
+	olderID, err := repo.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
+		Timestamp: day, SessionID: "same-session", Model: "gpt-5.1",
+	})
+	if err != nil {
+		t.Fatalf("insert older: %v", err)
+	}
+	newerID, err := repo.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
+		Timestamp: day.Add(time.Second), SessionID: "same-session", Model: "gpt-5.1",
+	})
+	if err != nil {
+		t.Fatalf("insert newer: %v", err)
+	}
+
+	upd := &CodexTokenUpdate{
+		RequestRowID: olderID, SessionID: "same-session", Model: "gpt-5.1",
+		Timestamp:   day.Add(2 * time.Second),
+		InputTokens: 100, OutputTokens: 10, CacheReadTokens: 40,
+		CacheCreationTokens: 20, ReasoningTokens: 5, TotalTokens: 110,
+		CostUSD: 0.01, DurationMs: 2300, TTFTMs: 250,
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		updated, updateErr := repo.UpdateCodexAPIRequestTokens(ctx, upd)
+		if updateErr != nil {
+			t.Fatalf("attempt %d: %v", attempt, updateErr)
+		}
+		if !updated {
+			t.Fatalf("attempt %d used fallback insert", attempt)
+		}
+	}
+
+	var olderInput, olderCreate, newerInput int64
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT input_tokens, cache_creation_tokens FROM codex_api_requests WHERE id = ?`,
+		olderID,
+	).Scan(&olderInput, &olderCreate); err != nil {
+		t.Fatalf("read older: %v", err)
+	}
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT input_tokens FROM codex_api_requests WHERE id = ?`, newerID,
+	).Scan(&newerInput); err != nil {
+		t.Fatalf("read newer: %v", err)
+	}
+	if olderInput != 100 || olderCreate != 20 || newerInput != 0 {
+		t.Fatalf("wrong exact-row result: older=(%d,%d) newer=%d",
+			olderInput, olderCreate, newerInput)
+	}
+
+	var rows int64
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM codex_api_requests WHERE session_id = 'same-session'`,
+	).Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("duplicate fallback row inserted: rows=%d", rows)
+	}
+
+	_, _, _, cacheCreate, _, _, count, ok := readCodexAgg(
+		t, repo, day.Format("2006-01-02"), "gpt-5.1",
+	)
+	if !ok || cacheCreate != 20 || count != 2 {
+		t.Fatalf("aggregate applied more than once: create=%d count=%d ok=%v",
+			cacheCreate, count, ok)
 	}
 }
 
@@ -282,21 +380,105 @@ func TestCodexAgg_FallbackInsert_CountsOnce(t *testing.T) {
 
 	// No prior codex.api_request → fallback INSERT path.
 	if _, err := repo.UpdateCodexAPIRequestTokens(ctx, &CodexTokenUpdate{
-		SessionID:    "sess-fallback",
-		Model:        "gpt-5.1",
-		Timestamp:    day,
-		InputTokens:  500,
-		OutputTokens: 100,
+		SessionID:           "sess-fallback",
+		Model:               "gpt-5.1",
+		Timestamp:           day,
+		InputTokens:         500,
+		OutputTokens:        100,
+		CacheReadTokens:     40,
+		CacheCreationTokens: 20,
+		TTFTMs:              250,
 	}); err != nil {
 		t.Fatalf("update fallback: %v", err)
 	}
 
-	in, out, _, _, _, count, ok := readCodexAgg(t, repo, dateKey, "gpt-5.1")
-	if !ok {
-		t.Fatal("expected agg row after fallback insert")
+	in, out, cacheRead, cacheCreate, _, _, count, ok := readCodexAgg(
+		t, repo, dateKey, "gpt-5.1",
+	)
+	if !ok || in != 500 || out != 100 || cacheRead != 40 ||
+		cacheCreate != 20 || count != 1 {
+		t.Fatalf("fallback aggregate: in=%d out=%d read=%d create=%d count=%d ok=%v",
+			in, out, cacheRead, cacheCreate, count, ok)
 	}
-	if in != 500 || out != 100 || count != 1 {
-		t.Fatalf("fallback: expected (500,100,count=1); got (%d,%d,count=%d)", in, out, count)
+	var rowCreate, rowTTFT int64
+	if err := repo.db.QueryRowContext(ctx, `
+		SELECT cache_creation_tokens, ttft_ms
+		FROM codex_api_requests WHERE session_id = 'sess-fallback'`,
+	).Scan(&rowCreate, &rowTTFT); err != nil {
+		t.Fatalf("read fallback request: %v", err)
+	}
+	if rowCreate != 20 || rowTTFT != 250 {
+		t.Fatalf("fallback request lost completion fields: create=%d ttft=%d",
+			rowCreate, rowTTFT)
+	}
+}
+
+func TestCodexTimingHelpers_TargetExactRow(t *testing.T) {
+	repo := newCodexTestRepo(t)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 17, 11, 0, 0, 0, time.Local)
+
+	olderID, err := repo.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
+		Timestamp: now, SessionID: "timing-session", Model: "gpt-5.1",
+	})
+	if err != nil {
+		t.Fatalf("insert older: %v", err)
+	}
+	newerID, err := repo.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
+		Timestamp: now.Add(time.Second), SessionID: "timing-session", Model: "gpt-5.1",
+	})
+	if err != nil {
+		t.Fatalf("insert newer: %v", err)
+	}
+
+	updated, err := repo.UpdateCodexRequestDuration(
+		ctx, olderID, "timing-session", "gpt-5.1", now.Add(2*time.Second), 2300,
+	)
+	if err != nil || !updated {
+		t.Fatalf("duration update: updated=%v err=%v", updated, err)
+	}
+	if err := repo.UpdateCodexRequestTTFT(
+		ctx, olderID, "timing-session", "gpt-5.1", now.Add(2*time.Second), 250,
+	); err != nil {
+		t.Fatalf("ttft update: %v", err)
+	}
+
+	var olderDuration, olderTTFT, newerDuration, newerTTFT int64
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT duration_ms, ttft_ms FROM codex_api_requests WHERE id = ?`, olderID,
+	).Scan(&olderDuration, &olderTTFT); err != nil {
+		t.Fatalf("read older: %v", err)
+	}
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT duration_ms, ttft_ms FROM codex_api_requests WHERE id = ?`, newerID,
+	).Scan(&newerDuration, &newerTTFT); err != nil {
+		t.Fatalf("read newer: %v", err)
+	}
+	if olderDuration != 2300 || olderTTFT != 250 ||
+		newerDuration != 0 || newerTTFT != 0 {
+		t.Fatalf("wrong timing target: older=(%d,%d) newer=(%d,%d)",
+			olderDuration, olderTTFT, newerDuration, newerTTFT)
+	}
+
+	updated, err = repo.UpdateCodexRequestDuration(
+		ctx, olderID, "timing-session", "gpt-5.1", now.Add(3*time.Second), 9999,
+	)
+	if err != nil || !updated {
+		t.Fatalf("positive exact duration should be handled: updated=%v err=%v", updated, err)
+	}
+	if err := repo.UpdateCodexRequestTTFT(
+		ctx, olderID, "timing-session", "gpt-5.1", now.Add(3*time.Second), 9999,
+	); err != nil {
+		t.Fatalf("positive exact ttft should be handled: %v", err)
+	}
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT duration_ms, ttft_ms FROM codex_api_requests WHERE id = ?`, olderID,
+	).Scan(&olderDuration, &olderTTFT); err != nil {
+		t.Fatalf("reread older: %v", err)
+	}
+	if olderDuration != 2300 || olderTTFT != 250 {
+		t.Fatalf("fallback overwrote authoritative values: duration=%d ttft=%d",
+			olderDuration, olderTTFT)
 	}
 }
 
@@ -327,7 +509,7 @@ func TestCodexAgg_TwoRequestsSameDay_AccumulateCorrectly(t *testing.T) {
 		}
 	}
 
-	in, out, _, _, _, count, _ := readCodexAgg(t, repo, dateKey, "gpt-5.1")
+	in, out, _, _, _, _, count, _ := readCodexAgg(t, repo, dateKey, "gpt-5.1")
 	if in != 200 || out != 60 || count != 2 {
 		t.Fatalf("expected (200,60,count=2); got (%d,%d,count=%d)", in, out, count)
 	}
