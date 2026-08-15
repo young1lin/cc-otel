@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/young1lin/cc-otel/internal/db"
 )
 
 type aggKey struct {
@@ -43,7 +45,7 @@ func addAggregateDelta(location *time.Location, row Row, claude map[aggKey]*clau
 	// so imported rows without it fold into Claude Code, not a "" group.
 	serviceName := stringValue(row.Values["service_name"])
 	if strings.TrimSpace(serviceName) == "" {
-		serviceName = "claude-code"
+		serviceName = db.DefaultServiceName
 	}
 	key := aggKey{
 		date:        time.Unix(timestamp, 0).In(location).Format("2006-01-02"),

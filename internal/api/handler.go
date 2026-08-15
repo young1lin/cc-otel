@@ -308,9 +308,10 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.OTELPort != 0 {
 			otelPort = h.cfg.OTELPort
 		}
-		if h.cfg.OTLPHTTPPort != 0 {
-			otlpHTTPPort = h.cfg.OTLPHTTPPort
-		}
+		// 0 is an explicit disable (main binds nothing for it), so report it
+		// as-is rather than falling back to the default — the panel would
+		// otherwise claim 4318 is listening.
+		otlpHTTPPort = h.cfg.OTLPHTTPPort
 	}
 
 	dbOK := false
@@ -437,7 +438,7 @@ const perMtokFactor = 1_000_000.0
 
 // PricingCollection handles GET (list), POST (upsert), DELETE over model_pricing.
 // Prices are USD/Mtok on the wire and USD/token in storage, so POST divides by
-// perMtokFactor and GET multiplies back. Claude writes are rejected (400).
+// perMtokFactor and GET multiplies back.
 func (h *Handler) PricingCollection(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.pricingWriter == nil {

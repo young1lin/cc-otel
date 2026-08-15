@@ -58,9 +58,11 @@ func mapAISDKSpan(sp *tracepb.Span, attrs, resAttrs map[string]string) *logspb.L
 	// ASSUMPTION: the AI SDK reports inputTokens INCLUSIVE of cached tokens
 	// (OpenAI-compatible providers do), so uncached input is the remainder.
 	// It holds for DeepSeek and friends but has NOT been confirmed for every
-	// provider — Anthropic reports input_tokens exclusive of cache, and if the
-	// SDK passes that through untouched the subtraction below under-counts.
-	// The log line further down reports when that happens; see its comment.
+	// provider — Anthropic reports input_tokens exclusive of cache. When the
+	// remainder goes negative, the clamp below falls back to inputTotal, which
+	// is the correct uncached count under exclusive reporting (and, trivially,
+	// for a fully cached continuation under inclusive reporting); the warning
+	// flags the model once so onboarding can confirm the assumption.
 	inputTotal := pickAttrInt(attrs, resAttrs, "ai.usage.inputTokens", "gen_ai.usage.input_tokens")
 	cacheRead := pickAttrInt(attrs, resAttrs,
 		"ai.usage.inputTokenDetails.cacheReadTokens",
@@ -84,15 +86,17 @@ func mapAISDKSpan(sp *tracepb.Span, attrs, resAttrs map[string]string) *logspb.L
 		clamped = true
 	}
 
-	// The clamp firing means this provider reports input EXCLUSIVE of cache, so
-	// the subtraction above under-counts uncached input for it. That is a data
-	// correctness problem, so it is reported even with debug logging off — but
+	// A negative remainder means this provider reports input EXCLUSIVE of cache
+	// (or the request was fully cached). The clamp above already stores the
+	// correct uncached count for both cases, so this line is informational — it
+	// flags the model once so onboarding can confirm the inclusive assumption —
+	// not a data correctness alarm. Reported even with debug logging off, but
 	// only once per model, since it would otherwise repeat on every request.
 	if clamped {
 		if _, seen := aiSDKClampWarned.LoadOrStore(model, true); !seen {
 			log.Printf("ai-sdk usage: model=%s reports cache-EXCLUSIVE input (inputTokens=%d < cacheRead=%d + cacheWrite=%d); "+
-				"uncached input is being under-counted for this model. Set CC_OTEL_DEBUG_AISDK=1 for per-request detail.",
-				model, inputTotal, cacheRead, cacheWrite)
+				"uncached input is stored as inputTokens=%d, the correct value for exclusive reporting. Set CC_OTEL_DEBUG_AISDK=1 for per-request detail.",
+				model, inputTotal, cacheRead, cacheWrite, uncached)
 		}
 	}
 	// Per-request detail is opt-in: useful when onboarding a new client or

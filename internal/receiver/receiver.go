@@ -51,11 +51,23 @@ type logsServiceServer struct {
 	notifier     Notifier
 	pricer       Pricer
 	codexTracker *codexSpanTracker
+	dshTracker   *dshStepTracker
 }
 
 func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
 	shouldNotify := false
 	for _, rl := range req.ResourceLogs {
+		// DeepSeek Harness exports its whole session ledger, not Claude Code's
+		// event vocabulary, so it needs its own mapping before the Claude loop
+		// (see dsh.go). Routing is per ResourceLogs — one client, one resource —
+		// so a collector batching several clients into one request still lands
+		// each of them in its own path.
+		if resourceLogsIsDSH(rl) {
+			if s.handleDSHResourceLogs(ctx, rl) {
+				shouldNotify = true
+			}
+			continue
+		}
 		for _, sl := range rl.ScopeLogs {
 			for _, lr := range sl.LogRecords {
 				// Source routing: Codex CLI clients are tagged via OTLP Resource
@@ -152,7 +164,11 @@ type Receiver struct {
 // trust whatever cost the upstream sent (used by older tests that don't
 // care about pricing).
 func New(repo *db.Repository, cfg ModelResolver, notifier Notifier, pricer Pricer) *Receiver {
-	logs := &logsServiceServer{repo: repo, cfg: cfg, notifier: notifier, pricer: pricer, codexTracker: newCodexSpanTracker()}
+	logs := &logsServiceServer{
+		repo: repo, cfg: cfg, notifier: notifier, pricer: pricer,
+		codexTracker: newCodexSpanTracker(),
+		dshTracker:   newDSHStepTracker(),
+	}
 	return &Receiver{
 		logs:    logs,
 		metrics: &metricsServiceServer{repo: repo},
@@ -200,7 +216,7 @@ func parseEventFromOTLP(lr *logspb.LogRecord, resource *resourcepb.Resource) *db
 	// are treated as Claude Code — the historical default for this table.
 	serviceName := attrs["service.name"]
 	if serviceName == "" {
-		serviceName = "claude-code"
+		serviceName = db.DefaultServiceName
 	}
 
 	return &db.Event{

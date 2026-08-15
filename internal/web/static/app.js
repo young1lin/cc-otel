@@ -109,7 +109,11 @@ function closePopover(backdropEl) {
 
 // SSE + status modal are owned by js/sse.js (initSSE() in boot).
 
-// ── Source tabs (Claude Code | Codex) ──────────────────────────────────────
+// ── Source tabs (All Clients | Codex) ──────────────────────────────────────
+// "All Clients" is the merged non-Codex pool: claude-code, opencode, DSH,
+// gemini, … all normalized into the Claude Code event shape (state.source
+// stays 'claude'; only Codex's ledger is different enough to keep its own
+// tables and tab).
 function applySourceFromURL() {
     const sp = new URLSearchParams(location.search);
     const src = sp.get('source');

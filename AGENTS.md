@@ -1,1 +1,1 @@
-D:/goProject/cc-otel/.claude/CLAUDE.md
+.claude/CLAUDE.md

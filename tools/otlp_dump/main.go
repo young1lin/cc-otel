@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -206,7 +205,10 @@ func httpDumpHandler() http.Handler {
 
 func otlpDumpEndpoint(newReq func() proto.Message, handle func(proto.Message) proto.Message) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+		// Same body reading as the daemon's shim, so a client that works
+		// against cc-otel — gzip included, which DSH always sends — dumps here
+		// too instead of failing as "malformed".
+		body, err := receiver.ReadOTLPBody(w, r)
 		if err != nil {
 			http.Error(w, "cannot read body", http.StatusBadRequest)
 			return

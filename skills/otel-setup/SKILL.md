@@ -2,25 +2,33 @@
 name: otel-setup
 description: |
   Use when the user asks about setting up OTEL telemetry for Claude Code,
-  configuring cc-otel, troubleshooting telemetry data collection, or
-  understanding their token usage through the cc-otel dashboard.
+  Codex, opencode, or DeepSeek Harness (dsh); configuring cc-otel;
+  troubleshooting telemetry data collection; or understanding their token
+  usage through the cc-otel dashboard.
   Trigger with "set up telemetry", "configure otel", "token dashboard",
-  "cc-otel not working", "no data in dashboard".
+  "cc-otel not working", "no data in dashboard", "send opencode usage to
+  cc-otel", "dsh telemetry", "deepseek harness telemetry".
 ---
 
 # CC-OTEL Setup & Troubleshooting
 
 ## What is CC-OTEL
 
-CC-OTEL is a self-hosted OTLP gRPC receiver + Web dashboard for token usage and cost tracking.
-Default source is **Claude Code**; also supports **Codex** (see below).
+CC-OTEL is a self-hosted OTLP receiver (gRPC **and** HTTP) + Web dashboard for token usage and cost tracking.
+Default source is **Claude Code**; also supports **Codex**, **opencode**, and **DeepSeek Harness** (see below).
 
 Architecture:
 ```
-Claude Code ──OTLP gRPC(:4317)──> cc-otel ──> SQLite
-                                      |
-                                  Web UI <── Browser (localhost:8899)
+Claude Code ─┐
+Codex        ┴─OTLP gRPC(:4317)─┐
+                                ├─> cc-otel ──> SQLite
+opencode     ─┐                 |       |
+DeepSeek     ─┴─OTLP HTTP(:4318)┘   Web UI <── Browser (localhost:8899)
+Harness
 ```
+
+Both ports feed the same receiver, so cost recompute, attribution, dedup and live
+updates behave identically no matter which transport a client uses.
 
 ## Quick Setup
 
@@ -53,6 +61,11 @@ Add to `~/.claude/settings.json` under `"env"` (merge only, preserve other keys)
 3. **Did you restart Claude Code?** Env vars only load on startup.
 4. **Port conflict?** Check if another service uses :4317. Change via `cc-otel.yaml` → `otel_port`.
 
+For a non-Claude-Code source, the transport and endpoint form are the usual culprits —
+see the per-tool guide linked under [Other Tool Sources](#other-tool-sources). `/api/status`
+reports whether each receiver is actually listening (`otel_receiver_listening`,
+`otlp_http_receiver_listening`).
+
 ### Dashboard shows wrong model names
 
 Use `model_mapping` in `cc-otel.yaml` to map proxy model names to actual Claude models:
@@ -65,7 +78,18 @@ model_mapping:
 
 ### Cost shows $0
 
-Cost data comes from the `cost_usd` field in Claude Code's OTEL events. If your setup uses a proxy that doesn't pass through cost, the dashboard won't have cost data.
+Which answer applies depends on the source, because only **Claude Code on a Claude model** keeps its upstream-reported cost. Everything else is recomputed locally.
+
+- **Claude Code + a Claude model** — the number comes from Claude Code's own `cost_usd` field. A proxy that strips it leaves no cost data.
+- **Any other combination** (Codex, opencode, DSH, or Claude Code driven through a non-Claude model) — cc-otel computes cost from the local pricing table, so $0 means **no price is stored for that model**. Check it:
+
+  ```
+  GET /api/pricing/lookup?model=<your-model>
+  ```
+
+  A miss (`"found": false`) is the cause. Add the model in the Pricing Table modal (Server Status → Pricing Table), then click ↻ 重算历史 to backfill existing rows. Models the upstream catalog has not picked up yet — `glm-5.x` and similar recent releases — always need this.
+
+- **Claude models driven by opencode/DSH** additionally need a Claude price row you add yourself: the bundled seed intentionally contains no Claude entries.
 
 ### High DB size
 
@@ -92,9 +116,30 @@ CC-OTEL looks for `cc-otel.yaml` in order:
 
 ## Other Tool Sources
 
-cc-otel also receives telemetry from **Codex**.
-When the user asks about configuring it, read the corresponding guide in this folder:
+cc-otel also receives telemetry from **Codex**, **opencode**, and **DeepSeek Harness**.
+When the user asks about configuring one, read the corresponding guide in this folder:
 
-| Tool | Setup Guide |
-|------|-------------|
-| Codex | [`codex-setup.md`](codex-setup.md) |
+| Tool | Transport | Endpoint to configure | Setup Guide |
+|------|-----------|-----------------------|-------------|
+| Codex | OTLP gRPC | `http://localhost:4317` | [`codex-setup.md`](codex-setup.md) |
+| opencode | OTLP HTTP | `http://localhost:4318` (base url — SDK appends `/v1/traces`) | [`opencode-setup.md`](opencode-setup.md) |
+| DeepSeek Harness | OTLP HTTP | `http://localhost:4318/v1/logs` (full path) | [`dsh-setup.md`](dsh-setup.md) |
+
+The endpoint forms genuinely differ and are the most common setup mistake — opencode
+wants the **base** url because its SDK appends the signal path, while DSH wants the
+**complete** logs path. Swapping them yields a 404 or a silently dead exporter.
+
+Where the data lands:
+
+| Tool | Tables | Dashboard view |
+|------|--------|----------------|
+| Codex | `codex_*` (fully isolated) | Codex tab (`/?source=codex`) |
+| opencode, DeepSeek Harness | shared Claude tables, tagged by `service_name` | main view, **Source** column |
+
+Only Codex gets separate storage. Every other non-Claude client is normalized into the
+Claude Code shape and shares one pool, distinguished by the `service_name` attribution
+label rather than by a query filter.
+
+Cost applies to all of them: only Claude Code on a Claude model keeps its
+upstream-reported `cost_usd`. Everything else is recomputed from the local pricing
+table, so an unpriced model shows $0 until you add a row.
