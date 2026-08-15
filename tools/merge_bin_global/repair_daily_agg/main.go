@@ -12,6 +12,8 @@ import (
 )
 
 type aggRow struct {
+	Model               string
+	ServiceName         string
 	InputTokens         int64
 	OutputTokens        int64
 	CacheReadTokens     int64
@@ -116,9 +118,9 @@ func repairOneDay(ctx context.Context, db *sql.DB, day string) (int64, error) {
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO daily_model_agg (date, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(date, model) DO UPDATE SET
+		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(date, model, service_name) DO UPDATE SET
 			input_tokens          = input_tokens + excluded.input_tokens,
 			output_tokens         = output_tokens + excluded.output_tokens,
 			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
@@ -132,15 +134,15 @@ func repairOneDay(ctx context.Context, db *sql.DB, day string) (int64, error) {
 	defer stmt.Close()
 
 	var applied int64
-	for model, want := range desired {
-		have := current[model]
+	for k, want := range desired {
+		have := current[k]
 		delta := diffNonNegative(want, have)
 		if delta.RequestCount == 0 && delta.CostUSDUnits == 0 &&
 			delta.InputTokens == 0 && delta.OutputTokens == 0 &&
 			delta.CacheReadTokens == 0 && delta.CacheCreationTokens == 0 {
 			continue
 		}
-		if _, err := stmt.ExecContext(ctx, day, model,
+		if _, err := stmt.ExecContext(ctx, day, want.Model, want.ServiceName,
 			delta.InputTokens, delta.OutputTokens, delta.CacheReadTokens, delta.CacheCreationTokens, delta.CostUSDUnits, delta.RequestCount,
 		); err != nil {
 			return applied, err
@@ -319,6 +321,7 @@ func aggFromRequests(ctx context.Context, db *sql.DB, day string) (map[string]ag
 	rows, err := db.QueryContext(ctx, `
 		SELECT
 			model,
+			COALESCE(NULLIF(service_name, ''), 'claude-code'),
 			COALESCE(SUM(input_tokens),0),
 			COALESCE(SUM(output_tokens),0),
 			COALESCE(SUM(cache_read_tokens),0),
@@ -327,7 +330,7 @@ func aggFromRequests(ctx context.Context, db *sql.DB, day string) (map[string]ag
 			COALESCE(COUNT(*),0)
 		FROM api_requests
 		WHERE date(timestamp, 'unixepoch', 'localtime') = ?
-		GROUP BY model
+		GROUP BY model, COALESCE(NULLIF(service_name, ''), 'claude-code')
 	`, day)
 	if err != nil {
 		return nil, err
@@ -336,19 +339,18 @@ func aggFromRequests(ctx context.Context, db *sql.DB, day string) (map[string]ag
 
 	out := map[string]aggRow{}
 	for rows.Next() {
-		var model string
 		var r aggRow
-		if err := rows.Scan(&model, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.CostUSDUnits, &r.RequestCount); err != nil {
+		if err := rows.Scan(&r.Model, &r.ServiceName, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.CostUSDUnits, &r.RequestCount); err != nil {
 			return nil, err
 		}
-		out[model] = r
+		out[r.Model+"\x00"+r.ServiceName] = r
 	}
 	return out, rows.Err()
 }
 
 func aggFromDailyAgg(ctx context.Context, db *sql.DB, day string) (map[string]aggRow, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, request_count
+		SELECT model, service_name, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, request_count
 		FROM daily_model_agg
 		WHERE date = ?
 	`, day)
@@ -359,12 +361,11 @@ func aggFromDailyAgg(ctx context.Context, db *sql.DB, day string) (map[string]ag
 
 	out := map[string]aggRow{}
 	for rows.Next() {
-		var model string
 		var r aggRow
-		if err := rows.Scan(&model, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.CostUSDUnits, &r.RequestCount); err != nil {
+		if err := rows.Scan(&r.Model, &r.ServiceName, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.CostUSDUnits, &r.RequestCount); err != nil {
 			return nil, err
 		}
-		out[model] = r
+		out[r.Model+"\x00"+r.ServiceName] = r
 	}
 	return out, rows.Err()
 }

@@ -201,6 +201,15 @@ func validateSchema(tables map[string][]string) (SchemaInfo, error) {
 		}
 		if name == "codex_daily_model_agg" && isLegacyCodexColumns(actual, expected) {
 			info.Warnings = appendUnique(info.Warnings, "Legacy Codex tool_tokens will be mapped to total_tokens.")
+		} else if name == "daily_model_agg" {
+			// daily_model_agg gained service_name, so a source DB written before
+			// that migration is legitimately missing a column. It is a derived
+			// cache that the merge recomputes anyway, so tolerate the gap here —
+			// but only for this table; every other ignored table keeps the strict
+			// check, where a missing column really does mean a broken schema.
+			if err := validateIgnoredColumns(name, actual, expected); err != nil {
+				return SchemaInfo{}, err
+			}
 		} else if err := validateColumns(name, actual, expected); err != nil {
 			return SchemaInfo{}, err
 		}
@@ -258,6 +267,22 @@ func validateColumns(table string, actual, expected []string) error {
 	for _, column := range expected {
 		if !got[column] {
 			return unsupported(table+"."+column, "missing column")
+		}
+	}
+	return nil
+}
+
+// validateIgnoredColumns is validateColumns without the missing-column check:
+// unknown columns are still rejected, but the source may lack columns the
+// current schema has. Only daily_model_agg uses it — see the call site.
+func validateIgnoredColumns(table string, actual, expected []string) error {
+	want := make(map[string]bool, len(expected))
+	for _, column := range expected {
+		want[column] = true
+	}
+	for _, column := range actual {
+		if !want[column] {
+			return unsupported(table+"."+column, "unknown column")
 		}
 	}
 	return nil

@@ -156,11 +156,14 @@ func TestRegistry_UserOverridesWin(t *testing.T) {
 	}
 }
 
-func TestRegistry_UserCannotOverrideClaude(t *testing.T) {
+// Claude prices ARE storable and lookupable. Claude Code's own rows never reach
+// the registry (IsUpstreamAuthoritative short-circuits first), but a client that
+// reports no cost of its own can only be priced from a real Claude entry.
+func TestRegistry_UserCanPriceClaudeForOtherClients(t *testing.T) {
 	db := newTestDB(t)
 	cfg := &config.Config{
 		Pricing: map[string]config.PriceEntry{
-			"claude-sonnet-4-5": {Input: 1, Output: 1}, // attempt — should be ignored
+			"claude-sonnet-4-5": {Input: 1, Output: 1},
 		},
 	}
 	reg, err := NewRegistry(context.Background(), db, cfg)
@@ -168,8 +171,30 @@ func TestRegistry_UserCannotOverrideClaude(t *testing.T) {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 	res := reg.Lookup(context.Background(), "claude-sonnet-4-5")
-	if res.Found {
-		t.Error("Claude lookup must miss even when user puts it in YAML")
+	if !res.Found {
+		t.Fatal("Claude lookup must resolve when the user supplies a price")
+	}
+	if res.Entry.Input != 1 || res.Entry.Source != "user" {
+		t.Errorf("user Claude override not applied: input=%v source=%q", res.Entry.Input, res.Entry.Source)
+	}
+}
+
+func TestIsUpstreamAuthoritative(t *testing.T) {
+	cases := []struct {
+		service, model string
+		want           bool
+	}{
+		{"claude-code", "claude-sonnet-4-5", true}, // Anthropic reports real cost
+		{"CLAUDE-CODE", "claude-opus-4-8", true},   // service match is case-insensitive
+		{"claude-code", "glm-4.6", false},          // reverse proxy, priced by Anthropic rates
+		{"opencode", "claude-sonnet-4-5", false},   // reports no cost — must be recomputed
+		{"codex", "gpt-5-codex", false},
+		{"", "claude-sonnet-4-5", false}, // unattributed is not Claude Code
+	}
+	for _, c := range cases {
+		if got := IsUpstreamAuthoritative(c.service, c.model); got != c.want {
+			t.Errorf("IsUpstreamAuthoritative(%q, %q) = %v, want %v", c.service, c.model, got, c.want)
+		}
 	}
 }
 
@@ -258,12 +283,15 @@ func TestRegistry_MissTracking(t *testing.T) {
 		t.Errorf("MissModelsTop = %v, want first entry to be weird-private-model-xyz", snap.MissModelsTop)
 	}
 
-	// Claude misses must NOT be tracked (intentional absence)
+	// Claude is no longer special-cased in Lookup, so an unpriced Claude model
+	// counts as a miss like any other. That is the intended signal: reaching the
+	// registry with a Claude model means some non-Claude-Code client needs a
+	// price the user has not supplied yet.
 	for i := 0; i < 5; i++ {
 		reg.Lookup(context.Background(), "claude-sonnet-4-5")
 	}
 	snap2 := reg.Snapshot(context.Background())
-	if snap2.MissCount24h != 3 {
-		t.Errorf("MissCount24h after Claude lookups = %d, want still 3", snap2.MissCount24h)
+	if snap2.MissCount24h != 8 {
+		t.Errorf("MissCount24h after Claude lookups = %d, want 8", snap2.MissCount24h)
 	}
 }

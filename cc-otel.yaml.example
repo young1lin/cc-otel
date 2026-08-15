@@ -7,6 +7,11 @@
 # Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:<otel_port> in Claude Code env.
 otel_port: 4317
 
+# OTLP/HTTP receiver port (same three services as otel_port, over HTTP).
+# For clients that cannot speak gRPC — e.g. opencode and other AI SDK apps.
+# Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:<otlp_http_port> in their env.
+otlp_http_port: 4318
+
 # Web UI port
 # Access the dashboard at http://localhost:<web_port>
 web_port: 8899

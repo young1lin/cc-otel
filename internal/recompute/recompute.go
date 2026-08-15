@@ -1,9 +1,10 @@
-// Package recompute reprices non-Claude rows in the request tables using the
-// pricing registry, then rebuilds the daily aggregates. Shared by the
-// recompute_cost CLI tool and the POST /api/pricing/recompute endpoint.
+// Package recompute reprices rows in the request tables using the pricing
+// registry, then rebuilds the daily aggregates. Shared by the recompute_cost
+// CLI tool and the POST /api/pricing/recompute endpoint.
 //
-// Claude (claude-* prefix, case-insensitive) rows are NEVER touched —
-// Anthropic owns the canonical price table for those.
+// Only Claude Code's own Claude rows are left untouched — Anthropic owns the
+// canonical price for those. See pricing.IsUpstreamAuthoritative; this package
+// must apply exactly the same rule as the live receiver.
 package recompute
 
 import (
@@ -11,6 +12,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/young1lin/cc-otel/internal/pricing"
 )
@@ -119,17 +121,27 @@ func countRows(ctx context.Context, db *sql.DB, table string, fromUnix, toUnix i
 }
 
 // scanTable walks the table applying the same single rule the receiver does:
-// skip Claude, recompute everything else. Rows with zero tokens are skipped.
-// Only rows whose recomputed cost differs end up in summary.changes. progress
-// is called every 500 rows.
+// keep the upstream cost only for Claude Code's own Claude rows, recompute
+// everything else. Rows with zero tokens are skipped. Only rows whose
+// recomputed cost differs end up in summary.changes. progress is called every
+// 500 rows.
 func scanTable(ctx context.Context, db *sql.DB, reg pricing.Registry, table string, fromUnix, toUnix int64, total int, progress func(Progress)) (*tableSummary, error) {
 	if toUnix == 0 {
 		toUnix = math.MaxInt64
 	}
 	summary := &tableSummary{missByModel: map[string]int{}}
 
+	// Rows predating the service_name column (or from a DB this tool was pointed
+	// at before the daemon migrated it) carry ''. Attribute those the way the
+	// startup backfill does, per table — otherwise Claude Code's own history
+	// would look non-authoritative and get repriced.
+	defaultService := pricing.ClaudeCodeService
+	if strings.HasPrefix(table, "codex_") {
+		defaultService = "codex"
+	}
+
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT id, timestamp, model,
+		SELECT id, timestamp, model, COALESCE(service_name, ''),
 		       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
 		       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
 		       COALESCE(cost_usd, 0)
@@ -153,15 +165,21 @@ func scanTable(ctx context.Context, db *sql.DB, reg pricing.Registry, table stri
 			id                                    int64
 			ts                                    int64
 			model                                 string
+			serviceName                           string
 			input, output, cacheRead, cacheCreate int64
 			oldUnits                              int64
 		)
-		if err := rows.Scan(&id, &ts, &model, &input, &output, &cacheRead, &cacheCreate, &oldUnits); err != nil {
+		if err := rows.Scan(&id, &ts, &model, &serviceName, &input, &output, &cacheRead, &cacheCreate, &oldUnits); err != nil {
 			return nil, err
 		}
 		summary.scanned++
 
-		if pricing.IsClaudeModel(model) {
+		if strings.TrimSpace(serviceName) == "" {
+			serviceName = defaultService
+		}
+		// Must match the live ingestion gate in receiver.Export exactly, or a
+		// backfill would reprice rows the receiver leaves alone (and vice versa).
+		if pricing.IsUpstreamAuthoritative(serviceName, model) {
 			summary.skippedCl++
 			if summary.scanned%500 == 0 {
 				emit()

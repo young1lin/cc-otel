@@ -23,8 +23,9 @@ type exportRecord struct {
 }
 
 type aggKey struct {
-	Date  string
-	Model string
+	Date        string
+	Model       string
+	ServiceName string
 }
 
 type aggDelta struct {
@@ -715,8 +716,12 @@ func addAggDelta(deltas map[aggKey]*aggDelta, row map[string]any) {
 		return
 	}
 	model, _ := row["model"].(string)
+	serviceName, _ := row["service_name"].(string)
+	if strings.TrimSpace(serviceName) == "" {
+		serviceName = "claude-code"
+	}
 	date := time.Unix(ts, 0).Local().Format("2006-01-02")
-	key := aggKey{Date: date, Model: model}
+	key := aggKey{Date: date, Model: model, ServiceName: serviceName}
 	d := deltas[key]
 	if d == nil {
 		d = &aggDelta{}
@@ -767,9 +772,9 @@ func applyAggDeltas(ctx context.Context, db *sql.DB, deltas map[aggKey]*aggDelta
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO daily_model_agg (date, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(date, model) DO UPDATE SET
+		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(date, model, service_name) DO UPDATE SET
 			input_tokens          = input_tokens + excluded.input_tokens,
 			output_tokens         = output_tokens + excluded.output_tokens,
 			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
@@ -787,7 +792,7 @@ func applyAggDeltas(ctx context.Context, db *sql.DB, deltas map[aggKey]*aggDelta
 			continue
 		}
 		if _, err := stmt.ExecContext(ctx,
-			k.Date, k.Model,
+			k.Date, k.Model, k.ServiceName,
 			d.InputTokens, d.OutputTokens, d.CacheReadTokens, d.CacheCreationTokens, d.CostUSDUnits, d.RequestCount,
 		); err != nil {
 			return err

@@ -108,6 +108,21 @@ type DailySummary struct {
 	CacheHitRate      float64 `json:"cache_hit_rate"`
 }
 
+// DefaultServiceName is the telemetry client attributed to rows that arrive
+// without an OTLP resource service.name. Historically every row in these tables
+// came from Claude Code, so that stays the back-compatible default.
+const DefaultServiceName = "claude-code"
+
+// NormalizeServiceName folds a missing/blank service_name onto DefaultServiceName.
+// Every write path (receiver, merge/import, aggregate rebuild) must agree on
+// this, otherwise the same client shows up as both ” and 'claude-code'.
+func NormalizeServiceName(serviceName string) string {
+	if strings.TrimSpace(serviceName) == "" {
+		return DefaultServiceName
+	}
+	return serviceName
+}
+
 // DailyModelSummary holds per-day, per-model aggregated token and cost statistics.
 type DailyModelSummary struct {
 	Date                string  `json:"date"`
@@ -214,10 +229,10 @@ func NewRepository(db *sql.DB) *Repository {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
 	r.stmtUpsAgg, _ = db.Prepare(`
-		INSERT INTO daily_model_agg (date, model, input_tokens, output_tokens,
+		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens,
 			cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-		ON CONFLICT(date, model) DO UPDATE SET
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT(date, model, service_name) DO UPDATE SET
 			input_tokens          = input_tokens + excluded.input_tokens,
 			output_tokens         = output_tokens + excluded.output_tokens,
 			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
@@ -364,11 +379,12 @@ func (r *Repository) RebuildDailyAggregates(ctx context.Context) error {
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO daily_model_agg (date, model, input_tokens, output_tokens,
+		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens,
 			cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
 		SELECT
 			date(timestamp, 'unixepoch', 'localtime'),
 			model,
+			COALESCE(NULLIF(service_name, ''), 'claude-code'),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
@@ -376,7 +392,7 @@ func (r *Repository) RebuildDailyAggregates(ctx context.Context) error {
 			COALESCE(SUM(cost_usd), 0),
 			COUNT(*)
 		FROM api_requests
-		GROUP BY date(timestamp, 'unixepoch', 'localtime'), model`); err != nil {
+		GROUP BY date(timestamp, 'unixepoch', 'localtime'), model, COALESCE(NULLIF(service_name, ''), 'claude-code')`); err != nil {
 		return fmt.Errorf("rebuild daily_model_agg: %w", err)
 	}
 
@@ -425,8 +441,12 @@ func (r *Repository) InsertRequest(ctx context.Context, req *APIRequest) (bool, 
 	dateKey := req.Timestamp.Local().Format("2006-01-02")
 	cost := costToInt64(req.CostUSD)
 
+	// Normalize here too: RebuildDailyAggregates and dbmerge both fold a blank
+	// service_name into DefaultServiceName, so a raw '' written by this path
+	// would split into a separate agg row that a later rebuild silently merges
+	// away — making the same data move between rows.
 	_, err = tx.StmtContext(ctx, r.stmtUpsAgg).ExecContext(ctx,
-		dateKey, req.Model,
+		dateKey, req.Model, NormalizeServiceName(req.ServiceName),
 		req.InputTokens, req.OutputTokens,
 		req.CacheReadTokens, req.CacheCreationTokens,
 		cost,
@@ -1434,6 +1454,22 @@ func (r *Repository) Cleanup(ctx context.Context, beforeUnix int64) (int64, erro
 		n, _ := res.RowsAffected()
 		total += n
 	}
+
+	// import_ledger: append-only audit trail of merged/imported rows, one entry
+	// per source row. Nothing reads it — dedup keys on target-table identity
+	// (dbmerge.identityExistsExpression), not the ledger — so it only ever
+	// grows, and a few large merges dwarf every other table on disk.
+	//
+	// NOTE: imported_at is when the *import ran*, not how old the data is, and
+	// api_requests is deliberately never retention-pruned. So this drops audit
+	// history for rows that are still live. That is the intended trade: bounded
+	// disk over an indefinite provenance record.
+	ilRes, ilErr := r.db.ExecContext(ctx, `DELETE FROM import_ledger WHERE imported_at < ?`, beforeUnix)
+	if ilErr != nil {
+		return total, fmt.Errorf("cleanup import_ledger: %w", ilErr)
+	}
+	ilN, _ := ilRes.RowsAffected()
+	total += ilN
 
 	// Date-string based table
 	beforeDate := time.Unix(beforeUnix, 0).Local().Format("2006-01-02")

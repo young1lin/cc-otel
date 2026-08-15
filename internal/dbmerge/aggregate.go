@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
 type aggKey struct {
-	date  string
-	model string
+	date        string
+	model       string
+	serviceName string
 }
 
 type claudeDelta struct {
@@ -37,9 +39,16 @@ func addAggregateDelta(location *time.Location, row Row, claude map[aggKey]*clau
 		location = time.Local
 	}
 	timestamp := int64Value(row.Values["timestamp"])
+	// service_name defaults to claude-code (matches the receiver/backfill rule)
+	// so imported rows without it fold into Claude Code, not a "" group.
+	serviceName := stringValue(row.Values["service_name"])
+	if strings.TrimSpace(serviceName) == "" {
+		serviceName = "claude-code"
+	}
 	key := aggKey{
-		date:  time.Unix(timestamp, 0).In(location).Format("2006-01-02"),
-		model: stringValue(row.Values["model"]),
+		date:        time.Unix(timestamp, 0).In(location).Format("2006-01-02"),
+		model:       stringValue(row.Values["model"]),
+		serviceName: serviceName,
 	}
 	if row.Table == "api_requests" {
 		delta := claude[key]
@@ -74,17 +83,17 @@ func applyAggregateDeltas(ctx context.Context, conn *sql.Conn, claude map[aggKey
 		delta := claude[key]
 		if _, err := conn.ExecContext(ctx, `
 			INSERT INTO daily_model_agg
-				(date, model, input_tokens, output_tokens, cache_read_tokens,
+				(date, model, service_name, input_tokens, output_tokens, cache_read_tokens,
 				 cache_creation_tokens, cost_usd, request_count)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(date, model) DO UPDATE SET
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(date, model, service_name) DO UPDATE SET
 				input_tokens = input_tokens + excluded.input_tokens,
 				output_tokens = output_tokens + excluded.output_tokens,
 				cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
 				cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
 				cost_usd = cost_usd + excluded.cost_usd,
 				request_count = request_count + excluded.request_count
-		`, key.date, key.model, delta.input, delta.output, delta.cacheRead, delta.cacheCreation, delta.cost, delta.requests); err != nil {
+		`, key.date, key.model, key.serviceName, delta.input, delta.output, delta.cacheRead, delta.cacheCreation, delta.cost, delta.requests); err != nil {
 			return err
 		}
 	}

@@ -343,8 +343,17 @@ body {
 /* Segmented control (Weighted / Avg). .gran-btn is shared with the
    Day/Month toggle in the toolbar, so scope the segment look to
    .rate-seg only — the toolbar keeps its own treatment. */
-.rate-seg { display: inline-flex; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 2px; box-shadow: var(--shadow-sm); }
-.rate-seg .gran-btn { background: transparent; border: none; color: var(--text-muted); padding: 5px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: inherit; transition: background .15s, color .15s; }
+.source-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--accent-dim); color: var(--text); white-space: nowrap; }
+.source-tag::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.source-tag.source-opencode::before { background: #f59e0b; }
+.source-tag.source-claude-code { background: rgba(10,132,255,0.10); color: var(--accent); }
+.source-tag.source-claude-code::before { background: #0a84ff; }
+.source-tag.source-codex::before { background: #34c759; }
+.source-tag.source-pi::before { background: #bf5af2; }
+.source-tag.source-unknown { background: transparent; color: var(--text-muted); }
+.source-tag.source-unknown::before { background: var(--text-muted); }
+
+.rate-seg { display: inline-flex; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 2px; box-shadow: var(--shadow-sm); }.rate-seg .gran-btn { background: transparent; border: none; color: var(--text-muted); padding: 5px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: inherit; transition: background .15s, color .15s; }
 .rate-seg .gran-btn:hover { color: var(--text); }
 .rate-seg .gran-btn.active { background: var(--surface2); color: var(--text); }
 
@@ -1155,7 +1164,14 @@ span.flatpickr-weekday {
     color: var(--text);
 }
 
-/* Metric switcher — compact segmented control */
+/* Chart header right-side controls (dimension + metric switches). */
+.chart-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Compact segmented control — shared by the metric and dimension switches. */
 .metric-sw {
     display: flex;
     gap: 0;

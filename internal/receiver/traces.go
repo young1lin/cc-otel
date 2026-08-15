@@ -8,7 +8,9 @@ import (
 
 	"github.com/young1lin/cc-otel/internal/db"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
@@ -18,6 +20,9 @@ type tracesServiceServer struct {
 	coltracepb.UnimplementedTraceServiceServer
 	repo     *db.Repository
 	notifier Notifier
+	// logs lets AI-SDK usage spans (opencode et al.) re-enter the normal log
+	// ingestion path instead of growing a second, divergent insert path here.
+	logs *logsServiceServer
 }
 
 type rawSpan struct {
@@ -77,12 +82,16 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 	shouldNotify := false
 	spanCount := 0
 	ttftCount := 0
+	// AI-SDK usage spans converted to api_request log records, grouped by the
+	// resource they arrived with so service.name attribution survives.
+	var aiSDKBatches []*logspb.ResourceLogs
 
 	for _, rs := range req.ResourceSpans {
 		resAttrs := map[string]string{}
 		if rs.Resource != nil {
 			resAttrs = extractAttrs(rs.Resource.Attributes)
 		}
+		var aiSDKRecords []*logspb.LogRecord
 
 		for _, ss := range rs.ScopeSpans {
 			scopeName := ""
@@ -114,6 +123,16 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 				} else if sp.StartTimeUnixNano > 0 {
 					ts = int64(sp.StartTimeUnixNano / 1e9)
 				}
+				// AI-SDK clients report token usage on the span itself rather
+				// than as a log record. Reshape and hand off; these spans carry
+				// their own timings, so they never also need the ttft backfill.
+				if isAISDKUsageSpan(sp.Name) {
+					if rec := mapAISDKSpan(sp, attrs, resAttrs); rec != nil {
+						aiSDKRecords = append(aiSDKRecords, rec)
+						continue
+					}
+				}
+
 				ttft := parseAttrInt(attrs, "ttft_ms")
 				if ttft <= 0 {
 					continue
@@ -170,6 +189,31 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 					}
 				}
 			}
+		}
+
+		if len(aiSDKRecords) > 0 {
+			aiSDKBatches = append(aiSDKBatches, &logspb.ResourceLogs{
+				Resource:  aiSDKResource(rs.Resource),
+				ScopeLogs: []*logspb.ScopeLogs{{LogRecords: aiSDKRecords}},
+			})
+		}
+	}
+
+	// Replay converted spans through the log path so they get the same cost
+	// recompute, service_name defaulting, dedup and notification as every other
+	// client. Its own error handling logs per-row failures, so a bad record here
+	// cannot fail the whole trace export.
+	if len(aiSDKBatches) > 0 && s.logs != nil {
+		converted := 0
+		for _, rl := range aiSDKBatches {
+			for _, sl := range rl.ScopeLogs {
+				converted += len(sl.LogRecords)
+			}
+		}
+		if _, err := s.logs.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: aiSDKBatches}); err != nil {
+			log.Printf("ai-sdk span ingest failed: %v", err)
+		} else {
+			log.Printf("OTEL traces: converted %d AI-SDK usage span(s) into api_request events", converted)
 		}
 	}
 

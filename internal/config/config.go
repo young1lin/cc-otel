@@ -12,13 +12,14 @@ import (
 
 // Config holds all runtime configuration for cc-otel, loaded from YAML with env overrides.
 type Config struct {
-	OTELPort       int                   `yaml:"otel_port"`
-	WebPort        int                   `yaml:"web_port"`
-	DBPath         string                `yaml:"db_path"`
-	RetentionDays  int                   `yaml:"retention_days"`
-	RawTTLDays     int                   `yaml:"raw_ttl_days"`
-	ModelMapping   map[string]string     `yaml:"model_mapping"`
-	Pricing        map[string]PriceEntry `yaml:"pricing"`
+	OTELPort      int                   `yaml:"otel_port"`
+	WebPort       int                   `yaml:"web_port"`
+	OTLPHTTPPort  int                   `yaml:"otlp_http_port"`
+	DBPath        string                `yaml:"db_path"`
+	RetentionDays int                   `yaml:"retention_days"`
+	RawTTLDays    int                   `yaml:"raw_ttl_days"`
+	ModelMapping  map[string]string     `yaml:"model_mapping"`
+	Pricing       map[string]PriceEntry `yaml:"pricing"`
 }
 
 // PriceEntry is a user-supplied per-token price override for a single model.
@@ -92,14 +93,16 @@ func DefaultBinDir() string {
 	return defaultDataDir()
 }
 
-func DefaultWebPort() int  { return 8899 }
-func DefaultOTELPort() int { return 4317 }
+func DefaultWebPort() int      { return 8899 }
+func DefaultOTELPort() int     { return 4317 }
+func DefaultOTLPHTTPPort() int { return 4318 }
 
 // Environment variable overrides (highest priority)
 const (
-	EnvOTELPort = "CC_OTEL_OTEL_PORT"
-	EnvWebPort  = "CC_OTEL_WEB_PORT"
-	EnvDBPath   = "CC_OTEL_DB_PATH"
+	EnvOTELPort     = "CC_OTEL_OTEL_PORT"
+	EnvWebPort      = "CC_OTEL_WEB_PORT"
+	EnvOTLPHTTPPort = "CC_OTEL_OTLP_HTTP_PORT"
+	EnvDBPath       = "CC_OTEL_DB_PATH"
 )
 
 // expandTilde replaces a leading ~/ or ~\ with the user's home directory.
@@ -119,6 +122,7 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		OTELPort:      4317,
 		WebPort:       8899,
+		OTLPHTTPPort:  DefaultOTLPHTTPPort(),
 		DBPath:        DefaultDBPath(),
 		RetentionDays: 90,
 		RawTTLDays:    5,
@@ -159,6 +163,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv(EnvWebPort)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 65535 {
 			cfg.WebPort = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv(EnvOTLPHTTPPort)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 65535 {
+			cfg.OTLPHTTPPort = n
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv(EnvDBPath)); v != "" {

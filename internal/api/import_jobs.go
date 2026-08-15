@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,6 +305,7 @@ func (m *importManager) runMerge(ctx context.Context, jobID, path, sha string, t
 	job.UpdatedAt = now.Unix()
 	job.Result = cloneResult(&result)
 	if err != nil {
+		log.Printf("import job %s failed: %v", jobID, err)
 		job.State = importFailed
 		job.Retryable = true
 		job.ExpiresAt = now.Add(time.Hour).Unix()

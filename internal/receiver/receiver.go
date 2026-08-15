@@ -73,12 +73,12 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 					continue
 				}
 
-				// 2. Recompute cost for non-Claude models. Claude (claude-* prefix,
-				// case-insensitive) is left as reported because Anthropic
-				// computes cost_usd from canonical Claude prices itself.
-				// Everything else (GLM/DeepSeek/Kimi via reverse proxy, etc.)
-				// gets recomputed against the local pricing table.
-				if s.pricer != nil && !pricing.IsClaudeModel(event.Model) {
+				// 2. Recompute cost unless the upstream number is authoritative,
+				// which is only true for Claude Code on a Claude model (see
+				// pricing.IsUpstreamAuthoritative). Notably that means a Claude
+				// model driven by some other client IS recomputed — those clients
+				// report no cost at all, so trusting them pins the row at $0.
+				if s.pricer != nil && !pricing.IsUpstreamAuthoritative(event.ServiceName, event.Model) {
 					if c := s.pricer.Calc(ctx, event.Model,
 						event.InputTokens, event.OutputTokens,
 						event.CacheReadTokens, event.CacheCreationTokens); c > 0 {
@@ -152,10 +152,11 @@ type Receiver struct {
 // trust whatever cost the upstream sent (used by older tests that don't
 // care about pricing).
 func New(repo *db.Repository, cfg ModelResolver, notifier Notifier, pricer Pricer) *Receiver {
+	logs := &logsServiceServer{repo: repo, cfg: cfg, notifier: notifier, pricer: pricer, codexTracker: newCodexSpanTracker()}
 	return &Receiver{
-		logs:    &logsServiceServer{repo: repo, cfg: cfg, notifier: notifier, pricer: pricer, codexTracker: newCodexSpanTracker()},
+		logs:    logs,
 		metrics: &metricsServiceServer{repo: repo},
-		traces:  &tracesServiceServer{repo: repo, notifier: notifier},
+		traces:  &tracesServiceServer{repo: repo, notifier: notifier, logs: logs},
 	}
 }
 
@@ -195,6 +196,13 @@ func parseEventFromOTLP(lr *logspb.LogRecord, resource *resourcepb.Resource) *db
 		eventName = eventNameFromLogBody(lr)
 	}
 
+	// Clients that omit OTLP resource service_name (older builds, some imports)
+	// are treated as Claude Code — the historical default for this table.
+	serviceName := attrs["service.name"]
+	if serviceName == "" {
+		serviceName = "claude-code"
+	}
+
 	return &db.Event{
 		Timestamp:           ts,
 		SessionID:           attrs["session.id"],
@@ -221,7 +229,7 @@ func parseEventFromOTLP(lr *logspb.LogRecord, resource *resourcepb.Resource) *db
 		DecisionType:        attrs["decision_type"],
 		Success:             success,
 		ToolResultSizeBytes: parseAttrInt(attrs, "tool_result_size_bytes"),
-		ServiceName:         attrs["service.name"],
+		ServiceName:         serviceName,
 		ServiceVersion:      attrs["service.version"],
 		HostArch:            attrs["host.arch"],
 		OSType:              attrs["os.type"],

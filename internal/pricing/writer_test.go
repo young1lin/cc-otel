@@ -39,10 +39,15 @@ func TestUpsert_UpdatesExisting(t *testing.T) {
 	}
 }
 
-func TestUpsert_RejectsClaudeAndZero(t *testing.T) {
-	_, w := newReg(t)
-	if _, err := w.Upsert(context.Background(), Entry{Model: "claude-sonnet-5", Input: 1, Output: 1}); err == nil {
-		t.Fatal("claude upsert should fail")
+func TestUpsert_AcceptsClaudeRejectsZero(t *testing.T) {
+	reg, w := newReg(t)
+	// Claude is storable: it is the only way to price a Claude model driven by a
+	// client that reports no cost_usd of its own.
+	if _, err := w.Upsert(context.Background(), Entry{Model: "claude-sonnet-5", Input: 1e-6, Output: 1e-6}); err != nil {
+		t.Fatalf("claude upsert should succeed: %v", err)
+	}
+	if v := reg.Calc(context.Background(), "claude-sonnet-5", 1_000_000, 0, 0, 0); v != 1.0 {
+		t.Fatalf("Calc for stored Claude price = %v, want 1", v)
 	}
 	if _, err := w.Upsert(context.Background(), Entry{Model: "x", Input: 0, Output: 1}); err == nil {
 		t.Fatal("zero input should fail")

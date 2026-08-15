@@ -43,6 +43,6 @@ test('Intraday has an All-models escape hatch, hidden until a model is isolated'
 // Pinned on purpose: embedded assets are cached by these query strings, so any
 // asset change must bump them here too. Update both when you edit CSS or JS.
 test('cache-busting versions bumped', () => {
-    assert.match(html, /style\.css\?v=26/);
-    assert.match(html, /app\.js\?v=68/);
+    assert.match(html, /style\.css\?v=27/);
+    assert.match(html, /app\.js\?v=69/);
 });

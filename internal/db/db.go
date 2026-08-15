@@ -215,13 +215,14 @@ func runMigrations(db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS daily_model_agg (
 			date TEXT NOT NULL,
 			model TEXT NOT NULL,
+			service_name TEXT NOT NULL DEFAULT '',
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
 			cost_usd INTEGER NOT NULL DEFAULT 0,
 			request_count INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY (date, model)
+			PRIMARY KEY (date, model, service_name)
 		) WITHOUT ROWID;
 	`)
 	if err != nil {
@@ -466,6 +467,73 @@ func runMigrations(db *sql.DB) error {
 	`)
 	if err != nil {
 		return fmt.Errorf("codex sub-event indexes: %w", err)
+	}
+
+	// daily_model_agg: add the service_name dimension so stats can be filtered by
+	// telemetry client (Claude Code / OpenCode / Codex-via-proxy / ...). The table
+	// is a pure derived cache of api_requests, so a legacy (date, model) table is
+	// safely dropped and rebuilt — zero data loss, reversible.
+	if has, err := columnExists(db, "daily_model_agg", "service_name"); err != nil {
+		return fmt.Errorf("check daily_model_agg.service_name: %w", err)
+	} else if !has {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS daily_model_agg`); err != nil {
+			return fmt.Errorf("drop legacy daily_model_agg: %w", err)
+		}
+		if _, err := db.Exec(`
+			CREATE TABLE daily_model_agg (
+				date TEXT NOT NULL,
+				model TEXT NOT NULL,
+				service_name TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+				cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+				cost_usd INTEGER NOT NULL DEFAULT 0,
+				request_count INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (date, model, service_name)
+			) WITHOUT ROWID;`); err != nil {
+			return fmt.Errorf("recreate daily_model_agg: %w", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO daily_model_agg
+				(date, model, service_name, input_tokens, output_tokens,
+				 cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
+			SELECT
+				strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime') AS date,
+				model, service_name,
+				SUM(input_tokens), SUM(output_tokens),
+				SUM(cache_read_tokens), SUM(cache_creation_tokens),
+				SUM(cost_usd), COUNT(*)
+			FROM api_requests
+			GROUP BY date, model, service_name;`); err != nil {
+			return fmt.Errorf("rebuild daily_model_agg from api_requests: %w", err)
+		}
+	}
+
+	// Backfill: rows without a service_name (legacy data, old imports, or clients
+	// that omit it) default to Claude Code. Covers imported DBs too — anything
+	// merged into api_requests with an empty service_name gets normalized here on
+	// the next start. Idempotent: a no-op scan when nothing is empty.
+	if res, err := db.Exec(`UPDATE api_requests SET service_name = 'claude-code' WHERE service_name = ''`); err != nil {
+		return fmt.Errorf("backfill empty service_name: %w", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		if _, err := db.Exec(`DELETE FROM daily_model_agg`); err != nil {
+			return fmt.Errorf("clear daily_model_agg for service backfill: %w", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO daily_model_agg
+				(date, model, service_name, input_tokens, output_tokens,
+				 cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
+			SELECT
+				strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime') AS date,
+				model, service_name,
+				SUM(input_tokens), SUM(output_tokens),
+				SUM(cache_read_tokens), SUM(cache_creation_tokens),
+				SUM(cost_usd), COUNT(*)
+			FROM api_requests
+			GROUP BY date, model, service_name;`); err != nil {
+			return fmt.Errorf("rebuild daily_model_agg after service backfill: %w", err)
+		}
 	}
 
 	return nil

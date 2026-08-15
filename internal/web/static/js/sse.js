@@ -15,7 +15,12 @@ function scheduleRefresh() {
 }
 
 export function shouldRefreshForSSE(incomingSource, currentSource) {
-    return incomingSource === 'all' || incomingSource === currentSource;
+    if (incomingSource === 'all') return true;
+    if (incomingSource === currentSource) return true;
+    // The broker tags ANY non-codex row as "claude" (claude-code / opencode / pi
+    // / ... all share the api_requests table). Refresh every non-codex tab on it.
+    if (incomingSource === 'claude' && currentSource !== 'codex') return true;
+    return false;
 }
 
 function connectSSE() {

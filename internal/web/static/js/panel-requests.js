@@ -3,6 +3,29 @@ import { fmtNum, fmtDateTime, escapeHtml, formatUserCell, rangeToFromTo } from '
 import { loadRequestsData, loadDurationsData, loadModelsData } from './api.js';
 import { renderPagination } from './pagination.js';
 
+// Maps the OTLP resource service_name to a friendly source badge so the
+// request log shows which client reported each row (Claude Code / OpenCode /
+// Codex / Pi / ...). Data already carries service_name from the backend; this
+// only controls display.
+const SOURCE_LABELS = {
+    'claude-code': 'Claude Code',
+    'opencode': 'OpenCode',
+    'pi': 'Pi',
+};
+function formatSource(name) {
+    const raw = String(name || '').trim();
+    if (!raw) return '<span class="source-tag source-unknown">—</span>';
+    const key = raw.toLowerCase();
+    let label = SOURCE_LABELS[key];
+    if (!label) label = key.startsWith('codex') ? 'Codex' : raw;
+    // Collapse every codex variant (codex / codex_exec / codex-cli / ...) onto
+    // the single .source-codex class so they share the curated green dot.
+    const cls = key.startsWith('codex')
+        ? 'source-codex'
+        : 'source-' + key.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return `<span class="source-tag ${cls}">${escapeHtml(label)}</span>`;
+}
+
 function setTTFTColumnVisible(visible) {
     const th = document.querySelector('#duration-stats-wrap th.ttft-col');
     if (!th) return;
@@ -114,13 +137,14 @@ export async function loadRequests() {
 
         const tbody = document.getElementById('request-tbody');
         if (data.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:32px">No data</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px">No data</td></tr>';
             renderPagination('requests-pagination', paging.requests, loadRequests);
             return;
         }
         tbody.innerHTML = data.map(r => `<tr>
             <td class="mono">${fmtDateTime(r.timestamp)}</td>
             <td><span class="badge">${escapeHtml(r.model)}</span></td>
+            <td>${formatSource(r.service_name)}</td>
             <td class="mono">${formatUserCell(r.user_id)}</td>
             <td class="mono">${fmtNum(r.input_tokens)}</td>
             <td class="mono">${fmtNum(r.output_tokens)}</td>

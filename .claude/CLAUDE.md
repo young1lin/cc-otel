@@ -113,6 +113,7 @@ cc-otel start -config path   # Start with a custom config file
 
 ```yaml
 otel_port: 4317
+otlp_http_port: 4318
 web_port: 8899
 db_path: ~/.claude/cc-otel/cc-otel.db
 model_mapping: {}
@@ -198,6 +199,7 @@ Clicking `live` opens the **Server Status** panel showing:
 - **UI Stream (SSE)**: connection status and current SSE client count
 - **DB / API**: database connectivity (backend pings the DB)
 - **OTLP gRPC Receiver**: whether the OTLP gRPC port is listening (default `:4317`, checked via TCP dial)
+- **OTLP HTTP Receiver**: same check for the OTLP/HTTP port (default `:4318`)
 - **Last Update**: the most recent time new OTEL data was written and triggered a UI refresh
 - **Endpoints**: `OTLP gRPC` / `Web UI` addresses (with copy buttons)
 
@@ -217,6 +219,7 @@ The web UI will then read static files directly from the disk directory (only fo
 | Port | Service |
 |------|---------|
 | 4317 | OTLP gRPC Receiver (production) |
+| 4318 | OTLP/HTTP Receiver (production) |
 | 8899 | Web UI + REST API (production) |
 
 ### Development / Testing Ports (bin/ directory)
@@ -226,12 +229,14 @@ The web UI will then read static files directly from the disk directory (only fo
 | Port | Service |
 |------|---------|
 | 14317 | OTLP gRPC Receiver (development) |
+| 14318 | OTLP/HTTP Receiver (development) |
 | 18899 | Web UI + REST API (development) |
 
 To start the dev instance with separate ports, create a temp config:
 ```bash
 cat > bin/cc-otel-dev.yaml << 'EOF'
 otel_port: 14317
+otlp_http_port: 14318
 web_port: 18899
 db_path: ./bin/cc-otel-dev.db
 model_mapping: {}
@@ -307,18 +312,42 @@ When changes touch any of the above rules, in addition to the standard "build ->
 
 ### Source routing (Claude Code vs Codex)
 
-cc-otel reads OTLP Resource attribute `service.name` to decide which storage path applies. Names containing `codex` (case-insensitive) go to `codex_*` tables and `/api/codex/*` routes; everything else (including missing service.name) goes to the existing Claude tables for back-compat. Frontend tabs key on `state.source` (`claude` default, `codex` via `?source=codex` URL param).
+cc-otel reads OTLP Resource attribute `service.name` to decide which storage path applies. Names containing `codex` (case-insensitive) go to `codex_*` tables and `/api/codex/*` routes; everything else goes to the Claude tables. A missing `service.name` is normalized to `claude-code` (`db.NormalizeServiceName`, applied identically by the receiver, the startup backfill, `RebuildDailyAggregates`, and `dbmerge`) — never store a bare `''`.
 
-### Pricing (non-Claude cost recompute)
+`service_name` is an **attribution label, not a partition**: it is stored on `api_requests`, keyed into `daily_model_agg`, shown as the Source column in the request log, and used by the pricing rule below. There is deliberately **no per-source query filter and no by-source chart dimension** — every non-Codex client is normalized into the Claude Code shape and shares one pool. Frontend tabs key on `state.source` (`claude` default, `codex` via `?source=codex` URL param), and those are the only two values.
 
-The `internal/pricing` package owns per-model `cost_usd` recompute. Single rule (case-insensitive on the trimmed model id):
+### OTLP ingress (gRPC 4317 + HTTP 4318)
+
+Both ports serve the **same three OTLP services backed by the same `receiver.Receiver`**; `internal/receiver/http.go` is a protocol shim that decodes and calls the identical `Export` methods the gRPC path uses. Never duplicate ingestion logic per transport.
+
+- `otel_port` (4317, dev 14317) — OTLP gRPC. Claude Code, Codex.
+- `otlp_http_port` (4318, dev 14318) — OTLP/HTTP. Clients that can't speak gRPC (opencode and other Vercel AI SDK apps).
+
+The shim must answer in the encoding the client sent (JSON in → JSON out) and must **never return 2xx for data it did not store** — an OTLP exporter treats 2xx as delivered and drops the batch.
+
+**Debugging a new client**: `tools/otlp_dump` serves both transports and stores nothing; it prints every span/log plus, for AI SDK usage spans, the `would_store_api_request` cc-otel would derive (rendered by `receiver.DebugMapAISDKSpan`, so it cannot drift from real ingestion). `CC_OTEL_DEBUG_AISDK=1` turns on a per-request usage line in the daemon itself — off by default. Independent of that flag, the daemon warns **once per model** if a provider reports input EXCLUSIVE of cache, because the uncached derivation then under-counts.
+
+AI-SDK clients report token usage on GenAI **spans** rather than log records. `internal/receiver/opencode.go` reshapes the *leaf* span (`ai.streamText.doStream` / `ai.generateText.doGenerate` — the parent also carries usage, so mapping both double-counts) into an `api_request` log record, which is then replayed through `logsServiceServer.Export`. That keeps one ingestion path for cost, attribution, dedup and SSE. `request_id` is set to the hex span id so the partial unique index on `api_requests(request_id)` makes exporter retries idempotent.
+
+### Pricing (cost recompute)
+
+The `internal/pricing` package owns per-model `cost_usd` recompute. The rule is a **pair** — `pricing.IsUpstreamAuthoritative(service_name, model)`:
 
 ```
-if strings.HasPrefix(model, "claude-") → keep upstream cost_usd untouched
+if service_name == "claude-code" AND model starts with "claude-"
+                                        → keep upstream cost_usd untouched
 else                                    → cost_usd = pricing.Calc(...)
 ```
 
-This applies to both the Claude log path (`internal/receiver/receiver.go` `Export`) and the Codex sse_event token-update path (`internal/receiver/codex_parser.go`). It corrects two real-world bugs: Codex never reports `cost_usd`, and GLM/DeepSeek/Kimi via Anthropic-compatible reverse proxies are priced by Anthropic (not by their own provider).
+Both halves are load-bearing:
+
+- **Claude Code + Claude** — Anthropic computes the cost and Claude Code forwards it. Authoritative.
+- **Claude Code + non-Claude** — GLM/DeepSeek/Kimi behind an Anthropic-compatible reverse proxy get billed at Anthropic's rates, which are wrong for them. Recompute.
+- **Other client + Claude** — opencode and friends report no `cost_usd` at all; trusting upstream pins the row at $0 forever. Recompute.
+
+Applied identically by `internal/receiver/receiver.go` `Export`, the Codex sse_event path in `internal/receiver/codex_parser.go`, and the historical backfill in `internal/recompute`. **If you change the predicate, change all three** — a backfill that disagrees with live ingestion silently rewrites rows the receiver would have left alone.
+
+Consequence: the registry no longer special-cases Claude. `Lookup` and `Upsert` accept Claude entries, because pricing a Claude model driven by opencode requires a stored Claude row. Claude Code's own rows never reach the registry — the predicate short-circuits first.
 
 **Two-layer lookup priority** (highest first):
 
@@ -331,7 +360,7 @@ Table modal → add/edit the row, or click 💡 to prefill from OpenRouter on
 demand, then 保存. To backfill historical rows after a price change: click
 ↻ 重算历史 (server-side full recompute; status-tracked, survives page refresh).
 
-The seed JSON is generated by `tools/dump_pricing_snapshot` from BerriAI/litellm — re-run it on release to refresh the offline fallback. **Claude entries are intentionally absent from the seed**; the registry is meant to miss for Claude and the receiver short-circuits before consulting it.
+The seed JSON is generated by `tools/dump_pricing_snapshot` from BerriAI/litellm — re-run it on release to refresh the offline fallback. **Claude entries are intentionally absent from the seed**, because the only client that needs no Claude price (Claude Code) is also the one that reports its own cost. If you drive Claude models through a client that reports no cost — opencode — you must add the Claude rows yourself (Pricing Table modal, or `pricing:` YAML), or those rows stay at $0.
 
 **Operations:**
 

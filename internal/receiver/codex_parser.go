@@ -341,7 +341,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			// prices four independent categories, so subtract both cache
 			// categories to get uncached input — otherwise cached tokens get
 			// charged twice (full input rate + cache rate).
-			if pricer != nil && !pricing.IsClaudeModel(upd.Model) {
+			// This path is Codex by construction, so it is never the authoritative
+			// Claude Code + Claude combination — every model is recomputed here.
+			if pricer != nil && !pricing.IsUpstreamAuthoritative(serviceNameFromResource(res), upd.Model) {
 				uncachedInput := upd.InputTokens - upd.CacheReadTokens - upd.CacheCreationTokens
 				if uncachedInput < 0 {
 					uncachedInput = 0
