@@ -68,11 +68,11 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "cc-otel %s — Claude Code Token Monitor\n", version)
+	fmt.Fprintf(os.Stderr, "cc-otel %s — Multi-client Token Monitor (Claude Code / Codex / opencode / DSH)\n", version)
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  cc-otel init                   Generate default config file")
-	fmt.Fprintln(os.Stderr, "  cc-otel install                Install to user AppData (Windows)")
+	fmt.Fprintln(os.Stderr, "  cc-otel install                Install binary to ~/.cc-otel/")
 	fmt.Fprintln(os.Stderr, "  cc-otel start [-config path]   Start as background daemon")
 	fmt.Fprintln(os.Stderr, "  cc-otel restart [-config path] Stop then start (upgrade / reload binary)")
 	fmt.Fprintln(os.Stderr, "  cc-otel stop                   Stop the daemon")
@@ -677,10 +677,22 @@ model_mapping: {}
 }
 
 // --- install ---
-// Copies the executable to ~/.claude/bin/ and ensures the data directory exists.
+// Copies the executable to ~/.cc-otel/ and ensures the data directory exists.
 // Cross-platform: works on Windows, macOS, and Linux.
 func cmdInstall() {
 	binDir := config.DefaultBinDir()
+	if binDir == "" {
+		log.Fatalf("failed to determine install dir")
+	}
+
+	// On Windows, we must not overwrite a running executable. Best effort stop
+	// first. This also un-locks the legacy directory when upgrading a pre-v0.1.0
+	// install: the first DefaultBinDir() above may have had to keep using it
+	// because the old daemon held its files, so re-resolve afterwards and let
+	// the migration to ~/.cc-otel retry now that nothing is running.
+	stopDaemonIfAny()
+	time.Sleep(500 * time.Millisecond)
+	binDir = config.DefaultBinDir()
 	if binDir == "" {
 		log.Fatalf("failed to determine install dir")
 	}
@@ -698,10 +710,6 @@ func cmdInstall() {
 		exeName = "cc-otel.exe"
 	}
 	dstExe := filepath.Join(binDir, exeName)
-
-	// On Windows, we must not overwrite a running executable. Best effort stop first.
-	stopDaemonIfAny()
-	time.Sleep(500 * time.Millisecond)
 
 	in, err := os.Open(self)
 	if err != nil {

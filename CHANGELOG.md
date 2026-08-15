@@ -6,6 +6,50 @@
 
 ---
 
+## [v0.1.0] - 2026-08-16
+
+> 首个正式版本。cc-otel 不再与 Claude Code 绑定：独立安装目录、四个客户端共用一个实例。
+> 汇总 `v0.1.0-preview.16` 之后的主线：service_name 归因、OTLP/HTTP 接入与 opencode、
+> 感知服务的定价、DeepSeek Harness 接入、代码审查修复批次。
+
+### 独立安装目录 `~/.cc-otel/`（破坏性变更，自动迁移）
+
+- 安装/数据目录从 `~/.claude/cc-otel/` 改为 **`~/.cc-otel/`**——cc-otel 服务多个客户端，不再寄居 Claude Code 的数据目录。二进制、配置、数据库、PID、日志仍同目录。
+- **自动迁移**：新二进制首次运行发现 `~/.cc-otel/` 不存在且 `~/.claude/cc-otel/` 存在时，整目录 rename 过去（配置、数据库、日志一并迁移）。安全性质：迁移只有「整目录搬走」或「什么都不动」两种结局，任何路径下都不会产生空新库 + 遗弃旧数据。
+  - 旧 daemon 还开着（文件被锁）→ 本次继续用旧目录并打日志，停掉后下次运行重试成功。
+  - 从旧目录内运行新二进制 → 跳过迁移并提示（Windows 无法 rename 含运行中 exe 的目录）；`cc-otel install` 在停掉 daemon 后会二次解析目录，让迁移重试。
+  - `~/.cc-otel` 路径上若有杂散文件 → 绝不覆盖（Windows rename 会静默替换文件，已显式防护并有测试钉住）。
+- 升级步骤：旧二进制 `cc-otel stop` → 新二进制 `cc-otel install && cc-otel start`。
+
+### service_name 归因（新维度）
+
+- `api_requests` / `daily_model_agg` 增加 `service_name` 列（agg 主键 `(date, model, service_name)`），启动迁移自动从旧行重建并把空值回填为 `claude-code`；部分索引兜住回填，不再每次启动全表扫。
+- `db.NormalizeServiceName` 是唯一归一化规则，接收器 / 聚合重建 / InsertRequest / dbmerge 全部走它，裸 `''` 永不入库。
+- 前端：请求日志 **Source 列** + 按客户端的品牌色徽章。刻意**不做**按来源的查询过滤和图表维度——非 Codex 客户端都归一化进同一池，主标签改名 **All Clients**。
+
+### OTLP/HTTP 接入 `:4318` + opencode（新客户端）
+
+- `internal/receiver/http.go` 用同一套 Export 方法服务 OTLP/HTTP 三信号——协议 shim，不是第二条摄入路径。按客户端发来的编码应答（JSON 进 JSON 出），没存下的数据绝不返回 2xx。透明解压 `Content-Encoding: gzip`。配置 `otlp_http_port`（默认 4318，`0` = 显式禁用，`/api/status` 如实上报）。
+- **opencode**（Vercel AI SDK）：usage span 重塑为 `api_request` 日志记录后回放 `logs.Export`，享受同样的成本重算、归因、去重、SSE。只取叶子 span（父 span 重复携带 usage，两边都算会翻倍）；`request_id` = hex span id，重试幂等；span 无 `service.name` 时归因为 `opencode` 而非全局默认。
+
+### 感知服务的定价
+
+- 上游 `cost_usd` 只对 **Claude Code + Claude 模型**权威（`pricing.IsUpstreamAuthoritative`）；Claude Code 走 GLM/DeepSeek 反代时上游价是错的，其他客户端干脆不报成本。接收器、Codex 路径、离线重算三处同一规则，回填不会改写接收器刻意保留的行。
+- 价目表不再特判 Claude：Lookup/Upsert/`pricing:` YAML 都接受 Claude 条目——这是给「不报成本的客户端驱动 Claude 模型」定价的唯一途径。
+
+### DeepSeek Harness (DSH) 接入（新客户端）
+
+- DSH 经 OTLP/HTTP 上报整份 session 账本。`internal/receiver/dsh.go` 只把带 `usage` 的 `assistant/message` 转成 `api_requests`，其余记录一律丢弃（FULL 模式正文含提示词、工具输出、文件内容）；step 生命周期重建 `duration_ms` / `ttft_ms`；`request_id` = `dsh-<session>-<seq>`，重试幂等。
+- 判定按 **ResourceLogs 粒度**（scope 前缀为主信号、`service.name` 兜底），collector 把多个客户端合批导出也不会误路由。
+
+### 代码审查修复批次（max 级审查，12 项确认全修）
+
+- **数据丢失**：混合批次 DSH 路由改为 per-ResourceLogs 分发（有测试钉死混合双入库）；`event.seq` 缺失时 request_id 以记录时间兜底，不再塌缩成 `-0` 吞掉整个 session。
+- **工具链**：`tools/otlp_dump` 复用 `receiver.ReadOTLPBody`（gzip 解压 + 大小上限），DSH 调试工作流不再 400;`AGENTS.md` symlink 改相对路径（原绝对路径在任何 clone 上都是死链）；`import_global` 的 `daily_model_agg` DDL 与 `applyAggDeltas` 对齐。
+- **行为如实**：ai-sdk clamp 警告文案更正（clamp 后即为正确值，提示供确认假设）；`otlp_http_port: 0` 显式禁用且状态如实显示。
+- **效率/维护性**：DSH body 解码按需取键（跳过 MB 级 content）；`'claude-code'` 字面量统一走 `db.DefaultServiceName`；三份重复的聚合 SQL 收口为单一常量。
+- **前端**：Source 徽章背景走 `var(--accent-dim)`（亮色主题不再用暗色 tint）；标签激活态统一 graphite 范式；清理死代码与格式损伤。
+
 ## [v0.1.0-preview.16] - 2026-07-17
 
 > 汇总 `v0.1.0-preview.15` 之后的 6 个提交：在线数据库导入、Codex 结构化计费关联、启动清理遗留 Codex 事件、前端视觉规范、粒度分段控件、Intraday 重做为按桶柱状图。
@@ -234,8 +278,3 @@
 - Codex CLI 不上报 `cost_usd`，cc-otel 通过价目表自动算出并写入 `codex_api_requests.cost_usd`。
 
 ---
-
-## [0.1.0] - TBD
-
-> 首个正式（非 preview）公开版本将把上述 Unreleased / Preview 内容固化为 `0.1.0`，
-> 并补充安装 / 升级说明、二进制发布包与升级路径。

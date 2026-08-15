@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,13 +33,24 @@ type PriceEntry struct {
 	Aliases       []string `yaml:"aliases"`
 }
 
-// claudeDir returns ~/.claude (Claude Code's standard data directory).
+// claudeDir returns ~/.claude (Claude Code's standard data directory). Only
+// used as the legacy install location for the v0.1.0 migration below.
 func claudeDir() string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".claude")
+}
+
+// ccOtelDir returns ~/.cc-otel, the client-agnostic home for cc-otel's binary,
+// config, database and logs. cc-otel is no longer coupled to Claude Code.
+func ccOtelDir() string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cc-otel")
 }
 
 // exeDir returns the directory of the running executable.
@@ -54,7 +66,8 @@ func exeDir() string {
 //
 // Priority:
 //  1. Dev mode: exe is in a bin/ directory → use bin/ (local builds self-contained)
-//  2. Default: ~/.claude/cc-otel/ (clean subdirectory layout)
+//  2. Default: ~/.cc-otel/ — migrated from the legacy ~/.claude/cc-otel/ on
+//     first run (see migrateLegacyDataDir)
 func defaultDataDir() string {
 	// 1. Dev mode: exe in bin/ directory
 	exe := exeDir()
@@ -62,15 +75,120 @@ func defaultDataDir() string {
 		return exe
 	}
 
-	// 2. Default: ~/.claude/cc-otel/
-	claude := claudeDir()
-	if claude != "" {
-		dir := filepath.Join(claude, "cc-otel")
+	// 2. Default: ~/.cc-otel/, auto-migrated from ~/.claude/cc-otel/
+	dir := ccOtelDir()
+	if dir == "" {
+		return "."
+	}
+	legacy := filepath.Join(claudeDir(), "cc-otel")
+	if claudeDir() == "" {
+		legacy = ""
+	}
+	if migrateLegacyDataDir(dir, legacy, exe) || dirExists(dir) {
 		_ = os.MkdirAll(dir, 0o755)
 		return dir
 	}
+	// Migration could not run (typically the old daemon still holds the old
+	// directory's files). Keep using the legacy location for this invocation —
+	// never create a fresh empty database while the old one is stranded.
+	_ = os.MkdirAll(legacy, 0o755)
+	return legacy
+}
 
-	return "."
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// fileExists reports whether path exists and is NOT a directory.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// migrateLegacyDataDir moves the pre-v0.1.0 install (~/.claude/cc-otel) to the
+// standalone ~/.cc-otel home. It reports whether the NEW directory should be
+// used; on any failure it leaves everything untouched so defaultDataDir can
+// fall back to the legacy location.
+//
+// Safety property: this function must never strand data — the only outcomes
+// are "whole directory moved" or "nothing changed".
+func migrateLegacyDataDir(newDir, legacyDir, exeDir string) bool {
+	if legacyDir == "" || newDir == "" {
+		return true // nothing to migrate from; use the new directory
+	}
+	if !dirExists(legacyDir) {
+		if fileExists(newDir) {
+			return false // a stray file occupies the name; the caller keeps a working location
+		}
+		return true // no legacy install
+	}
+	if dirExists(newDir) {
+		return true // already migrated (or a fresh v0.1.0+ install)
+	}
+	if fileExists(newDir) {
+		// os.Rename would happily replace a plain file with the directory on
+		// Windows — never clobber whatever the user parked at this path.
+		log.Printf("cc-otel: %s exists but is not a directory; keeping the install at %s", newDir, legacyDir)
+		return false
+	}
+	// Renaming a directory that contains the running executable fails on
+	// Windows, and the user is mid-upgrade anyway: skip and tell them how to
+	// finish it.
+	if exeDir != "" && (strings.EqualFold(exeDir, legacyDir) || isWithin(exeDir, legacyDir)) {
+		log.Printf("cc-otel: running from the legacy directory %s; migration to %s is skipped — "+
+			"run `cc-otel install` from a copy outside it", legacyDir, newDir)
+		return false
+	}
+	err := os.Rename(legacyDir, newDir)
+	if err == nil {
+		rewriteMigratedConfig(newDir, legacyDir)
+		log.Printf("cc-otel: migrated %s → %s (pre-v0.1.0 install location)", legacyDir, newDir)
+		return true
+	}
+	// Another process may have completed the migration between our checks.
+	if !dirExists(legacyDir) && dirExists(newDir) {
+		return true
+	}
+	log.Printf("cc-otel: cannot migrate %s → %s (%v); continuing with the legacy directory. "+
+		"Stop the running cc-otel daemon, then start it again to retry the migration.", legacyDir, newDir, err)
+	return false
+}
+
+// isWithin reports whether path is inside dir (or equals it), case-insensitively
+// for the Windows filesystems this runs on.
+func isWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// rewriteMigratedConfig re-points absolute paths inside the migrated
+// cc-otel.yaml at its new home. A db_path written for the legacy directory
+// would dangle after the rename and the daemon would fail to open the database
+// it just moved.
+func rewriteMigratedConfig(newDir, legacyDir string) {
+	cfgPath := filepath.Join(newDir, "cc-otel.yaml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return // no config file in the moved directory — nothing to rewrite
+	}
+	text := string(data)
+	for _, pair := range [][2]string{
+		{legacyDir, newDir},                                 // native separators (Windows backslash)
+		{filepath.ToSlash(legacyDir), filepath.ToSlash(newDir)}, // forward-slash spelling
+		{"~/.claude/cc-otel", "~/.cc-otel"},                 // tilde spelling
+	} {
+		text = strings.ReplaceAll(text, pair[0], pair[1])
+	}
+	if text == string(data) {
+		return
+	}
+	if err := os.WriteFile(cfgPath, []byte(text), 0o644); err != nil {
+		log.Printf("cc-otel: could not rewrite paths in the migrated config (%v) — edit db_path in %s manually", err, cfgPath)
+	}
 }
 
 // DefaultConfigPath returns the absolute path to the default config file.

@@ -24,7 +24,7 @@ One-command setup for cc-otel telemetry dashboard. Downloads the latest binary (
    - Arch: `uname -m` → `amd64` / `arm64`
 
 2. **Check if cc-otel is already installed:**
-   - Check `~/.claude/cc-otel/cc-otel` (Unix) or `~/.claude/cc-otel/cc-otel.exe` (Windows)
+   - Check `~/.cc-otel/cc-otel` (Unix) or `~/.cc-otel/cc-otel.exe` (Windows)
    - Run `<bin>/cc-otel -v` — if it works and `--force` was not passed, skip to step 4.
 
 3. **Download the latest release and install:**
@@ -39,12 +39,12 @@ One-command setup for cc-otel telemetry dashboard. Downloads the latest binary (
      git clone https://github.com/young1lin/cc-otel.git /tmp/cc-otel-build && cd /tmp/cc-otel-build && go build -o cc-otel ./cmd/cc-otel/
      ```
    - Download the matched asset to a temp dir, extract it.
-   - Run `./cc-otel install` — copies the binary to `~/.claude/cc-otel/cc-otel(.exe)`.
-   - **No need to add to PATH** — all commands use absolute path to `~/.claude/cc-otel/cc-otel`.
+   - Run `./cc-otel install` — copies the binary to `~/.cc-otel/cc-otel(.exe)`.
+   - **No need to add to PATH** — all commands use absolute path to `~/.cc-otel/cc-otel`.
 
 4. **Configure Claude Code OTEL environment (merge, not replace):**
    - First, read cc-otel config to get the actual OTEL port:
-     - Run `<bin>/cc-otel status` or read `~/.claude/cc-otel/cc-otel.yaml` to get `otel_port` (default: 4317)
+     - Run `<bin>/cc-otel status` or read `~/.cc-otel/cc-otel.yaml` to get `otel_port` (default: 4317)
    - Read `~/.claude/settings.json` (if not exists, start with `{}`)
    - Parse as JSON object
    - If top-level `"env"` key does not exist, create it as `{}`

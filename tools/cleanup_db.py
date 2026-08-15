@@ -3,7 +3,7 @@ cc-otel database cleanup script.
 
 Usage:
     python tools/cleanup_db.py               # Clean bin/cc-otel.db (dev)
-    python tools/cleanup_db.py --production  # Clean ~/.claude/cc-otel/cc-otel.db (requires service stop)
+    python tools/cleanup_db.py --production  # Clean ~/.cc-otel/cc-otel.db (requires service stop)
     python tools/cleanup_db.py --db PATH     # Clean a specific DB file
     python tools/cleanup_db.py --dry-run     # Show what would be deleted without modifying
 
@@ -165,7 +165,7 @@ def cleanup_db(db_path, dry_run=False):
 
 def main():
     parser = argparse.ArgumentParser(description="cc-otel database cleanup")
-    parser.add_argument("--production", action="store_true", help="Clean production DB (~/.claude/cc-otel/cc-otel.db)")
+    parser.add_argument("--production", action="store_true", help="Clean production DB (~/.cc-otel/cc-otel.db)")
     parser.add_argument("--db", type=str, help="Path to a specific DB file")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be deleted without modifying")
     args = parser.parse_args()
@@ -173,7 +173,7 @@ def main():
     if args.db:
         db_path = args.db
     elif args.production:
-        db_path = os.path.join(os.path.expanduser("~"), ".claude", "cc-otel", "cc-otel.db")
+        db_path = os.path.join(os.path.expanduser("~"), ".cc-otel", "cc-otel.db")
     else:
         db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bin", "cc-otel.db")
 
