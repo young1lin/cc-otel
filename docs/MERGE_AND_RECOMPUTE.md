@@ -2,7 +2,7 @@
 
 [English version below](#english-version)
 
-适用：把另一台机器或全局的 `~/.claude/cc-otel/cc-otel.db` 数据合到 `bin/cc-otel.db`，再用本地价目表把非 Claude 模型的 `cost_usd` 重新算一遍（修正反代上报错价、Codex 没上报、新模型未入价目表等问题）。
+适用：把另一台机器或全局的 `~/.cc-otel/cc-otel.db` 数据合到 `bin/cc-otel.db`，再用本地价目表把非 Claude 模型的 `cost_usd` 重新算一遍（修正反代上报错价、Codex 没上报、新模型未入价目表等问题）。
 
 ### 工具盘点
 
@@ -22,7 +22,7 @@ Web 数据库导入和 `tools/merge_bin_global` 都使用 `internal/dbmerge` 维
 
 ### 默认假设
 
-- **方向**：global (`~/.claude/cc-otel`) → 合并进 bin (`./bin`)。`run_merge` 写死了这个方向；要反向得改参数或自己拼。
+- **方向**：global (`~/.cc-otel`) → 合并进 bin (`./bin`)。`run_merge` 写死了这个方向；要反向得改参数或自己拼。
 - **时间窗口**：默认 1970-01-01 到 now，即全量。
 - **副作用**：
   - 自动备份 bin db 到 `bin/backup-merge-bin-global-<时间戳>/`
@@ -137,7 +137,7 @@ go run bin/tmp/verify.go
 
 ## English version
 
-Workflow for merging another `cc-otel.db` (typically global at `~/.claude/cc-otel/`) into the local `bin/cc-otel.db`, then recomputing non-Claude `cost_usd` from the local pricing table.
+Workflow for merging another `cc-otel.db` (typically global at `~/.cc-otel/`) into the local `bin/cc-otel.db`, then recomputing non-Claude `cost_usd` from the local pricing table.
 
 ### Tools
 

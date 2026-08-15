@@ -6,6 +6,49 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.0] - 2026-08-16
+
+> First stable release. cc-otel is no longer coupled to Claude Code: standalone install directory, four clients sharing one instance.
+> Summarizes the main line after `v0.1.0-preview.16`: service_name attribution, OTLP/HTTP ingress + opencode, service-aware pricing, DeepSeek Harness ingestion, and the code-review fix batch.
+
+### Standalone install directory `~/.cc-otel/` (breaking, auto-migrated)
+
+- The install/data directory moves from `~/.claude/cc-otel/` to **`~/.cc-otel/`** — cc-otel serves multiple clients and no longer lives inside Claude Code's data directory. Binary, config, DB, PID and log still share one directory.
+- **Automatic migration**: when the new binary finds `~/.cc-otel/` missing and `~/.claude/cc-otel/` present on first run, the whole directory is renamed (config, database, logs included). Safety property: the only outcomes are "whole directory moved" or "nothing changed" — no path ever produces a fresh empty DB with the old data stranded.
+  - Old daemon still running (files locked) → keep using the legacy directory this run with a log line; once stopped, the next run migrates.
+  - Running the new binary from inside the legacy directory → migration skipped with a hint (Windows cannot rename a directory containing the running exe); `cc-otel install` re-resolves the directory after stopping the daemon so the migration retries.
+  - A stray file at `~/.cc-otel` is never clobbered (Windows rename would silently replace files — explicitly guarded and pinned by tests).
+- Upgrade: old binary `cc-otel stop` → new binary `cc-otel install && cc-otel start`.
+
+### service_name attribution (new dimension)
+
+- `api_requests` / `daily_model_agg` gain a `service_name` column (agg PK `(date, model, service_name)`); the startup migration rebuilds from existing rows and backfills empty values to `claude-code`. A partial index backs the backfill so startups no longer full-scan.
+- `db.NormalizeServiceName` is the single normalization rule, applied identically by the receiver, the agg rebuild, InsertRequest, and dbmerge — a bare `''` is never stored.
+- Frontend: request-log **Source column** with per-client brand badges. Deliberately **no** per-source query filter or chart dimension — non-Codex clients share one pool, and the main tab is renamed **All Clients**.
+
+### OTLP/HTTP ingress on `:4318` + opencode (new client)
+
+- `internal/receiver/http.go` serves the same three OTLP services over OTLP/HTTP via the identical Export methods — a protocol shim, not a second ingestion path. It answers in the encoding the client sent (JSON in → JSON out) and never returns 2xx for unstored data. `Content-Encoding: gzip` is decompressed transparently. Config `otlp_http_port` (default 4318; `0` = explicitly disabled, reported honestly by `/api/status`).
+- **opencode** (Vercel AI SDK): usage spans are reshaped into `api_request` log records replayed through `logs.Export`, inheriting the same cost recompute, attribution, dedup and SSE. Only the leaf span is mapped (the parent repeats usage — mapping both double-counts); `request_id` is the hex span id, making retries idempotent; spans without `service.name` are attributed to `opencode` rather than the global default.
+
+### Service-aware pricing
+
+- Upstream `cost_usd` is authoritative only for **Claude Code on a Claude model** (`pricing.IsUpstreamAuthoritative`). Claude Code behind a GLM/DeepSeek proxy is mispriced upstream, and other clients report no cost at all. The receiver, the Codex path, and offline recompute share one rule, so backfills never rewrite rows the receiver deliberately kept.
+- The registry stops special-casing Claude: Lookup/Upsert/the `pricing:` YAML all accept Claude entries — the only way to price a Claude model driven by a client that reports none.
+
+### DeepSeek Harness (DSH) ingestion (new client)
+
+- DSH exports its whole session ledger over OTLP/HTTP. `internal/receiver/dsh.go` turns only usage-bearing `assistant/message` records into `api_requests`; everything else is dropped (FULL-mode bodies carry prompts, tool output, file contents). Step lifecycle rebuilds `duration_ms` / `ttft_ms`; `request_id` is `dsh-<session>-<seq>`, retry-idempotent.
+- Detection is per **ResourceLogs** (scope prefix as the primary signal, `service.name` as fallback), so a collector batching several clients into one export cannot misroute.
+
+### Code-review fix batch (max-level review, 12 confirmed findings fixed)
+
+- **Data loss**: mixed-batch DSH routing became per-ResourceLogs dispatch (pinned by a mixed-batch-stores-both test); a missing `event.seq` falls back to the record timestamp for `request_id` instead of collapsing a whole session onto `-0`.
+- **Tooling**: `tools/otlp_dump` reuses `receiver.ReadOTLPBody` (gzip decompression + size cap), unbreaking the DSH debugging workflow; the `AGENTS.md` symlink is now relative (the absolute target dangled on every clone); `import_global`'s `daily_model_agg` DDL matches `applyAggDeltas` again.
+- **Honest behavior**: the ai-sdk clamp warning text corrected (the clamped value is already correct; the note is for onboarding confirmation); `otlp_http_port: 0` explicitly disables and reports truthfully.
+- **Efficiency/maintainability**: DSH body decoding walks only the keys it reads (skipping multi-MB content); `'claude-code'` literals unified behind `db.DefaultServiceName`; the three copies of the aggregation SQL collapsed into one constant.
+- **Frontend**: Source badge background follows `var(--accent-dim)` (light theme no longer paints the dark tint); tab active state unified to the graphite pattern; dead code and formatting damage cleaned up.
+
 ## [v0.1.0-preview.16] - 2026-07-17
 
 > Summarizes the 6 commits after `v0.1.0-preview.15`: online database import, Codex structured accounting correlation, startup cleanup of legacy Codex events, a frontend taste guide, a granularity segmented control, and Intraday rebuilt as a per-bucket bar chart.
@@ -236,9 +279,3 @@ Ships as a marketplace plugin with slash commands:
 - Codex CLI doesn't report `cost_usd`; cc-otel computes it from the price table and writes it to `codex_api_requests.cost_usd`.
 
 ---
-
-## [0.1.0] - TBD
-
-> The first non-preview public release will snapshot the Unreleased / Preview
-> content above into `0.1.0`, plus packaging / upgrade notes and release
-> binaries.

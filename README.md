@@ -12,7 +12,7 @@
 
 # CC-OTEL
 
-Claude Code Token 用量监控服务。接收 OTEL 遥测数据，提供 Web 仪表盘查看 token 消耗和费用。
+多客户端 LLM Token 用量监控服务。接收 OTEL 遥测数据（Claude Code / Codex / opencode / DeepSeek Harness），提供 Web 仪表盘查看 token 消耗和费用。多个客户端共享同一个 cc-otel 实例，仪表盘按来源区分。
 
 ## 文档
 
@@ -28,19 +28,21 @@ Claude Code Token 用量监控服务。接收 OTEL 遥测数据，提供 Web 仪
 
 ## 为什么需要
 
-Claude Code 内置了 OpenTelemetry 支持，但查看数据需要搭建 Grafana、Prometheus 或使用第三方 SaaS。**CC-OTEL** 是一个单二进制文件，接收 OTLP 遥测数据，存储到 SQLite，提供 Web 仪表盘 -- 无外部依赖，零配置即可运行。
+Claude Code / Codex / opencode / DeepSeek Harness 都内置了 OpenTelemetry 支持，但查看数据需要搭建 Grafana、Prometheus 或使用第三方 SaaS。**CC-OTEL** 是一个单二进制文件，接收 OTLP 遥测数据，存储到 SQLite，提供 Web 仪表盘 -- 无外部依赖，零配置即可运行。
 
 ## 架构
 
 ```
-Claude Code ──OTLP gRPC(:4317)──> cc-otel ──> SQLite
-                                      |
-                                  Web UI <── Browser (localhost:8899)
+Claude Code / Codex ──OTLP gRPC(:4317)──┐
+                                        ├──> cc-otel ──> SQLite
+opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
+                                            Web UI <── Browser (localhost:8899)
 ```
 
 ## 功能
 
-- **OTLP gRPC 接收器** -- 接收 Claude Code 的指标和日志事件
+- **多客户端接入** -- Claude Code / Codex / opencode / DeepSeek Harness 共用一个实例，按来源归因（见下表）
+- **OTLP 双传输接收器** -- gRPC（`:4317`）+ OTLP/HTTP（`:4318`），同一套入库逻辑
 - **Web 仪表盘** -- Token 用量、费用明细、缓存命中率、按模型统计
 - **KPI 分项** -- 点击任意 KPI 卡片查看模型级别明细
 - **实时更新** -- SSE 推送，新数据到达时自动刷新
@@ -53,6 +55,19 @@ Claude Code ──OTLP gRPC(:4317)──> cc-otel ──> SQLite
 - **预聚合表** -- 查询延迟 < 3ms，百万行无压力
 - **单二进制** -- `go:embed` 打包 Web UI，零运行时依赖
 - **跨平台** -- Windows、macOS、Linux
+
+## 支持的客户端
+
+| 客户端 | 传输 / 端口 | 接入方式 | 详细文档 |
+|--------|------------|----------|----------|
+| **Claude Code** | OTLP gRPC `:4317` | `~/.claude/settings.json` 加 OTEL 环境变量（`/cc-otel:setup` 一键完成） | [下文](#配置客户端) |
+| **Codex CLI** | OTLP gRPC `:4317` | `~/.codex/config.toml` 加 `[otel]` 段 | [下文](#codex-cli-接入) |
+| **opencode** | OTLP/HTTP `:4318` | `opencode.jsonc` 开关 + `OTEL_EXPORTER_OTLP_ENDPOINT` 环境变量 | [下文](#opencode-接入) |
+| **DeepSeek Harness** | OTLP/HTTP `:4318` | `DSH_TELEMETRY_*` 环境变量或 `cordis.patch.yml` | [下文](#deepseek-harness-dsh-接入) |
+
+- 所有客户端共用同一个 cc-otel 实例，数据统一落到仪表盘；请求日志的 **Source 列**逐行标注来源。
+- Codex 因为上报格式完全不同（无结构化账本），路由到独立的 `codex_*` 表和 `?source=codex` 标签页；其余客户端都归一化成 Claude Code 事件形态，共享 **All Clients** 主视图。
+- 新客户端接入调试：`go run ./tools/otlp_dump`（双传输、只打印不落库，AI SDK span 还会打印 cc-otel 将派生的 `would_store_api_request`）。
 
 ## 安装
 
@@ -90,12 +105,17 @@ go build -o cc-otel.exe ./cmd/cc-otel/
 
 前往 [Releases](https://github.com/young1lin/cc-otel/releases) 下载对应平台的二进制文件。
 
-### 安装到 ~/.claude/cc-otel/
+### 安装到 ~/.cc-otel/
 
 ```bash
-cc-otel install    # 复制二进制到 ~/.claude/cc-otel/（全平台通用）
+cc-otel install    # 复制二进制到 ~/.cc-otel/（全平台通用）
 cc-otel init       # 生成默认配置文件
 ```
+
+> **从旧版本升级（~/.claude/cc-otel/ → ~/.cc-otel/）**：v0.1.0 起安装目录独立于 Claude Code。
+> 新二进制首次运行时会**自动**把整个 `~/.claude/cc-otel/`（配置、数据库、日志）迁移到 `~/.cc-otel/`，
+> 前提是旧 daemon 已停止（文件被占用时迁移会跳过并在下次重试，数据绝不会被遗弃）。
+> 升级步骤：`cc-otel stop`（旧二进制）→ 用新二进制 `cc-otel install && cc-otel start`。
 
 ## 运行
 
@@ -125,23 +145,26 @@ Claude Code 内置 OTEL SDK，通过 **OTLP**（OpenTelemetry Protocol，标准�
 ### 数据流
 
 ```
-┌─────────────────┐    OTLP/gRPC     ┌──────────────────────┐    ┌────────────────────────┐
-│  Claude Code    │ ───────────────▶ │  cc-otel (:4317)     │───▶│  SQLite                │
-│  Codex CLI      │    :4317         │  · LogsService       │    │  · api_requests        │
-│  (OTEL SDK)     │                  │  · MetricsService    │    │  · codex_api_requests  │
-│  logs + traces  │                  │  · TraceService      │    │  · daily_model_agg     │
-└─────────────────┘                  └──────────┬───────────┘    └──────────┬─────────────┘
-                                                │ Notify()                  │
-                                                ▼                           │
-                                     ┌──────────────────────┐               │
-                                     │  Web UI (:8899)      │◀──────────────┘
-                                     │  · REST API          │   query
-                                     │  · SSE /api/events   │───┐
-                                     └──────────────────────┘   │ push
-                                                                ▼
-                                                         ┌────────────┐
-                                                         │  Browser   │
-                                                         └────────────┘
+┌─────────────────┐   OTLP/gRPC :4317 ┌──────────────────────┐    ┌────────────────────────┐
+│  Claude Code    │ ────────────────▶ │  cc-otel             │───▶│  SQLite                │
+│  Codex CLI      │                   │  · gRPC :4317        │    │  · api_requests        │
+└─────────────────┘                   │  · OTLP/HTTP :4318   │    │  · codex_api_requests  │
+┌─────────────────┐   OTLP/HTTP :4318 │    (同一套 Export)    │    │  · daily_model_agg     │
+│  opencode       │ ────────────────▶ │  · LogsService       │    └──────────┬─────────────┘
+│  DeepSeek Harness│                  │  · MetricsService    │               │
+│  (OTEL SDK)     │                   │  · TraceService      │               │
+└─────────────────┘                   └──────────┬───────────┘               │
+                                                 │ Notify()                  │
+                                                 ▼                           │
+                                      ┌──────────────────────┐               │
+                                      │  Web UI (:8899)      │◀──────────────┘
+                                      │  · REST API          │   query
+                                      │  · SSE /api/events   │───┐
+                                      └──────────────────────┘   │ push
+                                                                 ▼
+                                                          ┌────────────┐
+                                                          │  Browser   │
+                                                          └────────────┘
 ```
 
 ### 三个阶段
@@ -171,17 +194,16 @@ Token 统计严格按照 Anthropic 的 [Prompt caching 官方口径](https://doc
 - SSE：`/api/events` — 接收器每次成功入库新数据后调用 `Broker.Notify()`，通过 Server-Sent Events 推送到浏览器，前端自动刷新图表
 - 静态资源：默认通过 `go:embed` 打进二进制；本地开发可用 `CC_OTEL_STATIC_DIR` 从磁盘读取，免重编译
 
-### 为什么用 gRPC 而不是 HTTP？
+### 双传输：gRPC `:4317` + OTLP/HTTP `:4318`
 
-Claude Code 支持 `grpc` / `http/json` / `http/protobuf` 三种 OTLP 传输。CC-OTEL 只实现 gRPC，因为：
+两种传输走**同一套** Export 入库逻辑（`internal/receiver/http.go` 是协议 shim，不是第二条摄入路径），来源路由、成本重算、去重、SSE 完全一致：
 
-- Claude Code 自身对 gRPC 路径做了最多的优化和测试
-- protobuf 编码比 JSON 小 ~40%，在高频写 / 长 session 场景下更省
-- 连接复用（HTTP/2 多路复用）减少导出延迟
+- **gRPC（`:4317`）** -- Claude Code、Codex。Claude Code 对 gRPC 路径优化最多，protobuf 编码比 JSON 小 ~40%，HTTP/2 多路复用降低导出延迟。
+- **OTLP/HTTP（`:4318`）** -- 不能说 gRPC 的客户端：opencode 和其他 Vercel AI SDK 应用、DeepSeek Harness（gzip 压缩自动解压）。
 
-如果你的网络环境只能走 HTTP，可在 Claude Code 和 cc-otel 之间架一层 `otel-collector` 做协议转换。
+shim 严格按 OTLP 规范应答：以客户端发来的编码回应（JSON 进 JSON 出），**没有存下的数据绝不返回 2xx**——exporter 把 2xx 视为已送达并丢弃批次。
 
-## 配置 Claude Code
+## 配置客户端
 
 Claude Code 需要通过 gRPC 导出 OTLP 数据到 CC-OTEL。在 `~/.claude/settings.json` 的 `"env"` 中添加以下环境变量：
 
@@ -217,6 +239,45 @@ metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
 启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入 `codex_api_requests.cost_usd`，Cost KPI 与 Claude 视图等同。
+
+### opencode 接入
+
+opencode 基于 Vercel AI SDK，用量上报在 GenAI **span** 上而非日志事件。cc-otel 会把 usage span 重塑成标准 `api_request` 形态，数据直接进入 **All Clients** 主视图（无独立标签页），请求日志 Source 列显示 `opencode`。
+
+opencode 说 **OTLP/HTTP（`:4318`）**，指到 `:4317` 不通。两步配置：
+
+**1. 打开遥测开关**（`~/.config/opencode/opencode.jsonc`，Windows 为 `%USERPROFILE%\.config\opencode\opencode.jsonc`）：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "experimental": {
+    "openTelemetry": true
+  }
+}
+```
+
+**2. 指向 cc-otel**（标准 OTel 环境变量，用户级持久化）：
+
+```powershell
+# Windows
+[Environment]::SetEnvironmentVariable('OTEL_EXPORTER_OTLP_ENDPOINT','http://localhost:4318','User')
+```
+
+```bash
+# macOS / Linux（写进 shell profile）
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+> **必须写 base url，不要带 `/v1/traces`**——SDK 会自己拼接信号路径，写全路径会变成 `/v1/traces/v1/traces` 导致 404。
+
+重启 opencode 跑一轮对话，dashboard 的 Source 列应出现 `opencode`。
+
+**与 Claude Code 的差异**：
+
+- opencode **不上报 `cost_usd`**，cc-otel 始终用本地价目表重算；如果通过 opencode 驱动 Claude 模型，需自己在价目表补 Claude 条目（内置快照刻意不含 Claude），否则这些行计 $0。
+- usage 只取叶子 span（`ai.streamText.doStream` / `ai.generateText.doGenerate`），父 span 同样带 usage 但会被忽略——两边都算会翻倍。
+- `request_id` 用 hex span id，exporter 重试天然幂等。
 
 ### DeepSeek Harness (DSH) 接入
 
@@ -271,7 +332,7 @@ npx @deepseek-ai/dsh web
 | 等了几秒还没出现 | 批处理 `scheduledDelayMillis: 10000`，最多延迟 10 秒才导出 |
 | 只收到最近几条，历史对话没有 | DSH 只从 telemetry 启用时的 live 边界开始交接，之前的历史事件不会补发 |
 | 费用是 $0 | 该模型没有价格条目（如 `glm-5.x` 上游价目表尚未收录），需在 Pricing Table 手动添加后点 ↻ 重算历史 |
-| 服务端报 `malformed OTLP payload` | cc-otel 版本过旧：DSH 默认 `compression: gzip`，需要 v0.1.0-preview.18+ 才会解压 |
+| 服务端报 `malformed OTLP payload` | cc-otel 版本过旧：DSH 默认 `compression: gzip`，需要 v0.1.0+ 才会解压 |
 
 > **⚠️ 隐私**: `mode: FULL` 会把完整会话内容（提示词、工具输出、文件内容）发到上面配置的端点。cc-otel 只保存 token 与费用、不落库任何正文（`raw_otlp_events` 也为空），但数据确实经过了这个连接——请保持指向 localhost。只想在 `/feedback` 时才上报可改用 `mode: FEEDBACK_ONLY`。
 
@@ -297,9 +358,9 @@ cc-otel 内嵌了从 [BerriAI/litellm](https://github.com/BerriAI/litellm) 派�
 
 ```bash
 # dry-run
-go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both
+go run ./tools/recompute_cost --db ~/.cc-otel/cc-otel.db --table both
 # 确认 diff 合理后再 --apply
-go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both --apply
+go run ./tools/recompute_cost --db ~/.cc-otel/cc-otel.db --table both --apply
 ```
 
 ## 在线数据库导入
@@ -315,15 +376,13 @@ go run ./tools/recompute_cost --db ~/.claude/cc-otel/cc-otel.db --table both --a
 CC-OTEL 的数据目录按以下顺序解析（详见 `internal/config/config.go` 的 `defaultDataDir`）：
 
 1. **`./bin/`** -- 可执行文件位于名为 `bin` 的目录中时（开发模式）。
-2. **`~/.claude/cc-otel/`** -- 否则使用此目录（不存在会自动 `mkdir`）。
+2. **`~/.cc-otel/`** -- 否则使用此目录（不存在会自动 `mkdir`）；首次运行时会自动把 v0.1.0 之前的 `~/.claude/cc-otel/` 整目录迁移过来。
 3. **`.`** -- 兜底，仅在无法获取 home 目录时落到当前目录。
-
-> 注意：`~/.claude/` 本身**不**作为中间查找步骤；老版本文档曾如此描述，但代码里没这一步。
 
 所有文件（二进制、配置、数据库、PID、日志）在同一目录：
 
 ```
-~/.claude/cc-otel/
+~/.cc-otel/
 ├── cc-otel(.exe)    # 可执行文件
 ├── cc-otel.yaml     # 配置
 ├── cc-otel.db       # SQLite 数据库
@@ -336,8 +395,9 @@ CC-OTEL 的数据目录按以下顺序解析（详见 `internal/config/config.go
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `CC_OTEL_OTEL_PORT` | OTLP gRPC 接收端口 | `4317` |
+| `CC_OTEL_OTLP_HTTP_PORT` | OTLP/HTTP 接收端口（`0` = 禁用） | `4318` |
 | `CC_OTEL_WEB_PORT` | Web UI 端口 | `8899` |
-| `CC_OTEL_DB_PATH` | SQLite 数据库路径 | `~/.claude/cc-otel/cc-otel.db` |
+| `CC_OTEL_DB_PATH` | SQLite 数据库路径 | `~/.cc-otel/cc-otel.db` |
 
 ### 数据保留
 
@@ -390,11 +450,14 @@ raw_ttl_days: 5       # raw_otlp_events / codex_raw_otlp_events 的留存上限�
 
 ```bash
 # 查看当前版本
-~/.claude/cc-otel/cc-otel -v
+~/.cc-otel/cc-otel -v
 
 # 强制重新安装
 /cc-otel:setup --force
 ```
+
+> **v0.1.0 升级须知**：安装目录从 `~/.claude/cc-otel/` 迁到 `~/.cc-otel/`。停掉旧 daemon 后用新二进制
+> `install` + `start`，目录迁移（含数据库）自动完成；详见[安装](#安装到-cc-otel)一节。
 
 ## 开发
 

@@ -55,12 +55,12 @@ func main() {
 
 func parseFlags() config {
 	home, _ := os.UserHomeDir()
-	defaultGlobal := filepath.Join(home, ".claude", "cc-otel")
+	defaultGlobal := filepath.Join(home, ".cc-otel")
 
 	var cfg config
 	flag.StringVar(&cfg.RepoDir, "repo", ".", "repository root used for go run helper tools")
 	flag.StringVar(&cfg.BinDir, "bin-dir", filepath.Join(".", "bin"), "bin directory containing local cc-otel.db and cc-otel.exe")
-	flag.StringVar(&cfg.GlobalDir, "global-dir", defaultGlobal, "global ~/.claude/cc-otel directory")
+	flag.StringVar(&cfg.GlobalDir, "global-dir", defaultGlobal, "global ~/.cc-otel directory (pass ~/.claude/cc-otel explicitly for a pre-v0.1.0 install that was never migrated)")
 	flag.StringVar(&cfg.From, "from", "1970-01-01T00:00:00+08:00", "export window start RFC3339")
 	flag.StringVar(&cfg.To, "to", "", "export window end RFC3339; default is now")
 	flag.StringVar(&cfg.RepairFromDate, "repair-from-date", "", "daily_model_agg repair start date YYYY-MM-DD; default from local data")

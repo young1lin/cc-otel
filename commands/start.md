@@ -11,7 +11,7 @@ Start the cc-otel daemon process in the background.
 ## Instructions
 
 1. **Locate cc-otel binary:**
-   - Primary: `~/.claude/cc-otel/cc-otel` (Unix) or `~/.claude/cc-otel/cc-otel.exe` (Windows)
+   - Primary: `~/.cc-otel/cc-otel` (Unix) or `~/.cc-otel/cc-otel.exe` (Windows)
    - Fallback: check if `cc-otel` is in PATH
    - If not found, tell user to run `/cc-otel:setup` first
 
@@ -31,8 +31,8 @@ Start the cc-otel daemon process in the background.
    ```
    cc-otel started (PID 12345)
      Version:       a55be87
-     Config:        ~/.claude/cc-otel/cc-otel.yaml
-     DB:            ~/.claude/cc-otel/cc-otel.db
+     Config:        ~/.cc-otel/cc-otel.yaml
+     DB:            ~/.cc-otel/cc-otel.db
      OTEL receiver: localhost:4317
      Web dashboard: http://localhost:8899
    ```

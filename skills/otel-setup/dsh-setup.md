@@ -6,7 +6,7 @@ DSH speaks **OTLP/HTTP (`:4318`)**, not gRPC, and its endpoint must be the **ful
 
 ## Prerequisites
 
-- cc-otel **v0.1.0-preview.18 or newer** — DSH's shipped exporter sets `compression: gzip`, and earlier builds do not decompress, so every export is rejected as malformed
+- cc-otel **v0.1.0 or newer** — DSH's shipped exporter sets `compression: gzip`, and earlier builds do not decompress, so every export is rejected as malformed
 - cc-otel is running with `otlp_http_port: 4318` (the default)
 
 ## Configuration
@@ -77,7 +77,7 @@ By the instrumentation scope `@deepseek-ai/dsh-session-telemetry-otel` (the `/op
 | No data, config looks right | `DSH_TELEMETRY_DISABLED` vetoes everything when set to any non-empty value — including `0` and `false` |
 | Nothing after a few seconds | Batch delay is 10s by default; that is not a failure |
 | Only recent turns appear | Expected — events before telemetry was enabled are never handed off |
-| Server logs `malformed OTLP payload` | cc-otel is older than preview.18 and cannot decompress DSH's gzipped exports |
+| Server logs `malformed OTLP payload` | cc-otel is older than v0.1.0 and cannot decompress DSH's gzipped exports |
 | Cost is $0 | No price entry for that model (e.g. `glm-5.x` is not in the upstream catalog). Add it in the Pricing Table modal, then ↻ 重算历史 |
 
 ## Privacy

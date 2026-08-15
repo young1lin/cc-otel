@@ -5,7 +5,7 @@
 //	go run ./tools/snapshot_db <src.db> <dst.db>   (dst must not exist)
 //
 // See .claude/rules/db-copy-no-stop.md — copying the DB must never stop the
-// running daemon (the global instance at ~/.claude/cc-otel/ in particular).
+// running daemon (the global instance at ~/.cc-otel/ in particular).
 package main
 
 import (

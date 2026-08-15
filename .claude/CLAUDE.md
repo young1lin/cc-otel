@@ -91,7 +91,7 @@ controls, interaction, motion, accessibility, and the standard of finish.
 
 ## Deployment
 
-Production directory: `~/.claude/cc-otel/` (binary, config, database, and logs all in one directory)
+Production directory: `~/.cc-otel/` (binary, config, database, and logs all in one directory). Since v0.1.0 this is decoupled from Claude Code; a pre-v0.1.0 `~/.claude/cc-otel/` install is migrated automatically on first run of the new binary (`internal/config/config.go` `migrateLegacyDataDir`).
 Development directory: `./bin/` (make build output, for local debugging)
 
 Environment variables are configured in `~/.claude/settings.json` under `env`, automatically effective for all Claude Code sessions.
@@ -109,13 +109,13 @@ cc-otel start -config path   # Start with a custom config file
 
 ## Configuration
 
-`~/.claude/cc-otel/cc-otel.yaml` (production) or `./bin/cc-otel.yaml` (development):
+`~/.cc-otel/cc-otel.yaml` (production) or `./bin/cc-otel.yaml` (development):
 
 ```yaml
 otel_port: 4317
 otlp_http_port: 4318
 web_port: 8899
-db_path: ~/.claude/cc-otel/cc-otel.db
+db_path: ~/.cc-otel/cc-otel.db
 model_mapping: {}
 ```
 
@@ -176,7 +176,7 @@ When extracting more code or adding a new view, follow the same pattern:
 
 When modifying code that **affects the web UI** (especially `internal/web/static/`, chart/table field semantics), the Agent must complete the following steps before reporting back to the user. Do NOT tell the user to "refresh and check yourself".
 
-1. **Rebuild and restart** (use `./bin/` for development, `~/.claude/cc-otel/` for production):
+1. **Rebuild and restart** (use `./bin/` for development, `~/.cc-otel/` for production):
 
 ```bash
 make build
@@ -224,7 +224,7 @@ The web UI will then read static files directly from the disk directory (only fo
 
 ### Development / Testing Ports (bin/ directory)
 
-**NEVER use production ports (4317 / 8899) for testing.** The production instance at `~/.claude/cc-otel/` must stay running. Always use separate ports for the bin development instance:
+**NEVER use production ports (4317 / 8899) for testing.** The production instance at `~/.cc-otel/` must stay running. Always use separate ports for the bin development instance:
 
 | Port | Service |
 |------|---------|
@@ -247,7 +247,7 @@ EOF
 
 When sending Codex test telemetry to the dev instance, use `http://localhost:14317` as the OTLP endpoint.
 
-All build artifacts (`make build`) go to `./bin/` — binary, config, database, logs. Never write test data to the production directory `~/.claude/cc-otel/`.
+All build artifacts (`make build`) go to `./bin/` — binary, config, database, logs. Never write test data to the production directory `~/.cc-otel/`.
 
 ## Frontend Development Rules
 
@@ -384,7 +384,7 @@ When touching pricing code, the standard build → restart → API → browser f
 
 ### Merging another DB into bin + recomputing cost
 
-When the user asks to "合并 A 和 B 数据库 + 清洗" (merge two databases and clean costs) — typically pulling `~/.claude/cc-otel/cc-otel.db` into `bin/cc-otel.db` then recomputing — **follow `docs/MERGE_AND_RECOMPUTE.md`**, do not improvise.
+When the user asks to "合并 A 和 B 数据库 + 清洗" (merge two databases and clean costs) — typically pulling `~/.cc-otel/cc-otel.db` into `bin/cc-otel.db` then recomputing — **follow `docs/MERGE_AND_RECOMPUTE.md`**, do not improvise.
 
 The standard sequence is:
 
@@ -397,10 +397,10 @@ go run ./tools/recompute_cost --db bin/cc-otel.db --config bin/cc-otel.yaml --ta
 
 - `--config bin/cc-otel.yaml` is **mandatory** for `recompute_cost`. Without it, user `pricing:` overrides (the only source of truth for models LiteLLM hasn't catalogued — glm-5.x, deepseek-v4-*, mimo-v2.5-pro, step-3.5-flash, etc.) are skipped and those rows keep their wrong upstream cost.
 - `run_merge` does **not** recompute. Merge and recompute are two separate steps.
-- `run_merge` direction is fixed: `~/.claude/cc-otel` → `bin/`. Result lands in `bin/cc-otel.db`.
+- `run_merge` direction is fixed: `~/.cc-otel` → `bin/`. Result lands in `bin/cc-otel.db`.
 - Both tools auto-create timestamped backups in `bin/`. The merge tool also auto-stops the bin daemon (PID-checked against `bin/cc-otel.exe` to avoid killing unrelated processes).
 - For interactive verification after a clean: `go run bin/tmp/verify.go` prints the per-model cost rollup.
 
 ### Iron rule: copying the DB must not stop a running process
 
-Copying / snapshotting `cc-otel.db` **must never stop the running daemon — the global instance at `~/.claude/cc-otel/` in particular is never stopped just to copy its DB.** The DB is WAL-mode, so a plain `cp` of the `.db` alone is inconsistent. Use the online snapshot `VACUUM INTO` (`go run ./tools/snapshot_db <src> <dst>`), which only read-locks the source. Only the **dev/bin daemon** (ports 14317/18899) may be stopped — and only because Windows can't replace a file it holds open. Full procedure: **`.claude/rules/db-copy-no-stop.md`**.
+Copying / snapshotting `cc-otel.db` **must never stop the running daemon — the global instance at `~/.cc-otel/` in particular is never stopped just to copy its DB.** The DB is WAL-mode, so a plain `cp` of the `.db` alone is inconsistent. Use the online snapshot `VACUUM INTO` (`go run ./tools/snapshot_db <src> <dst>`), which only read-locks the source. Only the **dev/bin daemon** (ports 14317/18899) may be stopped — and only because Windows can't replace a file it holds open. Full procedure: **`.claude/rules/db-copy-no-stop.md`**.

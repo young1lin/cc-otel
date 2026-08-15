@@ -101,16 +101,19 @@ retention_days: 30  # default is 90, set 0 to keep forever
 
 ## Config File Locations
 
-CC-OTEL looks for `cc-otel.yaml` in order:
-1. Next to the executable (portable mode)
-2. `~/.claude/` (legacy)
-3. `%APPDATA%\CC-OTEL\` (Windows) or `~/.config/CC-OTEL/` (Unix)
+CC-OTEL resolves its data directory (`internal/config/config.go` `defaultDataDir`) in order:
+1. The `bin/` directory containing the executable (dev mode — a `make build` layout)
+2. `~/.cc-otel/` (default; auto-created). A pre-v0.1.0 `~/.claude/cc-otel/` install is migrated here automatically on first run
+3. `.` (fallback only when the home directory can't be resolved)
+
+Config, DB, PID and log files all live in that one directory: `cc-otel.yaml`, `cc-otel.db`, `cc-otel.pid`, `cc-otel.log`.
 
 ## Environment Variable Overrides
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CC_OTEL_OTEL_PORT` | 4317 | OTLP gRPC port |
+| `CC_OTEL_OTLP_HTTP_PORT` | 4318 | OTLP/HTTP port (`0` disables) |
 | `CC_OTEL_WEB_PORT` | 8899 | Web dashboard port |
 | `CC_OTEL_DB_PATH` | (auto) | SQLite database path |
 

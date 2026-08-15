@@ -7,7 +7,7 @@ description: "Stop the cc-otel background service"
 ## Instructions
 
 1. **Locate cc-otel binary:**
-   - Primary: `~/.claude/cc-otel/cc-otel` (Unix) or `~/.claude/cc-otel/cc-otel.exe` (Windows)
+   - Primary: `~/.cc-otel/cc-otel` (Unix) or `~/.cc-otel/cc-otel.exe` (Windows)
    - Fallback: check if `cc-otel` is in PATH
    - If not found, tell user to run `/cc-otel:setup` first
 
