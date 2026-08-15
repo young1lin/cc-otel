@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -465,10 +466,33 @@ func cmdServe() {
 		}
 	}()
 
+	// Same three OTLP services over OTLP/HTTP, for clients that cannot speak
+	// gRPC (opencode and other AI-SDK apps). Separate port by OTLP convention:
+	// 4317 gRPC, 4318 HTTP. Failure here is not fatal — the gRPC receiver and
+	// the dashboard stay useful without it. Bind up front rather than inside the
+	// goroutine so /api/status can report whether WE own the port; a port probe
+	// would happily report healthy while another program squats on it.
+	otlpHTTPSrv := &http.Server{Handler: otelReceiver.HTTPHandler()}
+	var otlpHTTPBound atomic.Bool
+	otlpLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.OTLPHTTPPort))
+	if err != nil {
+		log.Printf("OTLP/HTTP receiver DISABLED — cannot bind :%d: %v", cfg.OTLPHTTPPort, err)
+	} else {
+		otlpHTTPBound.Store(true)
+		go func() {
+			log.Printf("OTLP/HTTP receiver listening on http://localhost:%d", cfg.OTLPHTTPPort)
+			if err := otlpHTTPSrv.Serve(otlpLis); err != http.ErrServerClosed {
+				log.Printf("OTLP/HTTP server error: %v", err)
+				otlpHTTPBound.Store(false)
+			}
+		}()
+	}
+
 	absCfgPath, _ := filepath.Abs(*cfgPath)
 	handler := api.NewHandler(repo, broker, cfg, absCfgPath)
 	handler.SetPricer(priceReg)
 	handler.SetShutdownContext(ctx)
+	handler.SetOTLPHTTPBound(otlpHTTPBound.Load)
 	if err := handler.InitImports(); err != nil {
 		log.Printf("database import disabled: %v", err)
 	}
@@ -511,6 +535,7 @@ func cmdServe() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
+	otlpHTTPSrv.Shutdown(shutdownCtx)
 	webSrv.Shutdown(shutdownCtx)
 	log.Println("done")
 }
@@ -608,6 +633,11 @@ func cmdInit() {
 # Claude Code sends telemetry to this port.
 # Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:<otel_port> in Claude Code env.
 otel_port: 4317
+
+# OTLP/HTTP receiver port (same three services as otel_port, over HTTP).
+# For clients that cannot speak gRPC — e.g. opencode and other AI SDK apps.
+# Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:<otlp_http_port> in their env.
+otlp_http_port: 4318
 
 # Web UI port
 # Access the dashboard at http://localhost:<web_port>

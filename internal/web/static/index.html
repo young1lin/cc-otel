@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=26">
+    <link rel="stylesheet" href="style.css?v=27">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -103,10 +103,12 @@
     <div class="chart-section">
         <div class="chart-section-header">
             <span class="chart-section-title" id="chart-title">Token Usage</span>
-            <div class="metric-sw">
-                <button class="metric-sw-btn active" data-metric="tokens">Tokens</button>
-                <button class="metric-sw-btn" data-metric="cost">Cost</button>
-                <button class="metric-sw-btn" data-metric="requests">Requests</button>
+            <div class="chart-controls">
+                <div class="metric-sw">
+                    <button class="metric-sw-btn active" data-metric="tokens">Tokens</button>
+                    <button class="metric-sw-btn" data-metric="cost">Cost</button>
+                    <button class="metric-sw-btn" data-metric="requests">Requests</button>
+                </div>
             </div>
         </div>
         <div class="chart-wrap" id="main-chart"></div>
@@ -226,6 +228,7 @@
                     <tr>
                         <th>Time</th>
                         <th>Model</th>
+                        <th>Source</th>
                         <th>User</th>
                         <th>Input</th>
                         <th>Output</th>
@@ -463,6 +466,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=68"></script>
+<script type="module" src="app.js?v=69"></script>
 </body>
 </html>

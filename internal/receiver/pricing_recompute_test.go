@@ -97,6 +97,40 @@ func TestReceiver_ClaudeNotRecomputed(t *testing.T) {
 	}
 }
 
+// TestReceiver_ClaudeFromOtherClientIsRecomputed is the other half of the rule:
+// a Claude model is only authoritative when Claude Code reported it. Clients
+// like opencode emit no cost_usd at all, so trusting upstream would pin the row
+// at $0 forever — those must go through the pricer.
+func TestReceiver_ClaudeFromOtherClientIsRecomputed(t *testing.T) {
+	pricer := &stubPricer{cost: 0.42}
+	rcv, repo := newPricingTestReceiver(t, pricer)
+
+	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+		strAttr("service.name", "opencode"),
+	}}
+	sendLogs(t, rcv, res, &logspb.LogRecord{
+		Attributes: []*commontpb.KeyValue{
+			strAttr("event.name", "api_request"),
+			strAttr("model", "claude-sonnet-4-5"),
+			strAttr("session.id", "sess-opencode"),
+			strAttr("request_id", "req-opencode"),
+			intAttr("input_tokens", 1000),
+			intAttr("output_tokens", 500),
+			dblAttr("cost_usd", 0), // opencode never reports cost
+		},
+	})
+
+	if pricer.calls != 1 {
+		t.Fatalf("pricer must run for a Claude model from a non-Claude-Code client; calls=%d", pricer.calls)
+	}
+	var cost int64
+	repo.DB().QueryRowContext(context.Background(),
+		`SELECT cost_usd FROM api_requests ORDER BY id DESC LIMIT 1`).Scan(&cost)
+	if cost != 42000 { // 0.42 USD in 0.00001-USD units
+		t.Errorf("recomputed cost = %d units, want 42000", cost)
+	}
+}
+
 // TestReceiver_GLMRecomputed verifies non-Claude models go through the
 // pricer. GLM via the Anthropic-compatible reverse proxy reports an
 // Anthropic-priced cost_usd; the receiver must overwrite it.

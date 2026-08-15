@@ -55,7 +55,7 @@ func LookupSpec(name string) (TableSpec, bool) {
 }
 
 var ignoredRegistry = map[string][]string{
-	"daily_model_agg":        cols("date model input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd request_count"),
+	"daily_model_agg":        cols("date model service_name input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd request_count"),
 	"codex_daily_model_agg":  cols("date model input_tokens output_tokens cache_read_tokens cache_creation_tokens reasoning_tokens total_tokens cost_usd request_count"),
 	"model_pricing":          cols("model input_cost output_cost cache_read_cost cache_create_cost aliases source fetched_at updated_at"),
 	"import_ledger":          cols("uuid imported_at source_db table_name"),

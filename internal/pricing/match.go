@@ -26,6 +26,27 @@ func IsClaudeModel(model string) bool {
 	return strings.HasPrefix(Normalize(model), "claude-")
 }
 
+// ClaudeCodeService is the OTLP resource service.name reported by Claude Code,
+// and the value cc-otel attributes to rows that arrive without one.
+const ClaudeCodeService = "claude-code"
+
+// IsUpstreamAuthoritative reports whether a row's upstream-reported cost_usd
+// should be trusted as-is instead of recomputed from the local price table.
+//
+// Both halves matter, and only this exact combination is authoritative:
+//
+//   - Claude Code on a Claude model — Anthropic computes cost_usd from canonical
+//     prices and Claude Code forwards it. Recomputing could only make it worse.
+//   - Claude Code on a non-Claude model — GLM/DeepSeek/Kimi behind an
+//     Anthropic-compatible reverse proxy get priced by Anthropic's rates, which
+//     are wrong for them. Recompute.
+//   - Another client (opencode, ...) on a Claude model — no cost is reported at
+//     all, so trusting upstream pins the row at $0 forever. Recompute, which
+//     requires a Claude row in the price table (deliberately not seeded).
+func IsUpstreamAuthoritative(serviceName, model string) bool {
+	return strings.EqualFold(strings.TrimSpace(serviceName), ClaudeCodeService) && IsClaudeModel(model)
+}
+
 // dateSuffixRe matches a trailing "-YYYYMMDD" date stamp Anthropic / others
 // append to model ids. It's intentionally strict (8 digits, anchored).
 var dateSuffixRe = regexp.MustCompile(`-\d{8}$`)

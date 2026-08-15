@@ -123,6 +123,11 @@ type Handler struct {
 	recompute     *recomputeJob   // singleton background recompute; never nil after NewHandler
 	shutdownCtx   context.Context // cancels the background recompute goroutine on shutdown
 
+	// otlpHTTPBound reports whether THIS process owns the OTLP/HTTP listener.
+	// A TCP probe cannot tell that apart from some other program squatting on
+	// the port, which reads as healthy while our own bind silently failed.
+	otlpHTTPBound func() bool
+
 	importsMu      sync.Mutex
 	imports        *importManager
 	importInitErr  error
@@ -154,6 +159,10 @@ func (h *Handler) SetPricingWriter(w pricing.Writer) { h.pricingWriter = w }
 // recompute goroutine when the daemon shuts down. If unset, the recompute
 // runs against context.Background.
 func (h *Handler) SetShutdownContext(ctx context.Context) { h.shutdownCtx = ctx }
+
+// SetOTLPHTTPBound supplies the predicate /api/status uses to report OTLP/HTTP
+// receiver health. Pass the daemon's own bind state, not a port probe.
+func (h *Handler) SetOTLPHTTPBound(f func() bool) { h.otlpHTTPBound = f }
 
 // InitImports initializes the singleton database-import manager. Initialization
 // failure does not prevent the dashboard from starting; import endpoints report
@@ -257,10 +266,12 @@ type StatusResponse struct {
 	LastUpdate  int64 `json:"last_update_unix"`
 	NotifyCount int64 `json:"notify_count"`
 
-	WebPort  int `json:"web_port"`
-	OTELPort int `json:"otel_port"`
+	WebPort      int `json:"web_port"`
+	OTELPort     int `json:"otel_port"`
+	OTLPHTTPPort int `json:"otlp_http_port"`
 
-	OTELReceiverListening bool `json:"otel_receiver_listening"`
+	OTELReceiverListening     bool `json:"otel_receiver_listening"`
+	OTLPHTTPReceiverListening bool `json:"otlp_http_receiver_listening"`
 
 	// ConfigPath is the absolute path of the config file this daemon loaded at startup.
 	// DBPath is the resolved SQLite path after yaml + CC_OTEL_DB_PATH env override.
@@ -289,12 +300,16 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 
 	webPort := config.DefaultWebPort()
 	otelPort := config.DefaultOTELPort()
+	otlpHTTPPort := config.DefaultOTLPHTTPPort()
 	if h.cfg != nil {
 		if h.cfg.WebPort != 0 {
 			webPort = h.cfg.WebPort
 		}
 		if h.cfg.OTELPort != 0 {
 			otelPort = h.cfg.OTELPort
+		}
+		if h.cfg.OTLPHTTPPort != 0 {
+			otlpHTTPPort = h.cfg.OTLPHTTPPort
 		}
 	}
 
@@ -312,11 +327,14 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		notifyCount = h.broker.NotifyCount()
 	}
 
-	otelListening := false
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", otelPort), 700*time.Millisecond)
-	if err == nil {
-		otelListening = true
-		conn.Close()
+	otelListening := portListening(otelPort)
+	// Prefer our own bind state; fall back to a probe only for callers (tests,
+	// legacy embedders) that never wired one up.
+	otlpHTTPListening := false
+	if h.otlpHTTPBound != nil {
+		otlpHTTPListening = h.otlpHTTPBound()
+	} else {
+		otlpHTTPListening = portListening(otlpHTTPPort)
 	}
 
 	dbPath := ""
@@ -337,18 +355,31 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(StatusResponse{
-		ServerTimeUnix:        time.Now().Unix(),
-		DBOK:                  dbOK,
-		SSEClients:            sseClients,
-		LastUpdate:            lastUpdate,
-		NotifyCount:           notifyCount,
-		WebPort:               webPort,
-		OTELPort:              otelPort,
-		OTELReceiverListening: otelListening,
-		ConfigPath:            h.configPath,
-		DBPath:                dbPath,
-		Pricing:               pricingBlock,
+		ServerTimeUnix:            time.Now().Unix(),
+		DBOK:                      dbOK,
+		SSEClients:                sseClients,
+		LastUpdate:                lastUpdate,
+		NotifyCount:               notifyCount,
+		WebPort:                   webPort,
+		OTELPort:                  otelPort,
+		OTLPHTTPPort:              otlpHTTPPort,
+		OTELReceiverListening:     otelListening,
+		OTLPHTTPReceiverListening: otlpHTTPListening,
+		ConfigPath:                h.configPath,
+		DBPath:                    dbPath,
+		Pricing:                   pricingBlock,
 	})
+}
+
+// portListening reports whether something is accepting TCP on the loopback
+// port, which is how the Server Status popup shows receiver health.
+func portListening(port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 700*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // PricingLookupResponse describes one model lookup against the registry.
@@ -484,13 +515,10 @@ func (h *Handler) PricingCollection(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": "invalid json"})
 			return
 		}
-		// Claude is fixed-price and never recomputed; the save-side guard in
-		// Upsert is authoritative, but we reject early here for a clear 400.
-		if pricing.IsClaudeModel(pricing.Normalize(body.Model)) {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "claude models are fixed-price and not recomputed"})
-			return
-		}
+		// Claude rows are accepted. They are never consulted for Claude Code's
+		// own requests (pricing.IsUpstreamAuthoritative short-circuits before the
+		// registry), but they are the only way to put a cost on a Claude model
+		// driven by a client that reports none — e.g. opencode.
 		saved, err := h.pricingWriter.Upsert(r.Context(), pricing.Entry{
 			Model:         body.Model,
 			Input:         body.Input / perMtokFactor,

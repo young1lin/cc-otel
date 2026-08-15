@@ -630,7 +630,8 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 		SELECT id, timestamp, session_id, user_id, model,
 		       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		       reasoning_tokens, total_tokens, cost_usd, duration_ms, ttft_ms,
-		       http_status, endpoint
+		       http_status, endpoint,
+		       COALESCE(NULLIF(service_name, ''), 'codex') AS service_name
 		FROM codex_api_requests
 		WHERE `+where+`
 		ORDER BY timestamp DESC
@@ -648,7 +649,7 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 		if err := rows.Scan(&rec.ID, &tsUnix, &rec.SessionID, &rec.UserID, &rec.Model,
 			&rec.InputTokens, &rec.OutputTokens, &rec.CacheReadTokens, &rec.CacheCreationTokens,
 			&rec.ReasoningTokens, &rec.TotalTokens, &costUnits, &rec.DurationMs, &rec.TTFTMs,
-			&rec.HTTPStatus, &rec.Endpoint,
+			&rec.HTTPStatus, &rec.Endpoint, &rec.ServiceName,
 		); err != nil {
 			return nil, 0, err
 		}

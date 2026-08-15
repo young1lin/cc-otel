@@ -239,13 +239,17 @@ func TestPricingCollection_PageSizeClamped(t *testing.T) {
 	}
 }
 
-func TestPricing_POST_RejectsClaude(t *testing.T) {
+// Claude prices are writable. Claude Code's own rows never consult the table
+// (pricing.IsUpstreamAuthoritative short-circuits first), but a Claude model
+// driven by a client that reports no cost — opencode — can only be priced from
+// a stored entry, so the endpoint must accept one.
+func TestPricing_POST_AcceptsClaude(t *testing.T) {
 	h := newTestHandler(t)
 	h.SetPricingWriter(h.Pricer().(pricing.Writer))
 
 	rec := doReq(t, h, "POST", "/api/pricing", strings.NewReader(`{"model":"claude-x","input":1,"output":1}`))
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 for claude write, got %d %s", rec.Code, rec.Body.String())
+	if rec.Code != 200 {
+		t.Fatalf("expected 200 for claude write, got %d %s", rec.Code, rec.Body.String())
 	}
 }
 

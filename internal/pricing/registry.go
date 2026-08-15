@@ -73,8 +73,8 @@ func (r *sqlRegistry) loadUserOverrides(cfg *config.Config) {
 	defer r.mu.Unlock()
 	for name, p := range cfg.Pricing {
 		key := Normalize(name)
-		if key == "" || IsClaudeModel(key) {
-			continue // user can't override Claude — Claude is never recomputed
+		if key == "" {
+			continue
 		}
 		r.userByKey[key] = Entry{
 			Model:         key,
@@ -177,10 +177,14 @@ func (r *sqlRegistry) resolveLocked(canonical string) (Entry, bool) {
 // Lookup implements Registry.
 func (r *sqlRegistry) Lookup(ctx context.Context, model string) LookupResult {
 	q := Normalize(model)
-	if q == "" || IsClaudeModel(q) {
-		// Don't count Claude as a miss — by design, Claude is intentionally absent.
+	if q == "" {
 		return LookupResult{Kind: MatchMiss}
 	}
+	// Claude is NOT special-cased here. The seed still ships without Claude, so
+	// this normally misses — but a client that reports no cost of its own
+	// (opencode et al.) can only be priced if the user adds a Claude row, and
+	// that row has to be findable. Deciding whether a row should be recomputed
+	// at all is the caller's job: see IsUpstreamAuthoritative.
 
 	r.mu.RLock()
 	canonical, kind := matchKey(q, r.keys, r.aliasIndex)
@@ -454,15 +458,16 @@ func repBetter(a, b Entry) bool {
 }
 
 // Upsert inserts or updates one model's price; source is "manual" (hand-typed)
-// or "openrouter" (accepted from the provider picker). Claude is rejected;
-// input/output must be > 0; cache_* >= 0. Reloads cache.
+// or "openrouter" (accepted from the provider picker). input/output must be > 0;
+// cache_* >= 0. Reloads cache.
+//
+// Claude entries are allowed: they are never consulted for Claude Code's own
+// rows (IsUpstreamAuthoritative short-circuits first), but they are the only way
+// to price a Claude model driven by a client that reports no cost.
 func (r *sqlRegistry) Upsert(ctx context.Context, e Entry) (Entry, error) {
 	key := Normalize(e.Model)
 	if key == "" {
 		return Entry{}, fmt.Errorf("model name is required")
-	}
-	if IsClaudeModel(key) {
-		return Entry{}, fmt.Errorf("claude models are never recomputed; price is fixed")
 	}
 	if e.Input <= 0 || e.Output <= 0 {
 		return Entry{}, fmt.Errorf("input and output price must be > 0")

@@ -63,7 +63,7 @@ export const loadStatusData = () => fetchJSON('/api/status');
 export const loadDashboardData = (from, to) =>
     fetchJSON(apiPath('dashboard') + qs({ from, to }));
 
-export const loadDailyData = ({ from, to, page = 1, pageSize = 20, granularity = 'day' }) =>
+export const loadDailyData = ({ from, to, page = 1, pageSize = 20, granularity = 'day' } = {}) =>
     fetchJSON(apiPath('daily') + qs({ from, to, page, page_size: pageSize, granularity }));
 
 export const loadCalendarData = ({ from, to }) =>
