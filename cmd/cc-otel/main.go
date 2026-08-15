@@ -472,20 +472,28 @@ func cmdServe() {
 	// the dashboard stay useful without it. Bind up front rather than inside the
 	// goroutine so /api/status can report whether WE own the port; a port probe
 	// would happily report healthy while another program squats on it.
-	otlpHTTPSrv := &http.Server{Handler: otelReceiver.HTTPHandler()}
+	// `otlp_http_port: 0` disables the receiver outright (tools/otlp_dump's
+	// convention) — binding ":0" would instead land on a random OS-assigned
+	// port while /api/status keeps naming the default.
+	var otlpHTTPSrv *http.Server
 	var otlpHTTPBound atomic.Bool
-	otlpLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.OTLPHTTPPort))
-	if err != nil {
-		log.Printf("OTLP/HTTP receiver DISABLED — cannot bind :%d: %v", cfg.OTLPHTTPPort, err)
+	if cfg.OTLPHTTPPort == 0 {
+		log.Printf("OTLP/HTTP receiver disabled by config (otlp_http_port: 0)")
 	} else {
-		otlpHTTPBound.Store(true)
-		go func() {
-			log.Printf("OTLP/HTTP receiver listening on http://localhost:%d", cfg.OTLPHTTPPort)
-			if err := otlpHTTPSrv.Serve(otlpLis); err != http.ErrServerClosed {
-				log.Printf("OTLP/HTTP server error: %v", err)
-				otlpHTTPBound.Store(false)
-			}
-		}()
+		otlpHTTPSrv = &http.Server{Handler: otelReceiver.HTTPHandler()}
+		otlpLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.OTLPHTTPPort))
+		if err != nil {
+			log.Printf("OTLP/HTTP receiver DISABLED — cannot bind :%d: %v", cfg.OTLPHTTPPort, err)
+		} else {
+			otlpHTTPBound.Store(true)
+			go func() {
+				log.Printf("OTLP/HTTP receiver listening on http://localhost:%d", cfg.OTLPHTTPPort)
+				if err := otlpHTTPSrv.Serve(otlpLis); err != http.ErrServerClosed {
+					log.Printf("OTLP/HTTP server error: %v", err)
+					otlpHTTPBound.Store(false)
+				}
+			}()
+		}
 	}
 
 	absCfgPath, _ := filepath.Abs(*cfgPath)
@@ -535,7 +543,9 @@ func cmdServe() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	otlpHTTPSrv.Shutdown(shutdownCtx)
+	if otlpHTTPSrv != nil {
+		otlpHTTPSrv.Shutdown(shutdownCtx)
+	}
 	webSrv.Shutdown(shutdownCtx)
 	log.Println("done")
 }

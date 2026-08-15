@@ -283,13 +283,14 @@ func ensureTargetSchema(ctx context.Context, db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS daily_model_agg (
 			date TEXT NOT NULL,
 			model TEXT NOT NULL,
+			service_name TEXT NOT NULL DEFAULT '',
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
 			cost_usd INTEGER NOT NULL DEFAULT 0,
 			request_count INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY (date, model)
+			PRIMARY KEY (date, model, service_name)
 		) WITHOUT ROWID;
 
 		-- Codex tables

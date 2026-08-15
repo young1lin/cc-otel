@@ -1,7 +1,9 @@
 package receiver
 
 import (
+	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -19,6 +21,42 @@ import (
 // a megabyte; the limit exists so a malformed or hostile Content-Length cannot
 // make the daemon allocate without bound.
 const maxOTLPBodyBytes = 16 << 20 // 16 MiB
+
+// ReadOTLPBody reads one export payload, transparently decompressing it when
+// the exporter gzipped the request. gzip is the only content coding OTLP/HTTP
+// defines, and exporters do use it — DeepSeek Harness's shipped composition
+// sets compression: gzip, and without this an export decodes as garbage and is
+// rejected as malformed.
+//
+// Both the compressed stream and its expansion are bounded, so a small hostile
+// body cannot inflate without limit.
+//
+// Exported for tools/otlp_dump, which must accept the same clients the daemon
+// does — a dump tool that 400s on gzip would mislead exactly the onboarding
+// debugging it exists for.
+func ReadOTLPBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	var src io.Reader = http.MaxBytesReader(w, r.Body, maxOTLPBodyBytes)
+	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(src)
+		if err != nil {
+			return nil, err
+		}
+		defer gz.Close()
+		src = gz
+	}
+	// One byte over the cap is read on purpose: it separates "exactly at the
+	// limit" from "truncated here", which would otherwise decode as malformed.
+	body, err := io.ReadAll(io.LimitReader(src, maxOTLPBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxOTLPBodyBytes {
+		return nil, errOTLPBodyTooLarge
+	}
+	return body, nil
+}
+
+var errOTLPBodyTooLarge = errors.New("decompressed OTLP payload exceeds the size limit")
 
 // HTTPHandler exposes the same three OTLP services as the gRPC receiver over
 // OTLP/HTTP, for clients that only speak HTTP (opencode and other AI-SDK apps).
@@ -62,7 +100,7 @@ func otlpEndpoint(newReq func() proto.Message, export func(context.Context, prot
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxOTLPBodyBytes))
+		body, err := ReadOTLPBody(w, r)
 		if err != nil {
 			log.Printf("OTLP/HTTP %s: read body: %v", r.URL.Path, err)
 			http.Error(w, "cannot read body", http.StatusBadRequest)

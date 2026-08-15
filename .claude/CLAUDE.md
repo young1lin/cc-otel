@@ -325,9 +325,20 @@ Both ports serve the **same three OTLP services backed by the same `receiver.Rec
 
 The shim must answer in the encoding the client sent (JSON in → JSON out) and must **never return 2xx for data it did not store** — an OTLP exporter treats 2xx as delivered and drops the batch.
 
-**Debugging a new client**: `tools/otlp_dump` serves both transports and stores nothing; it prints every span/log plus, for AI SDK usage spans, the `would_store_api_request` cc-otel would derive (rendered by `receiver.DebugMapAISDKSpan`, so it cannot drift from real ingestion). `CC_OTEL_DEBUG_AISDK=1` turns on a per-request usage line in the daemon itself — off by default. Independent of that flag, the daemon warns **once per model** if a provider reports input EXCLUSIVE of cache, because the uncached derivation then under-counts.
+**Debugging a new client**: `tools/otlp_dump` serves both transports and stores nothing; it prints every span/log plus, for AI SDK usage spans, the `would_store_api_request` cc-otel would derive (rendered by `receiver.DebugMapAISDKSpan`, so it cannot drift from real ingestion). It decompresses `Content-Encoding: gzip` via the same `receiver.ReadOTLPBody` the daemon uses, so DSH's gzipped exports dump correctly. `CC_OTEL_DEBUG_AISDK=1` turns on a per-request usage line in the daemon itself — off by default. Independent of that flag, the daemon notes **once per model** when a provider reports input EXCLUSIVE of cache — the clamp then stores `inputTokens` as uncached, which is the correct value for exclusive reporting; the note exists so onboarding can confirm the input-inclusive assumption, not because data is wrong.
 
 AI-SDK clients report token usage on GenAI **spans** rather than log records. `internal/receiver/opencode.go` reshapes the *leaf* span (`ai.streamText.doStream` / `ai.generateText.doGenerate` — the parent also carries usage, so mapping both double-counts) into an `api_request` log record, which is then replayed through `logsServiceServer.Export`. That keeps one ingestion path for cost, attribution, dedup and SSE. `request_id` is set to the hex span id so the partial unique index on `api_requests(request_id)` makes exporter retries idempotent.
+
+**DeepSeek Harness (DSH)** exports its whole *session ledger* rather than Claude Code's event vocabulary, so `internal/receiver/dsh.go` maps it before the Claude loop runs. Read that file's header for the wire contract; the parts that bite:
+
+- The scope is `@deepseek-ai/dsh-session-telemetry-otel` (`/ops` for the ops channel). The package README documents a different name — the code is authoritative.
+- `event.type` and `event.seq` are **record attributes**, not body fields; the body is only the session event's `data`, as a structured `KvlistValue` (not a JSON string), so `anyValueToString` cannot read it.
+- Only `assistant/message` carries `usage` and becomes an `api_request`. `step/start` / `assistant/chunk` / `step/end` are consumed for `duration_ms` / `ttft_ms` only, and every other ledger record is **dropped on purpose** — in `FULL` mode those bodies carry prompts, tool output, and whole file contents.
+- `request_id` is `dsh-<session.id>-<event.seq>`, so exporter retries collapse on the partial unique index.
+
+To point DSH at cc-otel, set `DSH_TELEMETRY_MODE=FULL` and `DSH_TELEMETRY_OTLP_URL=http://localhost:4318/v1/logs` — the base bundle already mounts the row and reads both. `DSH_TELEMETRY_DISABLED` (any non-empty value) overrides them off.
+
+Note the OTLP/HTTP shim decompresses `Content-Encoding: gzip`, which DSH's shipped exporter config requires. Do not drop that: a gzipped export decodes as garbage without it, and the client still sees a rejection rather than silent loss only because decode failure returns 400.
 
 ### Pricing (cost recompute)
 

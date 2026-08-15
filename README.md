@@ -218,6 +218,63 @@ metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 
 启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入 `codex_api_requests.cost_usd`，Cost KPI 与 Claude 视图等同。
 
+### DeepSeek Harness (DSH) 接入
+
+cc-otel 也支持接收 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 session telemetry。与 Claude Code / Codex 不同的两点：
+
+- **走 OTLP/HTTP（`:4318`），不是 gRPC。** DSH 用的是 OTel JS SDK 的 HTTP log exporter，端点必须写**完整的 logs 路径** `/v1/logs`，而不是只写主机端口。
+- **DSH 上报的是整份 session 账本**（每一条 user/assistant 消息、工具调用、工具结果）。cc-otel 只把带 `usage` 的 `assistant/message` 转成 `api_requests` 一行，其余记录**一律丢弃不落库**——因为在 `FULL` 模式下它们包含完整的提示词、命令输出和文件内容。
+
+DSH 的 `dsh-base` bundle 已经内置了 `session-telemetry-otel` 这一行，默认 `DISABLED` 且指向 DeepSeek 官方 collector。改成本地 cc-otel 有两种方式。
+
+**方式一：环境变量（临时，单个 shell 生效）**
+
+```powershell
+$env:DSH_TELEMETRY_MODE = "FULL"
+$env:DSH_TELEMETRY_OTLP_URL = "http://localhost:4318/v1/logs"
+npx @deepseek-ai/dsh web
+```
+
+**方式二：写进 `$DSH_HOME/cordis.patch.yml`（永久，推荐）**
+
+`$DSH_HOME` 默认是 `~/.dsh`。在该文件里追加下面这一条顶层记录（**不要**放进已有的 `insert:` 列表里——它是按 `id` 覆盖 bundle 已有行，不是新增行）：
+
+```yaml
+- id: session-telemetry-otel
+  name: '@deepseek-ai/dsh-session-telemetry-otel'
+  config:
+    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FULL'
+    shutdownTimeoutMillis: 3000
+    exporter:
+      url: !!js process.env.DSH_TELEMETRY_OTLP_URL ?? 'http://localhost:4318/v1/logs'
+      compression: gzip
+      timeoutMillis: 1000
+    processor:
+      scheduledDelayMillis: 10000
+      maxQueueSize: 2048
+      maxExportBatchSize: 2048
+      exportTimeoutMillis: 1500
+```
+
+> **注意**: patch 是**整键替换**而非深合并，所以 bundle 原本设置的每个字段都要在这里重新写全，漏掉哪个就会退回插件默认值。`name` 建议保留：DSH 若改包名，这条 patch 会带警告跳过，而不是静默把遥测发回官方 collector。上面两个 `!!js` 保留了环境变量覆盖能力（例如 `DSH_TELEMETRY_OTLP_URL=http://localhost:14318/v1/logs` 可临时指向 dev 实例）。
+
+改完用 `npx @deepseek-ai/dsh web --dump-config` 确认合成结果：应当只出现**一行** `id: session-telemetry-otel`，且 URL 已是本地地址。
+
+启动 DSH 正常对话即可，dashboard (`http://localhost:8899`) 的 Source 列会显示 `deepseek-harness`。
+
+**排查清单**（按出现频率排序）：
+
+| 现象 | 原因 |
+|------|------|
+| 完全没数据 | `mode` 默认是 `DISABLED`；配置在插件加载时读取，改完**必须重启 dsh** |
+| 完全没数据，且配置无误 | `DSH_TELEMETRY_DISABLED` 只要非空（含 `0` / `false`）就一票否决 |
+| 等了几秒还没出现 | 批处理 `scheduledDelayMillis: 10000`，最多延迟 10 秒才导出 |
+| 只收到最近几条，历史对话没有 | DSH 只从 telemetry 启用时的 live 边界开始交接，之前的历史事件不会补发 |
+| 费用是 $0 | 该模型没有价格条目（如 `glm-5.x` 上游价目表尚未收录），需在 Pricing Table 手动添加后点 ↻ 重算历史 |
+| 服务端报 `malformed OTLP payload` | cc-otel 版本过旧：DSH 默认 `compression: gzip`，需要 v0.1.0-preview.18+ 才会解压 |
+
+> **⚠️ 隐私**: `mode: FULL` 会把完整会话内容（提示词、工具输出、文件内容）发到上面配置的端点。cc-otel 只保存 token 与费用、不落库任何正文（`raw_otlp_events` 也为空），但数据确实经过了这个连接——请保持指向 localhost。只想在 `/feedback` 时才上报可改用 `mode: FEEDBACK_ONLY`。
+
 ## 价格表与非 Claude 模型重算
 
 cc-otel 内嵌了从 [BerriAI/litellm](https://github.com/BerriAI/litellm) 派生的价格快照（GPT / GLM / DeepSeek / Kimi / Qwen …），首次启动会写入 `model_pricing` 表。**价目表纯手动维护，不再定时拉远端**，运行时按以下顺序选价：

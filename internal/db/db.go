@@ -41,6 +41,29 @@ func Init(cfg *config.Config) (*sql.DB, error) {
 	return db, nil
 }
 
+// rebuildDailyAggSQL is the single statement every daily_model_agg rebuild runs
+// — the startup service_name migration, the legacy backfill, and
+// Repository.RebuildDailyAggregates. One copy so the aggregation cannot drift
+// between paths. %[1]s is DefaultServiceName: rows that predate the
+// service_name column fold into Claude Code, matching NormalizeServiceName.
+const rebuildDailyAggSQL = `
+	INSERT INTO daily_model_agg
+		(date, model, service_name, input_tokens, output_tokens,
+		 cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
+	SELECT
+		date(timestamp, 'unixepoch', 'localtime'),
+		model,
+		COALESCE(NULLIF(service_name, ''), '%[1]s'),
+		COALESCE(SUM(input_tokens), 0),
+		COALESCE(SUM(output_tokens), 0),
+		COALESCE(SUM(cache_read_tokens), 0),
+		COALESCE(SUM(cache_creation_tokens), 0),
+		COALESCE(SUM(cost_usd), 0),
+		COUNT(*)
+	FROM api_requests
+	GROUP BY date(timestamp, 'unixepoch', 'localtime'), model,
+	         COALESCE(NULLIF(service_name, ''), '%[1]s')`
+
 func runMigrations(db *sql.DB) error {
 	// 1) Create tables.
 	_, err := db.Exec(`
@@ -494,18 +517,7 @@ func runMigrations(db *sql.DB) error {
 			) WITHOUT ROWID;`); err != nil {
 			return fmt.Errorf("recreate daily_model_agg: %w", err)
 		}
-		if _, err := db.Exec(`
-			INSERT INTO daily_model_agg
-				(date, model, service_name, input_tokens, output_tokens,
-				 cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
-			SELECT
-				strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime') AS date,
-				model, service_name,
-				SUM(input_tokens), SUM(output_tokens),
-				SUM(cache_read_tokens), SUM(cache_creation_tokens),
-				SUM(cost_usd), COUNT(*)
-			FROM api_requests
-			GROUP BY date, model, service_name;`); err != nil {
+		if _, err := db.Exec(fmt.Sprintf(rebuildDailyAggSQL, DefaultServiceName)); err != nil {
 			return fmt.Errorf("rebuild daily_model_agg from api_requests: %w", err)
 		}
 	}
@@ -513,25 +525,22 @@ func runMigrations(db *sql.DB) error {
 	// Backfill: rows without a service_name (legacy data, old imports, or clients
 	// that omit it) default to Claude Code. Covers imported DBs too — anything
 	// merged into api_requests with an empty service_name gets normalized here on
-	// the next start. Idempotent: a no-op scan when nothing is empty.
-	if res, err := db.Exec(`UPDATE api_requests SET service_name = 'claude-code' WHERE service_name = ''`); err != nil {
+	// the next start. The partial index below keeps this cheap: after the first
+	// run it holds zero rows, so the UPDATE matches in O(rows-changed) instead of
+	// scanning api_requests (which retention never prunes) on every boot.
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_api_requests_empty_service
+		ON api_requests(service_name) WHERE service_name = ''`); err != nil {
+		return fmt.Errorf("create empty-service_name index: %w", err)
+	}
+	if res, err := db.Exec(fmt.Sprintf(
+		`UPDATE api_requests SET service_name = '%s' WHERE service_name = ''`, DefaultServiceName)); err != nil {
 		return fmt.Errorf("backfill empty service_name: %w", err)
 	} else if n, _ := res.RowsAffected(); n > 0 {
 		if _, err := db.Exec(`DELETE FROM daily_model_agg`); err != nil {
 			return fmt.Errorf("clear daily_model_agg for service backfill: %w", err)
 		}
-		if _, err := db.Exec(`
-			INSERT INTO daily_model_agg
-				(date, model, service_name, input_tokens, output_tokens,
-				 cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
-			SELECT
-				strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime') AS date,
-				model, service_name,
-				SUM(input_tokens), SUM(output_tokens),
-				SUM(cache_read_tokens), SUM(cache_creation_tokens),
-				SUM(cost_usd), COUNT(*)
-			FROM api_requests
-			GROUP BY date, model, service_name;`); err != nil {
+		if _, err := db.Exec(fmt.Sprintf(rebuildDailyAggSQL, DefaultServiceName)); err != nil {
 			return fmt.Errorf("rebuild daily_model_agg after service backfill: %w", err)
 		}
 	}

@@ -378,21 +378,7 @@ func (r *Repository) RebuildDailyAggregates(ctx context.Context) error {
 		return fmt.Errorf("clear daily_model_agg: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens,
-			cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
-		SELECT
-			date(timestamp, 'unixepoch', 'localtime'),
-			model,
-			COALESCE(NULLIF(service_name, ''), 'claude-code'),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(cache_read_tokens), 0),
-			COALESCE(SUM(cache_creation_tokens), 0),
-			COALESCE(SUM(cost_usd), 0),
-			COUNT(*)
-		FROM api_requests
-		GROUP BY date(timestamp, 'unixepoch', 'localtime'), model, COALESCE(NULLIF(service_name, ''), 'claude-code')`); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(rebuildDailyAggSQL, DefaultServiceName)); err != nil {
 		return fmt.Errorf("rebuild daily_model_agg: %w", err)
 	}
 
