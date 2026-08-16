@@ -40,11 +40,23 @@ func TestLoadSeedEntriesIncludesManual(t *testing.T) {
 		byModel[e.Model] = e
 	}
 	// manual_seed.json entries must be present with curated (not stale) prices.
+	// 2026-08-16: refreshed against OpenRouter first-party quotes; deepseek-v4-pro
+	// was cut 4x by DeepSeek (1.74e-6 → 4.35e-7). glm-* entries are now curated
+	// here deliberately (user decision): the auto seed is a LiteLLM snapshot that
+	// lags new releases, and pinning beats a $0 row on fresh installs.
 	want := map[string]float64{
-		"mimo-v2.5-pro":     0.000000435, // $0.435 / M
-		"deepseek-v4-pro":   0.00000174,
-		"deepseek-v4-flash": 0.00000014,
-		"step-3.5-flash":    0.0000001,
+		"mimo-v2.5-pro":          0.000000435, // $0.435 / M
+		"deepseek-v4-pro":        0.000000435, // official DeepSeek, 2026-08 cut
+		"deepseek-v4-pro-0813":   0.000000435,
+		"deepseek-v4-flash":      0.00000014,
+		"deepseek-v4-flash-0731": 0.00000014,
+		"step-3.5-flash":         0.0000001,
+		"glm-5.2":                0.0000014, // Z.AI official $1.4 / $4.4
+		"glm-5.3":                0.0000014, // inferred from 5.2 (no published price)
+		"kimi-k3":                0.000003, // Moonshot official $3 / $15
+		"kimi-k2.7-code":         0.00000095,
+		"qwen3.8-max":            0.000002, // OpenRouter blend (no first-party)
+		"minimax-m3":             0.0000003,
 	}
 	for m, in := range want {
 		e, ok := byModel[m]
@@ -55,9 +67,5 @@ func TestLoadSeedEntriesIncludesManual(t *testing.T) {
 		if e.Input != in {
 			t.Errorf("%q input = %v, want %v", m, e.Input, in)
 		}
-	}
-	// glm-5.2 is auto-fetched (OpenRouter) and intentionally NOT in the seed.
-	if _, ok := byModel["glm-5.2"]; ok {
-		t.Error("glm-5.2 should not be in seed (auto-fetched, would block refresh)")
 	}
 }

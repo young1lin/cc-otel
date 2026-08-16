@@ -35,6 +35,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 - Upstream `cost_usd` is authoritative only for **Claude Code on a Claude model** (`pricing.IsUpstreamAuthoritative`). Claude Code behind a GLM/DeepSeek proxy is mispriced upstream, and other clients report no cost at all. The receiver, the Codex path, and offline recompute share one rule, so backfills never rewrite rows the receiver deliberately kept.
 - The registry stops special-casing Claude: Lookup/Upsert/the `pricing:` YAML all accept Claude entries — the only way to price a Claude model driven by a client that reports none.
+- Embedded offline seed (manual_seed) refreshed to **2026-08-16 OpenRouter first-party quotes**: adds kimi-k3 ($3/$15), kimi-k2.7-code, glm-5.2 ($1.4/$4.4), glm-5.3 (inferred from 5.2 — no published price yet), qwen3.8-max, minimax-m3, dated DeepSeek V4 variants (flash-0731 / pro-0813); **corrects deepseek-v4-pro after DeepSeek's official cut** ($1.74 → $0.435/Mtok, 4x cheaper).
 
 ### DeepSeek Harness (DSH) ingestion (new client)
 

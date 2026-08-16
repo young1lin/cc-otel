@@ -2,9 +2,9 @@
   "_meta": {
     "currency": "USD",
     "generator": "hand-maintained",
-    "note": "Hand-curated per-token prices for models NO upstream catalog (LiteLLM / OpenRouter) carries: Xiaomi MiMo, StepFun, and not-yet-listed DeepSeek V4 tiers. seed.go merges this with the auto-generated seed.json; entries here override auto on key conflict. tools/dump_pricing_snapshot only regenerates seed.json, so this file survives regen. Add glm-* here ONLY if you accept losing auto-refresh for them (they are normally fetched live from OpenRouter).",
+    "note": "Hand-curated per-token prices. Two groups: (1) models NO upstream catalog carries — Xiaomi MiMo, StepFun; (2) frontier tiers curated from OpenRouter ahead of the LiteLLM snapshot — DeepSeek V4 family, Kimi K3 / K2.7-Code, GLM 5.2 / 5.3, Qwen 3.8 Max, MiniMax M3. Prices verified 2026-08-16 against OpenRouter first-party (Official provider) quotes — DeepSeek, Moonshot AI, Z.AI, Minimax, Xiaomi. Exceptions: glm-5.3 has no published per-token price yet (z.ai lists only GLM-5.2) and is INFERRED from GLM-5.2's official price; qwen3.8-max is OpenRouter's catalog blend (Alibaba runs no first-party endpoint there). seed.go merges this file with the auto-generated seed.json; entries here override auto on key conflict. tools/dump_pricing_snapshot only regenerates seed.json, so this file survives regen — but a manual entry also pins its model against future auto refresh, so keep this list to tiers the auto seed cannot serve.",
     "unit": "per token",
-    "version": "2026-06-20"
+    "version": "2026-08-16"
   },
   "entries": [
     {
@@ -14,16 +14,65 @@
       "cache_read": 0.0000000028
     },
     {
+      "model": "deepseek-v4-flash-0731",
+      "input": 0.00000014,
+      "output": 0.00000028,
+      "cache_read": 0.0000000028
+    },
+    {
       "model": "deepseek-v4-pro",
-      "input": 0.00000174,
-      "output": 0.00000348,
-      "cache_read": 0.0000000145
+      "input": 0.000000435,
+      "output": 0.00000087,
+      "cache_read": 0.000000003625
+    },
+    {
+      "model": "deepseek-v4-pro-0813",
+      "input": 0.000000435,
+      "output": 0.00000087,
+      "cache_read": 0.000000003625
+    },
+    {
+      "model": "glm-5.2",
+      "input": 0.0000014,
+      "output": 0.0000044,
+      "cache_read": 0.00000026
+    },
+    {
+      "model": "glm-5.3",
+      "input": 0.0000014,
+      "output": 0.0000044,
+      "cache_read": 0.00000026
+    },
+    {
+      "model": "kimi-k2.7-code",
+      "input": 0.00000095,
+      "output": 0.000004,
+      "cache_read": 0.00000019
+    },
+    {
+      "model": "kimi-k3",
+      "input": 0.000003,
+      "output": 0.000015,
+      "cache_read": 0.0000003
+    },
+    {
+      "model": "minimax-m3",
+      "input": 0.0000003,
+      "output": 0.0000012,
+      "cache_read": 0.00000006
     },
     {
       "model": "mimo-v2.5-pro",
       "input": 0.000000435,
       "output": 0.00000087,
       "cache_read": 0.0000000036
+    },
+    {
+      "model": "qwen3.8-max",
+      "input": 0.000002,
+      "output": 0.000006,
+      "cache_read": 0.00000025,
+      "cache_creation": 0.0000025
     },
     {
       "model": "step-3.5-flash",
