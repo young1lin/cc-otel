@@ -11,9 +11,10 @@
 // Anthropic / Claude entries are unconditionally dropped — Claude Code
 // reports authoritative cost_usd and cc-otel never recomputes Claude.
 //
-// Hand-maintained entries for models NO upstream catalog carries (Xiaomi MiMo,
-// StepFun, not-yet-listed DeepSeek V4) live in embed/manual_seed.json, which
-// seed.go merges ON TOP of this file (manual wins on key conflict). This tool
+// Hand-maintained entries live in embed/manual_seed.json, which seed.go merges
+// ON TOP of this file (manual wins on key conflict): models NO upstream catalog
+// carries (Xiaomi MiMo, StepFun) plus frontier tiers curated from OpenRouter
+// ahead of the LiteLLM snapshot (DeepSeek V4, Kimi K3, GLM 5.x, ...). This tool
 // does NOT touch manual_seed.json — add such models there, never here, or the
 // next run wipes them.
 //

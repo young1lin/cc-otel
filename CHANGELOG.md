@@ -36,6 +36,7 @@
 
 - 上游 `cost_usd` 只对 **Claude Code + Claude 模型**权威（`pricing.IsUpstreamAuthoritative`）；Claude Code 走 GLM/DeepSeek 反代时上游价是错的，其他客户端干脆不报成本。接收器、Codex 路径、离线重算三处同一规则，回填不会改写接收器刻意保留的行。
 - 价目表不再特判 Claude：Lookup/Upsert/`pricing:` YAML 都接受 Claude 条目——这是给「不报成本的客户端驱动 Claude 模型」定价的唯一途径。
+- 内置离线种子（manual_seed）刷新至 **2026-08-16 OpenRouter 第一方报价**：新增 kimi-k3（$3/$15）、kimi-k2.7-code、glm-5.2（$1.4/$4.4）、glm-5.3（按 5.2 推断，官方未定价）、qwen3.8-max、minimax-m3、deepseek-v4 日期变体（flash-0731 / pro-0813）；**修正 deepseek-v4-pro 官方降价**（$1.74 → $0.435/Mtok，降 4 倍）。
 
 ### DeepSeek Harness (DSH) 接入（新客户端）
 
