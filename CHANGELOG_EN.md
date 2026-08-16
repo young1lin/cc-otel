@@ -6,7 +6,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
-## [v0.1.0] - 2026-08-16
+## [v0.1.0] - 2026-08-17
 
 > First stable release. cc-otel is no longer coupled to Claude Code: standalone install directory, four clients sharing one instance.
 > Summarizes the main line after `v0.1.0-preview.16`: service_name attribution, OTLP/HTTP ingress + opencode, service-aware pricing, DeepSeek Harness ingestion, and the code-review fix batch.
