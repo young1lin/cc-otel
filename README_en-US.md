@@ -17,7 +17,7 @@ Self-hosted multi-client token monitor: an OTLP receiver + Web dashboard for **C
 ## Docs
 
 - [Design notes (why / how to change safely)](./docs/DESIGN_EN.md)
-- [Changelog (unreleased / version changes)](./CHANGELOG_EN.md)
+- [Changelog (version changes)](./CHANGELOG_EN.md)
 - [Claude Code OTEL event reference](./docs/otel-events.md)
 
 **Dark**

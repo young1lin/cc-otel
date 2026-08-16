@@ -11,6 +11,20 @@
 > 首个正式版本。cc-otel 不再与 Claude Code 绑定：独立安装目录、四个客户端共用一个实例。
 > 汇总 `v0.1.0-preview.16` 之后的主线：service_name 归因、OTLP/HTTP 接入与 opencode、
 > 感知服务的定价、DeepSeek Harness 接入、代码审查修复批次。
+> 作为首个正式版本，它同时收录自初始提交以来的全部 46 个提交（清单见本节末尾）。
+
+### v0.1.0 能力总览
+
+| 能力域 | 支持内容 |
+|--------|----------|
+| **客户端** | Claude Code、Codex CLI、opencode、DeepSeek Harness（DSH）四客户端共用一个实例，按 OTLP Resource `service.name` 自动路由与归因 |
+| **遥测接入** | OTLP gRPC `:4317` + OTLP/HTTP `:4318` 双传输，logs / metrics / traces 三信号走同一条摄入路径；透明解压 `Content-Encoding: gzip`；导出方重试幂等去重 |
+| **成本与定价** | 手动价目表（Web UI 增删改查、即时生效）+ OpenRouter 按需询价（默认直营 provider 价）+ 历史成本全量重算；上游 `cost_usd` 仅对 Claude Code × Claude 模型权威 |
+| **Web 仪表盘** | KPI 卡片与分项弹窗、Tokens / Cost / Requests 主柱状图、Daily / Sessions / Request Log / Token Rate / Intraday 面板、GitHub 风格使用日历、SSE 实时刷新、深浅主题、浏览器历史导航、在线数据库导入 |
+| **存储** | SQLite 单文件（WAL + busy_timeout）；`daily_model_agg` 实时预聚合（查询 < 3ms）；双层 TTL 清理；写入侧不再堆原始 OTLP 事件，体积长期可控 |
+| **运维 CLI** | `start` / `stop` / `restart` / `status` / `serve` / `install` / `init` / `cleanup`；`/api/status` 健康面板；跨机 DB 合并九步流水线 + 在线快照 `VACUUM INTO` |
+| **分发** | 单二进制（`go:embed` 打包前端，零运行时依赖）；Windows / macOS / Linux × amd64 / arm64（GoReleaser）；GitHub Actions 三平台测试 + race + 覆盖率；Claude Code 插件 slash 命令 |
+| **升级** | 旧版 `~/.claude/cc-otel/` 安装在新二进制首次运行时整目录自动迁移到独立的 `~/.cc-otel/`，数据零丢失 |
 
 ### 独立安装目录 `~/.cc-otel/`（破坏性变更，自动迁移）
 
@@ -50,6 +64,140 @@
 - **行为如实**：ai-sdk clamp 警告文案更正（clamp 后即为正确值，提示供确认假设）；`otlp_http_port: 0` 显式禁用且状态如实显示。
 - **效率/维护性**：DSH body 解码按需取键（跳过 MB 级 content）；`'claude-code'` 字面量统一走 `db.DefaultServiceName`；三份重复的聚合 SQL 收口为单一常量。
 - **前端**：Source 徽章背景走 `var(--accent-dim)`（亮色主题不再用暗色 tint）；标签激活态统一 graphite 范式；清理死代码与格式损伤。
+
+### v0.1.0 收录的全部提交（46 个）
+
+> 自初始提交至打标签提交，主线共 46 个，下表按迭代分组、组内新→旧。
+> 说明：preview.15 发布时主线历史做过一次重整，`v0.1.0-preview.1` – `.14`
+> 的旧标签仍指向重整前的哈希；下表哈希为当前主线（重整后）的。各迭代的
+> 功能详述见下方对应小节；`merge: bring zip snapshot …` 是当时跨机协作
+> 的快照并入方式，保留原始主题以存历史。
+
+#### v0.1.0 正式版（preview.16 之后，4 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `591959f` | chore(pricing): refresh manual seed from OpenRouter 2026-08-16 quotes | 离线价目种子刷新至 2026-08-16 第一方报价；修正 deepseek-v4-pro 官方降价（$1.74 → $0.435/Mtok） |
+| `3d35df3` | feat(release): v0.1.0 — standalone ~/.cc-otel home, auto-migration, multi-client docs | 独立 `~/.cc-otel/` 安装目录 + 首次运行自动迁移 + 四客户端文档与 CHANGELOG |
+| `4a2d195` | feat(receiver): ingest DeepSeek Harness session telemetry | DSH session 账本接入（第四个客户端），OTLP/HTTP + gzip 解压 |
+| `4b754c4` | feat: service_name attribution, in-process OTLP/HTTP ingress, service-aware pricing | service_name 归因维度、`:4318` OTLP/HTTP 接入、opencode 接入、感知服务的定价规则 |
+
+#### v0.1.0-preview.16（9 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `3023d18` | docs(release): preview.16 — changelog + README for online DB import, Codex accounting, intraday bar chart | 发布说明与 README 更新 |
+| `829be30` | feat(ui): rebuild Intraday as a per-bucket bar chart | Intraday 重做为每 (桶, 模型) 一柱，5–60 分钟桶选择器 |
+| `d1034d5` | feat(ui): graphite segmented control for chart granularity | Day / Month 粒度切换改为石墨分段控件（含无障碍修复） |
+| `36f0c19` | docs: add mandatory frontend taste guide | 前端视觉规范 FRONTEND_TASTE.md |
+| `b5d0661` | chore(db): clean legacy Codex events on startup | 启动后台分批清理遗留 `codex_events` |
+| `0be4537` | feat(codex): add structured accounting correlation | Codex 流式事件关联为每请求一行结构化记账 |
+| `1d7a8b4` | feat: add efficient online database import | 在线 DB 导入（`internal/dbmerge`，不停进程） |
+| `dc664ec` | refactor(logrotate): extract closeFile helper to dedup close logic | 日志轮转关闭逻辑去重 |
+| `b9daba9` | fix(pricing): guard redirectable URL vars to fix -race data race | 修复询价路径的数据竞争 |
+
+#### v0.1.0-preview.15（4 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `498edfb` | docs(release): preview.15 — changelog summary + repo hygiene | 发布说明 + 仓库整理（.gitignore / .gitattributes） |
+| `e1e8e5f` | feat(rate): Apple-style controls — custom rounded dropdown, drop Total tok/s, 10-min bucket | Rate 控件重设计：自绘圆角下拉、去掉 Total tok/s、新增 10 分钟桶 |
+| `c4c12e2` | feat(pricing): manual pricing table with provider-aware OpenRouter suggest | 价目表改为手动管理 + 感知 provider 的 OpenRouter 询价 |
+| `45da52d` | cleanup: remove gemini cli telemetry integration and pricing | 移除 Gemini CLI 集成 |
+
+#### v0.1.0-preview.14（1 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `a9cfadf` | feat(rate): preview.14 — Token Rate panel + rate APIs + weighted tok/s | 新增 Rate 面板、速率 API 与加权 tok/s |
+
+#### v0.1.0-preview.13（4 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `c5d5342` | docs(changelog): preview.13 | 发布说明 |
+| `4d79a7b` | feat(pricing): split hand-maintained manual seed out of regenerable seed.json | 手动价目拆分 `embed/manual_seed.json`，重生成不再冲掉手动条目 |
+| `bd4a8ac` | feat(pricing): prefer OpenRouter first-party provider price over blended | 询价默认取直营 provider 价而非混合促销价 |
+| `71786b3` | feat(pricing): basename fallback for provider-prefixed model keys | 裸模型名按 basename 兜底匹配 provider 前缀 key |
+
+#### v0.1.0-preview.12（2 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `9e2a733` | docs(changelog): preview.12 | 发布说明 |
+| `fb13ae0` | fix(web): align usage-calendar weekday labels with cell rows | 使用日历星期标签与格子行对齐 |
+
+#### v0.1.0-preview.11（2 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `9cd2351` | docs(changelog): preview.11 | 发布说明 |
+| `44fda62` | merge: bring zip snapshot cc-otel-9e41afc into main | 快照并入主线 |
+
+#### v0.1.0-preview.10（3 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `c4fb0a1` | docs(changelog): preview.10 — gemini source, merge data-loss fix, 24h time | 发布说明 |
+| `82e1873` | fix(merge): stale import_ledger entries must not drop rows; verify per-row | 修复合并账本残留静默丢行；校验改为逐行 |
+| `c4627ca` | merge: bring zip snapshot cc-otel.zip into main | 快照并入主线 |
+
+#### v0.1.0-preview.9（1 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `09afbdb` | fix: add no_proxy to OTEL config for proxy compatibility | setup 自动注入 `no_proxy`，代理用户遥测不再静默丢失 |
+
+#### v0.1.0-preview.8（3 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `4ee38c1` | merge: bring zip snapshot cc-otel-202f900 into main | 快照并入主线 |
+| `aef2685` | docs(changelog): split Codex duration backfill into online + offline paths | 文档：Codex 耗时回填拆为在线 + 离线双路径 |
+| `db85e14` | merge: overlay zip snapshot cc-otel-202f900 onto main | 快照覆盖并入 |
+
+#### v0.1.0-preview.7（1 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `e9593d3` | feat: pricing table & non-Claude cost recompute | 价目表 + 非 Claude 模型成本重算 |
+
+#### v0.1.0-preview.6（2 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `668ba1d` | fix: skip Windows-only merge test on non-Windows CI | CI 平台修复 |
+| `64fbc52` | docs: fix Codex config keys (trace-exporter / metrics-exporter) | Codex 配置键文档修正 |
+
+#### v0.1.0-preview.5（3 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `f778c57` | chore: remove one-shot migration doc with local paths | 清理含本机路径的一次性迁移文档 |
+| `039f18c` | merge: integrate enhanced head from secondary workstation | 二号工作站分支并入 |
+| `f31b691` | docs: update dashboard screenshots | 截图更新 |
+
+#### v0.1.0-preview.4（1 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `69acbd0` | fix: remove legacy fallback in defaultDataDir | 移除数据目录解析的遗留回退 |
+
+#### v0.1.0-preview.3（3 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `6510f04` | feat: add hourly view, model family colors, insights modal, URL sync | 小时视图、模型品牌色、Insights 弹窗、URL 状态同步 |
+| `231f797` | docs: add dashboard screenshots | 截图 |
+| `a546051` | docs: add dashboard screenshots to README | README 截图 |
+
+#### v0.1.0-preview.1 – .2（3 个）
+
+| 提交 | 主题 | 说明 |
+|------|------|------|
+| `7291b00` | fix(setup): query GitHub API for actual download URL | setup 改查 GitHub API 获取真实下载地址 |
+| `70060ca` | docs: add /reload-plugins step before /cc-otel:setup | 文档补 /reload-plugins 步骤 |
+| `23c25c3` | chore: initial commit | 初始提交：OTLP gRPC 接收 + Web 仪表盘雏形 |
 
 ## [v0.1.0-preview.16] - 2026-07-17
 
@@ -98,7 +246,7 @@
 ### 移除 Gemini CLI 数据源
 
 - 删除 Gemini CLI 的完整集成：`gemini_*` 表与独立 schema、`/api/gemini/*` 路由、前端 `?source=gemini` 视图、`skills/otel-setup/gemini-setup.md` 及其专属定价。
-- **为什么**：实际使用集中在 Claude Code 与 Codex。为一个很少用的来源维护独立 schema / API / 文档 / 定价分支，成本高于收益。移除后收敛为干净的两源模型（下方 `[Unreleased]` 残留的「三源」描述以本节为准）。
+- **为什么**：实际使用集中在 Claude Code 与 Codex。为一个很少用的来源维护独立 schema / API / 文档 / 定价分支，成本高于收益。移除后收敛为干净的两源模型（下方历史节残留的「三源」描述以本节为准）。
 
 ### 仓库整理
 
@@ -120,11 +268,13 @@
 - **修复分段控件 active 丢失**：`filters.js` 的 `.gran-btn` 查询收窄到 `#granularity-switch`，否则每次切日期都会抹掉 Weighted/Avg 的 `.active`（该类与工具栏 Day/Month 共用）。
 - **为什么**：原控件是未加样的原生 OS 部件，与应用整体风格脱节，展开下拉还是直角；自绘下拉让收起 / 展开都与应用一致。
 
-## [Unreleased] · 0.1.0 Preview
+## [v0.1.0 之前] · 0.1.0 Preview 阶段（历史记录）
 
-> **状态：Preview，尚未正式发布。** 本节为主分支历史功能累积；已通过
-> `v0.1.0-preview.N` 标签迭代发布到 **`v0.1.0-preview.15`**（见顶部）。最新发布
-> 内容以顶部对应版本小节为准；等行为稳定后整体收敛为 `v0.1.0` 正式版本。
+> **状态：历史记录，已随 v0.1.0 收敛发布**（见顶部小节）。本节是 preview 阶段
+> （`v0.1.0-preview.1` – `.15`）主分支功能的累积描述，保留作历史参考；与顶部
+> 版本小节冲突时以顶部为准。本节提到的安装目录 `~/.claude/cc-otel/`、24h 自动
+> 刷新价目、Gemini 三源等均为当时行为，已被后续版本逐一取代（v0.1.0 起目录为
+> `~/.cc-otel/`，自动刷新已移除，Gemini 已删除）。
 
 ### 价目表改为手动管理
 
