@@ -10,6 +10,20 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 > First stable release. cc-otel is no longer coupled to Claude Code: standalone install directory, four clients sharing one instance.
 > Summarizes the main line after `v0.1.0-preview.16`: service_name attribution, OTLP/HTTP ingress + opencode, service-aware pricing, DeepSeek Harness ingestion, and the code-review fix batch.
+> As the first stable release it also folds in every commit since the initial one — all 46 are indexed at the end of this section.
+
+### v0.1.0 capability overview
+
+| Area | What v0.1.0 supports |
+|------|----------------------|
+| **Clients** | Claude Code, Codex CLI, opencode, and DeepSeek Harness (DSH) share one instance; routing and attribution by the OTLP Resource `service.name` |
+| **Ingestion** | OTLP gRPC `:4317` + OTLP/HTTP `:4318`, all three signals through one ingestion path; transparent `Content-Encoding: gzip` decompression; idempotent dedup of exporter retries |
+| **Cost & pricing** | Manual price table (in-UI CRUD, instant effect) + on-demand OpenRouter suggest (first-party provider price by default) + full historical recompute; upstream `cost_usd` authoritative only for Claude Code on Claude models |
+| **Web dashboard** | KPI cards + breakdown modals, Tokens/Cost/Requests bar chart, Daily / Sessions / Request Log / Token Rate / Intraday panels, GitHub-style usage calendar, SSE live refresh, dark/light themes, browser history navigation, online DB import |
+| **Storage** | Single-file SQLite (WAL + busy_timeout); live `daily_model_agg` pre-aggregates (< 3 ms queries); two-tier TTL cleanup; raw OTLP events no longer written, keeping the DB bounded |
+| **Ops CLI** | `start` / `stop` / `restart` / `status` / `serve` / `install` / `init` / `cleanup`; `/api/status` health panel; the 9-step cross-machine DB merge pipeline + online `VACUUM INTO` snapshots |
+| **Distribution** | Single binary (`go:embed` web UI, zero runtime deps); Windows / macOS / Linux × amd64 / arm64 via GoReleaser; GitHub Actions three-OS tests + race + coverage; Claude Code plugin slash commands |
+| **Upgrade** | A pre-v0.1.0 `~/.claude/cc-otel/` install is migrated wholesale to the standalone `~/.cc-otel/` on the new binary's first run, with zero data loss |
 
 ### Standalone install directory `~/.cc-otel/` (breaking, auto-migrated)
 
@@ -49,6 +63,136 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 - **Honest behavior**: the ai-sdk clamp warning text corrected (the clamped value is already correct; the note is for onboarding confirmation); `otlp_http_port: 0` explicitly disables and reports truthfully.
 - **Efficiency/maintainability**: DSH body decoding walks only the keys it reads (skipping multi-MB content); `'claude-code'` literals unified behind `db.DefaultServiceName`; the three copies of the aggregation SQL collapsed into one constant.
 - **Frontend**: Source badge background follows `var(--accent-dim)` (light theme no longer paints the dark tint); tab active state unified to the graphite pattern; dead code and formatting damage cleaned up.
+
+### All commits folded into v0.1.0 (46)
+
+> Every commit from the initial one to the tagged one, grouped by iteration, newest first within each group. Note: mainline history was reworked once at the preview.15 release, so the old `v0.1.0-preview.1` – `.14` tags still point at pre-rework hashes; the hashes below are the current (reworked) mainline. Feature details per iteration live in the sections further down; the `merge: bring zip snapshot …` commits were the cross-machine collaboration workflow of the time and keep their original subjects for the record.
+
+#### v0.1.0 stable (after preview.16, 4 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `591959f` | chore(pricing): refresh manual seed from OpenRouter 2026-08-16 quotes | Offline seed refreshed to 2026-08-16 first-party quotes; deepseek-v4-pro corrected after the official cut ($1.74 → $0.435/Mtok) |
+| `3d35df3` | feat(release): v0.1.0 — standalone ~/.cc-otel home, auto-migration, multi-client docs | Standalone `~/.cc-otel/` home + first-run auto-migration + four-client docs & changelog |
+| `4a2d195` | feat(receiver): ingest DeepSeek Harness session telemetry | DSH session-ledger ingestion (fourth client), OTLP/HTTP + gzip |
+| `4b754c4` | feat: service_name attribution, in-process OTLP/HTTP ingress, service-aware pricing | service_name attribution, `:4318` OTLP/HTTP ingress, opencode support, service-aware pricing |
+
+#### v0.1.0-preview.16 (9 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `3023d18` | docs(release): preview.16 — changelog + README for online DB import, Codex accounting, intraday bar chart | Release notes + README |
+| `829be30` | feat(ui): rebuild Intraday as a per-bucket bar chart | Intraday rebuilt: one bar per (bucket, model), 5–60 min selector |
+| `d1034d5` | feat(ui): graphite segmented control for chart granularity | Day/Month switch as a graphite segmented control (a11y included) |
+| `36f0c19` | docs: add mandatory frontend taste guide | FRONTEND_TASTE.md visual guide |
+| `b5d0661` | chore(db): clean legacy Codex events on startup | Startup background cleanup of legacy `codex_events` |
+| `0be4537` | feat(codex): add structured accounting correlation | Codex streaming events correlated into per-request accounting rows |
+| `1d7a8b4` | feat: add efficient online database import | Online DB import (`internal/dbmerge`, no process stop) |
+| `dc664ec` | refactor(logrotate): extract closeFile helper to dedup close logic | Logrotate close-logic dedup |
+| `b9daba9` | fix(pricing): guard redirectable URL vars to fix -race data race | Data-race fix on the suggest path |
+
+#### v0.1.0-preview.15 (4 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `498edfb` | docs(release): preview.15 — changelog summary + repo hygiene | Release notes + repo hygiene (.gitignore / .gitattributes) |
+| `e1e8e5f` | feat(rate): Apple-style controls — custom rounded dropdown, drop Total tok/s, 10-min bucket | Rate controls redesigned; Total tok/s dropped; 10-min bucket added |
+| `c4c12e2` | feat(pricing): manual pricing table with provider-aware OpenRouter suggest | Manual price-table management + provider-aware suggest |
+| `45da52d` | cleanup: remove gemini cli telemetry integration and pricing | Gemini CLI integration removed |
+
+#### v0.1.0-preview.14 (1 commit)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `a9cfadf` | feat(rate): preview.14 — Token Rate panel + rate APIs + weighted tok/s | New Rate panel, rate APIs, weighted tok/s |
+
+#### v0.1.0-preview.13 (4 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `c5d5342` | docs(changelog): preview.13 | Release notes |
+| `4d79a7b` | feat(pricing): split hand-maintained manual seed out of regenerable seed.json | Manual prices split into `embed/manual_seed.json`, surviving regen |
+| `bd4a8ac` | feat(pricing): prefer OpenRouter first-party provider price over blended | First-party provider price preferred over blended promo |
+| `71786b3` | feat(pricing): basename fallback for provider-prefixed model keys | Bare model names match provider-prefixed keys by basename |
+
+#### v0.1.0-preview.12 (2 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `9e2a733` | docs(changelog): preview.12 | Release notes |
+| `fb13ae0` | fix(web): align usage-calendar weekday labels with cell rows | Calendar weekday labels aligned with cell rows |
+
+#### v0.1.0-preview.11 (2 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `9cd2351` | docs(changelog): preview.11 | Release notes |
+| `44fda62` | merge: bring zip snapshot cc-otel-9e41afc into main | Snapshot merged into main |
+
+#### v0.1.0-preview.10 (3 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `c4fb0a1` | docs(changelog): preview.10 — gemini source, merge data-loss fix, 24h time | Release notes |
+| `82e1873` | fix(merge): stale import_ledger entries must not drop rows; verify per-row | Stale ledger entries no longer drop rows; per-row verification |
+| `c4627ca` | merge: bring zip snapshot cc-otel.zip into main | Snapshot merged into main |
+
+#### v0.1.0-preview.9 (1 commit)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `09afbdb` | fix: add no_proxy to OTEL config for proxy compatibility | `no_proxy` auto-injected; proxy users no longer lose telemetry |
+
+#### v0.1.0-preview.8 (3 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `4ee38c1` | merge: bring zip snapshot cc-otel-202f900 into main | Snapshot merged into main |
+| `aef2685` | docs(changelog): split Codex duration backfill into online + offline paths | Docs: dual backfill paths |
+| `db85e14` | merge: overlay zip snapshot cc-otel-202f900 onto main | Snapshot overlay merge |
+
+#### v0.1.0-preview.7 (1 commit)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `e9593d3` | feat: pricing table & non-Claude cost recompute | Price table + non-Claude cost recompute |
+
+#### v0.1.0-preview.6 (2 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `668ba1d` | fix: skip Windows-only merge test on non-Windows CI | CI platform fix |
+| `64fbc52` | docs: fix Codex config keys (trace-exporter / metrics-exporter) | Codex config-key docs fix |
+
+#### v0.1.0-preview.5 (3 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `f778c57` | chore: remove one-shot migration doc with local paths | Removed doc with machine-local paths |
+| `039f18c` | merge: integrate enhanced head from secondary workstation | Secondary-workstation head merged |
+| `f31b691` | docs: update dashboard screenshots | Screenshots updated |
+
+#### v0.1.0-preview.4 (1 commit)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `69acbd0` | fix: remove legacy fallback in defaultDataDir | Removed legacy fallback in data-dir resolution |
+
+#### v0.1.0-preview.3 (3 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `6510f04` | feat: add hourly view, model family colors, insights modal, URL sync | Hourly view, model brand colors, insights modal, URL sync |
+| `231f797` | docs: add dashboard screenshots | Screenshots |
+| `a546051` | docs: add dashboard screenshots to README | README screenshots |
+
+#### v0.1.0-preview.1 – .2 (3 commits)
+
+| Commit | Subject | Notes |
+|--------|---------|-------|
+| `7291b00` | fix(setup): query GitHub API for actual download URL | Setup queries the GitHub API for the real download URL |
+| `70060ca` | docs: add /reload-plugins step before /cc-otel:setup | Docs: /reload-plugins step |
+| `23c25c3` | chore: initial commit | Initial commit: OTLP gRPC receiver + web dashboard |
 
 ## [v0.1.0-preview.16] - 2026-07-17
 
@@ -97,7 +241,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 ### Removed Gemini CLI source
 
 - Removed the full Gemini CLI integration: `gemini_*` tables and schema, `/api/gemini/*` routes, the frontend `?source=gemini` view, `skills/otel-setup/gemini-setup.md`, and its dedicated pricing.
-- **Why**: real usage is concentrated on Claude Code and Codex. Maintaining a separate schema / API / docs / pricing branch for a rarely-used source cost more than it returned. The project now converges on a clean two-source model (the stale "three sources" wording still lingering in `[Unreleased]` below is superseded by this section).
+- **Why**: real usage is concentrated on Claude Code and Codex. Maintaining a separate schema / API / docs / pricing branch for a rarely-used source cost more than it returned. The project now converges on a clean two-source model (the stale "three sources" wording still lingering in the historical section below is superseded by this section).
 
 ### Repo hygiene
 
@@ -119,13 +263,15 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 - **Fixed segmented-control active loss**: `filters.js` `.gran-btn` queries are scoped to `#granularity-switch`, otherwise every date-range switch stripped the `.active` from Weighted/Avg (the class is shared with the toolbar Day/Month toggle).
 - **Why**: the controls were unstyled native OS widgets, clashing with the polished UI, and the open dropdown was square; the custom dropdown makes both the closed and open states consistent with the app.
 
-## [Unreleased] · 0.1.0 Preview
+## [Pre-v0.1.0] · 0.1.0 Preview era (historical record)
 
-> **Status: preview, not yet released.** This section is the historical
-> accumulation of main-branch features; iterations ship as `v0.1.0-preview.N`
-> tags, latest **`v0.1.0-preview.15`** (see the top of this file). The most
-> recent release notes live in the versioned section at the top; once behavior
-> stabilizes, everything folds into `v0.1.0`.
+> **Status: historical record, folded into the v0.1.0 release** (see the section
+> at the top). This section is the accumulated feature description of the preview
+> era (`v0.1.0-preview.1` – `.15`), kept for reference; where it conflicts with
+> the versioned sections above, those win. The install dir `~/.claude/cc-otel/`,
+> the 24h price auto-refresh, and the three-source (Gemini) model mentioned here
+> were the behavior of their time and were each superseded later (since v0.1.0
+> the dir is `~/.cc-otel/`, auto-refresh is gone, Gemini was removed).
 
 ### Manual pricing management
 

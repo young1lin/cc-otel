@@ -17,7 +17,7 @@
 ## 文档
 
 - [设计说明（为什么这样做 / 怎么改最合适）](./docs/DESIGN.md)
-- [更新日志（未发布 / 版本变更）](./CHANGELOG.md)
+- [更新日志（版本变更）](./CHANGELOG.md)
 - [Claude Code OTEL 事件参考](./docs/otel-events.md)
 
 **Dark**
