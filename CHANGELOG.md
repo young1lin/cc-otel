@@ -6,7 +6,7 @@
 
 ---
 
-## [v0.1.0] - 2026-08-16
+## [v0.1.0] - 2026-08-17
 
 > 首个正式版本。cc-otel 不再与 Claude Code 绑定：独立安装目录、四个客户端共用一个实例。
 > 汇总 `v0.1.0-preview.16` 之后的主线：service_name 归因、OTLP/HTTP 接入与 opencode、

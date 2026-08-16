@@ -10,6 +10,7 @@
 *.jsonl
 
 # Local runtime artifacts
+RECOVER_AND_RUN.md
 cc-otel.log
 cc-otel.pid
 cc-otel.yaml
