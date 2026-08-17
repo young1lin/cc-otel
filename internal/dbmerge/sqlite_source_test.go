@@ -28,7 +28,7 @@ func currentFixture(t testing.TB) string {
 
 func openWritable(t testing.TB, path string) *sql.DB {
 	t.Helper()
-	d, err := sql.Open("sqlite3", path)
+	d, err := sql.Open("sqlite3", appdb.DSN(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +39,19 @@ func mustExec(t testing.TB, d *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := d.Exec(query, args...); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenWritableHonorsNosyncEnv(t *testing.T) {
+	t.Setenv("CC_OTEL_TEST_NOSYNC", "1")
+	d := openWritable(t, currentFixture(t))
+	defer d.Close()
+	var mode int
+	if err := d.QueryRow("PRAGMA synchronous").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != 0 {
+		t.Fatalf("PRAGMA synchronous = %d, want 0 (OFF) with CC_OTEL_TEST_NOSYNC set", mode)
 	}
 }
 
