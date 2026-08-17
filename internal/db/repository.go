@@ -3,10 +3,13 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+
+	"github.com/ncruces/go-sqlite3"
 )
 
 const costScale = 100000 // 1 USD = 100000 units, 0.00001 precision
@@ -388,7 +391,31 @@ func (r *Repository) RebuildDailyAggregates(ctx context.Context) error {
 // InsertRequest stores a single API request record, ignoring duplicates by request_id.
 // It also upserts the daily_model_agg pre-aggregation table within the same transaction.
 // Returns true if a new row was inserted (false for duplicates).
+// InsertRequest persists a request and its daily aggregate in one transaction,
+// retrying on SQLITE_BUSY(_SNAPSHOT).
+//
+// The tx is deferred and the insert reads before it writes (request_id dedup),
+// so when a concurrent writer — an online import merging into the live DB —
+// commits between this tx's snapshot and its write, SQLite returns BUSY
+// immediately: busy_timeout never applies to that snapshot upgrade. A fresh
+// transaction re-snapshots, and the request_id dedup makes the whole insert
+// idempotent, so retrying is safe. The race window was effectively unreachable
+// until CC_OTEL_TEST_NOSYNC sped test timing up (2026-08-17).
 func (r *Repository) InsertRequest(ctx context.Context, req *APIRequest) (bool, error) {
+	for attempt := 0; ; attempt++ {
+		inserted, err := r.insertRequestOnce(ctx, req)
+		if err == nil || attempt >= 3 || !isBusyErr(err) {
+			return inserted, err
+		}
+		select {
+		case <-ctx.Done():
+			return inserted, ctx.Err()
+		case <-time.After(time.Duration(25<<attempt) * time.Millisecond): // 25, 50, 100, 200ms
+		}
+	}
+}
+
+func (r *Repository) insertRequestOnce(ctx context.Context, req *APIRequest) (bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin tx: %w", err)
@@ -442,6 +469,13 @@ func (r *Repository) InsertRequest(ctx context.Context, req *APIRequest) (bool, 
 	}
 
 	return true, tx.Commit()
+}
+
+// isBusyErr reports whether err is lock contention SQLite would not wait out
+// on its own — busy_timeout does not cover deferred-tx snapshot upgrades.
+// Same predicate dbmerge applies to its own writers (import.go).
+func isBusyErr(err error) bool {
+	return errors.Is(err, sqlite3.BUSY) || errors.Is(err, sqlite3.BUSY_SNAPSHOT)
 }
 
 func (r *Repository) applyPendingTTFTForRequestTx(ctx context.Context, tx *sql.Tx, apiRequestID int64, requestID, sessionID, model string, reqUnix int64, windowSec int64) (bool, error) {

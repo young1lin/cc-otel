@@ -2,6 +2,7 @@ name: Test
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -21,15 +22,24 @@ jobs:
         run: go build ./cmd/cc-otel/
 
       - name: Test
-        run: go test ./... -v
+        run: go test ./... -v -timeout 15m
+        env:
+          # Temp test DBs without fsync: on CI Windows runners a single
+          # FlushFileBuffers can stall minutes under Defender scans and blow
+          # the per-package timeout (v0.1.0 tag flake, 2026-08-16).
+          CC_OTEL_TEST_NOSYNC: "1"
 
       - name: Test (race)
         if: matrix.os != 'windows-latest'
-        run: CGO_ENABLED=1 go test ./... -race
+        run: CGO_ENABLED=1 go test ./... -race -timeout 15m
+        env:
+          CC_OTEL_TEST_NOSYNC: "1"
 
       - name: Coverage
         if: matrix.os == 'ubuntu-latest'
-        run: go test ./... -coverprofile=coverage.out
+        run: go test ./... -coverprofile=coverage.out -timeout 15m
+        env:
+          CC_OTEL_TEST_NOSYNC: "1"
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'

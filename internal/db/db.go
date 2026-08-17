@@ -11,7 +11,7 @@ import (
 
 // Init opens the SQLite database at cfg.DBPath, runs schema migrations, and enables WAL mode.
 func Init(cfg *config.Config) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", cfg.DBPath)
+	db, err := sql.Open("sqlite3", DSN(cfg.DBPath))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -26,12 +26,17 @@ func Init(cfg *config.Config) (*sql.DB, error) {
 	// mmap_size=256MB: memory-mapped I/O to skip syscalls on reads of hot pages.
 	// temp_store=MEMORY: keep temp tables/indexes (ORDER BY, GROUP BY) in RAM.
 	// synchronous=NORMAL: WAL-safe; OS crash can lose last txn but DB stays consistent.
+	// Skipped under CC_OTEL_TEST_NOSYNC, where the DSN already opened every
+	// connection with synchronous=OFF (see dsn.go) — re-setting it here would
+	// stomp the DSN pragma on this connection.
+	if !nosyncEnabled() {
+		db.Exec("PRAGMA synchronous=NORMAL")
+	}
 	db.Exec("PRAGMA journal_mode=WAL")
 	db.Exec("PRAGMA busy_timeout=5000")
 	db.Exec("PRAGMA cache_size=-65536")
 	db.Exec("PRAGMA mmap_size=268435456")
 	db.Exec("PRAGMA temp_store=MEMORY")
-	db.Exec("PRAGMA synchronous=NORMAL")
 
 	// ANALYZE: refresh query-planner stats so the new composite indexes get picked.
 	// Cheap on small DBs; skip failures silently (e.g., empty DB on first boot).
