@@ -8,6 +8,7 @@ import { buildBarTooltip, makeTokenBarColor } from './chart-main.js';
 import { fillIntradaySlots, defaultVisibleSlots } from './intraday-slots.js';
 import { makeBucketDropdown, normalizeBucket, recommendedBucketForSpan } from './bucket-dropdown.js';
 import { legendOption, legendGridTop, makeLegendFocus } from './legend-focus.js';
+import { beginLatestRequest } from './latest-request.js';
 
 const INTRADAY_MAX_DAYS = 7;
 
@@ -127,6 +128,7 @@ export function renderDailyRow(r) {
 }
 
 export async function loadIntraday() {
+    const isCurrent = beginLatestRequest('daily-panel');
     const chartEl = document.getElementById('hourly-chart');
     if (!chartEl) return;
 
@@ -152,10 +154,10 @@ export async function loadIntraday() {
     try {
         json = await loadIntradayData({ from, to, bucket: useBucket });
     } catch (e) {
-        showIntradayMessage(chartEl, 'Failed to load intraday data.');
+        if (isCurrent()) showIntradayMessage(chartEl, 'Failed to load intraday data.');
         return;
     }
-    if (state.source !== sourceAtStart) return; // user switched tabs mid-flight
+    if (!isCurrent() || state.source !== sourceAtStart) return;
 
     const rows = json.data || [];
     if (rows.length === 0) {
@@ -281,10 +283,13 @@ function showIntradayMessage(chartEl, msg) {
 }
 
 export async function loadDailyTable() {
+    const isCurrent = beginLatestRequest('daily-panel');
+    const sourceAtStart = state.source;
     const { from, to } = rangeToFromTo(state.currentRange);
     const { page, pageSize } = paging.daily;
     try {
         const json = await loadDailyData({ from, to, page, pageSize, granularity: state.chartGranularity });
+        if (!isCurrent() || state.source !== sourceAtStart) return;
         paging.daily.total = json.total || 0;
         const rows = json.data || [];
         const tbody = document.getElementById('daily-tbody');
@@ -295,7 +300,7 @@ export async function loadDailyTable() {
         }
         tbody.innerHTML = rows.map(renderDailyRow).join('');
         renderPagination('daily-pagination', paging.daily, loadDailyTable);
-    } catch (e) { console.error('daily table:', e); }
+    } catch (e) { if (isCurrent()) console.error('daily table:', e); }
 }
 
 export function initPanelDaily() {

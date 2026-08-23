@@ -2,12 +2,16 @@ import { state, paging } from './state.js';
 import { fmtNum, fmtDateTime, escapeHtml, truncate, formatUserCell, rangeToFromTo } from './utils.js';
 import { loadSessionsData } from './api.js';
 import { renderPagination } from './pagination.js';
+import { beginLatestRequest } from './latest-request.js';
 
 export async function loadSessions() {
+    const isCurrent = beginLatestRequest('sessions');
+    const sourceAtStart = state.source;
     const { from, to } = rangeToFromTo(state.currentRange);
     const { page, pageSize } = paging.sessions;
     try {
         const json = await loadSessionsData({ from, to, page, pageSize });
+        if (!isCurrent() || state.source !== sourceAtStart) return;
         paging.sessions.total = json.total || 0;
         const rows = json.data || [];
         const tbody = document.getElementById('sessions-tbody');
@@ -26,5 +30,5 @@ export async function loadSessions() {
             <td class="cost-val">$${s.cost_usd.toFixed(4)}</td>
         </tr>`).join('');
         renderPagination('sessions-pagination', paging.sessions, loadSessions);
-    } catch (e) { console.error('sessions:', e); }
+    } catch (e) { if (isCurrent()) console.error('sessions:', e); }
 }

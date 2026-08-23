@@ -34,6 +34,8 @@ import { loadRate, initPanelRate } from './js/panel-rate.js';
 import { initPanelPricing } from './js/panel-pricing.js';
 import { initDatabaseImport } from './js/import-db.js';
 import { renderPagination } from './js/pagination.js';
+import { beginLatestRequest, invalidateRequestContext } from './js/latest-request.js';
+import { activatePanel } from './js/panel-tabs.js';
 
 // ── Popover positioner — shared by status / breakdown / insights modals ────
 function openPopover(backdropEl, anchorEl) {
@@ -133,6 +135,21 @@ function syncSourceTabsUI() {
             el.setAttribute('colspan', '3');
         }
     });
+
+    // Rate is backed only by the non-Codex api_requests table. Never present
+    // those curves as Codex data; if the source changes while Rate is open,
+    // move to Daily Detail before the source-specific refresh runs.
+    const rateBtn = document.querySelector('.panel-btn[data-panel="rate"]');
+    if (rateBtn) {
+        const hideRate = state.source === 'codex';
+        rateBtn.hidden = hideRate;
+        rateBtn.style.display = hideRate ? 'none' : '';
+    }
+    if (state.source === 'codex' && document.getElementById('panel-rate')?.classList.contains('active')) {
+        // Switch state without fetching yet; the caller resets pagination and
+        // performs one coherent loadAll() for the new source immediately after.
+        activatePanel('daily', { notify: false });
+    }
 }
 
 function initSourceTabs() {
@@ -180,9 +197,11 @@ document.querySelectorAll('.endpoint-copy').forEach(btn => {
 
 // ── Dashboard cards ─────────────────────────────────────────────────────────
 async function loadDashboard() {
+    const isCurrent = beginLatestRequest('dashboard');
     try {
         const { from, to } = rangeToFromTo(state.currentRange);
         const d = await loadDashboardData(from, to);
+        if (!isCurrent()) return;
         document.getElementById('h-cost').textContent   = '$' + (d.total_cost_usd ?? 0).toFixed(4);
         document.getElementById('h-input').textContent  = fmtNum(d.total_input_tokens);
         document.getElementById('h-output').textContent = fmtNum(d.total_output_tokens);
@@ -194,7 +213,7 @@ async function loadDashboard() {
         } else {
             setInsightsVisible(false);
         }
-    } catch (e) { console.error('dashboard:', e); }
+    } catch (e) { if (isCurrent()) console.error('dashboard:', e); }
 }
 
 
@@ -207,14 +226,27 @@ function resetPages() {
     paging.sessions.page = 1;
     paging.requests.page = 1;
 }
+function activePanelName() {
+    return document.querySelector('.panel.active')?.id?.replace(/^panel-/, '') || 'daily';
+}
+
+function refreshPanel(panel = activePanelName()) {
+    if (panel === 'daily') refreshDailyPanel();
+    else if (panel === 'sessions') loadSessions();
+    else if (panel === 'requests') loadRequests();
+    else if (panel === 'rate') loadRate();
+}
+
 function loadAll() {
+    // Invalidate every in-flight render, including panels that just became
+    // hidden and therefore will not start a replacement request until opened.
+    invalidateRequestContext();
     updateDailyViewControls();
     loadDashboard();
     loadChart();
-    refreshDailyPanel();
-    loadSessions();
-    loadRequests();
-    if (document.querySelector('.panel.active')?.id === 'panel-rate') loadRate();
+    // Hidden panels are refreshed when activated. Loading only the visible one
+    // avoids needless races and guarantees its query matches current UI state.
+    refreshPanel();
 }
 
 function selectCalendarDate(date) {
@@ -284,6 +316,7 @@ initFilters({
     onChange: () => loadAll(),
     onMetricChange: () => { loadDashboard(); loadChart(); refreshDailyPanel(); },
     onResetPages: () => resetPages(),
+    onPanelChange: (panel) => refreshPanel(panel),
 });
 initBreakdownModal({ openPopover, closePopover });
 initInsightsModal({ openPopover, closePopover, onSelectDate: selectCalendarDate });
@@ -305,15 +338,7 @@ applyStateFromURL();
 loadModelFilter();
 loadAll();
 initSSE({
-    onUpdate: () => {
-        loadDashboard();
-        loadChart();
-        refreshDailyPanel();
-        const activePanel = document.querySelector('.panel.active');
-        if (activePanel?.id === 'panel-sessions') loadSessions();
-        if (activePanel?.id === 'panel-requests') loadRequests();
-        if (activePanel?.id === 'panel-rate') loadRate();
-    },
+    onUpdate: () => loadAll(),
     openPopover, closePopover,
 });
 startDayRolloverWatcher();

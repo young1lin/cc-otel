@@ -4,6 +4,7 @@ import { chartColors, getModelColor } from './theme.js';
 import { loadRateData } from './api.js';
 import { makeBucketDropdown, normalizeBucket, recommendedBucketForSpan } from './bucket-dropdown.js';
 import { legendOption, legendGridTop, makeLegendFocus } from './legend-focus.js';
+import { beginLatestRequest } from './latest-request.js';
 
 const MAX_DAYS = 7;
 
@@ -180,8 +181,13 @@ function bindHoverIsolate(chart, seriesMeta, bucketMinutes) {
 }
 
 export async function loadRate() {
+    const isCurrent = beginLatestRequest('rate-chart');
     const chartEl = document.getElementById('rate-chart');
     if (!chartEl) return;
+    if (state.source === 'codex') {
+        showMessage(chartEl, 'Rate view is unavailable for Codex data.');
+        return;
+    }
 
     const { from, to } = rangeToFromTo(state.currentRange);
     const span = spanDaysInclusive(from, to);
@@ -205,11 +211,13 @@ export async function loadRate() {
     try {
         json = await loadRateData({ from, to, bucket: useBucket });
     } catch (e) {
-        console.error('rate:', e);
-        showMessage(chartEl, 'Failed to load rate data.');
+        if (isCurrent()) {
+            console.error('rate:', e);
+            showMessage(chartEl, 'Failed to load rate data.');
+        }
         return;
     }
-    if (sourceAtStart !== state.source) return;
+    if (!isCurrent() || sourceAtStart !== state.source) return;
 
     const rows = (json && json.data) || [];
     if (rows.length === 0) { showMessage(chartEl, 'No data in this range.'); return; }
@@ -350,9 +358,4 @@ export function initPanelRate() {
     });
     document.getElementById('rate-refresh-btn')?.addEventListener('click', () => loadRate());
 
-    // Lazy-load: only fetch/render when the Rate tab is opened (chart needs a
-    // visible container to size correctly), then resize on re-activation.
-    document.querySelector('.panel-btn[data-panel="rate"]')?.addEventListener('click', () => {
-        loadRate();
-    });
 }

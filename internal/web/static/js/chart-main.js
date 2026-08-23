@@ -3,6 +3,7 @@ import { fmtNum, escapeHtml, rangeToFromTo, fmtHourRange } from './utils.js';
 import { chartColors, getModelColor, mixHex } from './theme.js';
 import { loadDailyData } from './api.js';
 import { tokenParts } from './token-math.js';
+import { beginLatestRequest } from './latest-request.js';
 
 /**
  * Shared bar-chart tooltip formatter for daily and hourly charts.
@@ -91,9 +92,11 @@ export function makeTokenBarColor(model) {
 }
 
 export async function loadChart() {
+    const isCurrent = beginLatestRequest('main-chart');
     const { from, to } = rangeToFromTo(state.currentRange);
     try {
         const json = await loadDailyData({ from, to, page: 1, pageSize: 1000, granularity: state.chartGranularity });
+        if (!isCurrent()) return;
         const rows = (json.data || json) || [];
 
         // Newest day on the left, then older (yesterday, …) — matches 7d/30d mental model; YYYY-MM sorts lexicographically
@@ -296,5 +299,5 @@ export async function loadChart() {
             syncSize();
             requestAnimationFrame(syncSize);
         });
-    } catch (e) { console.error('chart:', e); }
+    } catch (e) { if (isCurrent()) console.error('chart:', e); }
 }

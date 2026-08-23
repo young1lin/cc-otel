@@ -1,6 +1,7 @@
 import { state } from './state.js';
 import { toYMD, getTodayYMD, isValidYMD } from './utils.js';
 import { syncGranularityButtons } from './granularity.js';
+import { initPanelTabs } from './panel-tabs.js';
 
 const dayDropdownBtn = document.getElementById('day-dropdown-btn');
 const dayDropdown    = document.getElementById('day-dropdown');
@@ -8,6 +9,7 @@ const dayDropdown    = document.getElementById('day-dropdown');
 let onChange = () => {};
 let onMetricChange = () => {};
 let onResetPages = () => {};
+let onPanelChange = () => {};
 
 export function buildDayDropdown() {
     const now = new Date();
@@ -302,6 +304,7 @@ export function initFilters(opts = {}) {
     onChange       = opts.onChange       || (() => {});
     onMetricChange = opts.onMetricChange || (() => {});
     onResetPages   = opts.onResetPages   || (() => {});
+    onPanelChange  = opts.onPanelChange  || (() => {});
 
     dayDropdownBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -364,14 +367,5 @@ export function initFilters(opts = {}) {
         });
     });
 
-    document.querySelectorAll('.panel-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.panel-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-            btn.classList.add('active');
-            document.getElementById('panel-' + btn.dataset.panel).classList.add('active');
-            const filterEl = document.getElementById('request-filter');
-            if (filterEl) filterEl.classList.toggle('visible', btn.dataset.panel === 'requests');
-        });
-    });
+    initPanelTabs({ onActivate: onPanelChange });
 }

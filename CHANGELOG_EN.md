@@ -6,6 +6,25 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.1] - 2026-08-23
+
+> Patch release fixing stale Web-panel data, asynchronous response races, and write stability while SQLite is busy.
+
+### Fixed
+
+- **Refresh on panel activation**: Daily Detail, Sessions, Request Log, and Rate now share one activation path and re-query when reopened, instead of exposing DOM data left stale while another panel was active.
+- **Async race protection**: Dashboard, main chart, Daily/Intraday, Sessions, Request Log, duration stats, model options, and Rate use latest-request generations. Older date/page/source/SSE/manual-refresh responses can no longer overwrite newer UI state.
+- **Source switching**: Claude/Codex changes synchronously clear the previous model selection and options; context changes also invalidate in-flight requests belonging to hidden panels.
+- **Honest Codex Rate behavior**: Rate currently has no Codex backend, so it is hidden for Codex. Switching to Codex while Rate is open returns to Daily without a duplicate fetch, and the loader refuses to read `/api/rate` under Codex.
+- **SQLite write stability**: `InsertRequest` retries `SQLITE_BUSY`, reducing transient ingestion failures under concurrency; CI tests avoid unnecessary fsync.
+
+### Verification
+
+- Frontend Node tests pass **102/102**; the complete Go test suite passes.
+- The embedded frontend was rebuilt and exercised with real Chromium on isolated development ports, covering Rate → Sessions / Request Log re-entry, Codex Rate hiding/redirect, and the 7 Days view.
+
+---
+
 ## [v0.1.0] - 2026-08-17
 
 > First stable release. cc-otel is no longer coupled to Claude Code: standalone install directory, four clients sharing one instance.
