@@ -6,6 +6,25 @@
 
 ---
 
+## [v0.1.1] - 2026-08-23
+
+> 补丁版本：修复 Web 面板切换后的陈旧数据、异步响应竞态，以及数据库繁忙时的写入稳定性。
+
+### 修复
+
+- **面板激活刷新**：Daily Detail、Sessions、Request Log、Rate 使用统一激活逻辑；从 Rate 或其他面板切回时会重新查询，不再展示停留期间积累的旧 DOM 数据。
+- **异步竞态保护**：Dashboard、主图、Daily/Intraday、Sessions、Request Log、时长统计、模型列表、Rate 全部采用 latest-request 代次保护；日期、分页、来源、SSE 或手动刷新重叠时，旧响应不能覆盖新状态。
+- **来源切换**：Claude/Codex 切换时同步清除旧模型选择和选项，避免用旧来源模型查询新来源；上下文变化会使隐藏面板的在途请求失效。
+- **Codex Rate 语义**：Rate 目前仅有非 Codex 后端数据，因此 Codex 下隐藏 Rate；从 Rate 切到 Codex 会无重复请求地回到 Daily，底层加载器也拒绝误取 `/api/rate`。
+- **SQLite 写入稳定性**：`InsertRequest` 遇到 `SQLITE_BUSY` 时重试，降低并发摄入时的瞬时写入失败；CI 测试关闭不必要的 fsync。
+
+### 验证
+
+- 前端 Node 测试 **102/102** 通过；Go 全量测试通过。
+- 使用隔离开发端口完成嵌入式前端构建和真实 Chromium 自动验证，覆盖 Rate → Sessions / Request Log 重进、Codex Rate 隐藏/回退和 7 Days 视图。
+
+---
+
 ## [v0.1.0] - 2026-08-17
 
 > 首个正式版本。cc-otel 不再与 Claude Code 绑定：独立安装目录、四个客户端共用一个实例。

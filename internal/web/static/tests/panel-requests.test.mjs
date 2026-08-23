@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { state, paging } from '../js/state.js';
 import { loadModelFilter, loadRequests } from '../js/panel-requests.js';
+import { invalidateRequestContext } from '../js/latest-request.js';
 
 function jsonResponse(data) {
     return {
@@ -18,8 +19,10 @@ function installRequestPanelDOM() {
     const pagination = { innerHTML: '', append() {} };
     const modelFilter = {
         value: '',
-        innerHTML: '',
+        _innerHTML: '',
         options: [],
+        get innerHTML() { return this._innerHTML; },
+        set innerHTML(value) { this._innerHTML = value; this.options = []; },
         appendChild(opt) { this.options.push(opt); },
     };
     const ttftHeader = { style: { display: '' }, classList: { contains: () => true, toggle() {} } };
@@ -143,5 +146,109 @@ test('model filter can reset stale source selection before loading Codex models'
         global.document = oldDocument;
         global.fetch = oldFetch;
         state.source = 'claude';
+    }
+});
+
+test('resetting model options clears the old source filter before awaiting models', async () => {
+    const oldDocument = global.document;
+    const oldFetch = global.fetch;
+    try {
+        const dom = installRequestPanelDOM();
+        dom.modelFilter.value = 'claude-opus-4-7';
+        dom.modelFilter.options = [{ value: 'claude-opus-4-7' }];
+        state.source = 'codex';
+        let resolveModels;
+        global.fetch = async () => new Promise(resolve => { resolveModels = resolve; });
+
+        const loading = loadModelFilter({ preserveCurrent: false });
+        assert.equal(dom.modelFilter.value, '');
+        assert.deepEqual(dom.modelFilter.options, []);
+        assert.match(dom.modelFilter.innerHTML, /All Models/);
+
+        resolveModels(jsonResponse(['gpt-5.5']));
+        await loading;
+        assert.deepEqual(dom.modelFilter.options.map(o => o.value), ['gpt-5.5']);
+    } finally {
+        global.document = oldDocument;
+        global.fetch = oldFetch;
+        state.source = 'claude';
+    }
+});
+
+test('hidden Request Log response is invalidated by a global context change', async () => {
+    const oldDocument = global.document;
+    const oldFetch = global.fetch;
+    try {
+        const dom = installRequestPanelDOM();
+        dom.requestBody.innerHTML = 'current-view';
+        state.source = 'claude';
+        state.currentRange = 'today';
+        paging.requests.page = 1;
+        let resolveRequests;
+        global.fetch = async (url) => {
+            if (String(url).startsWith('/api/durations')) return jsonResponse([]);
+            return new Promise(resolve => { resolveRequests = resolve; });
+        };
+
+        const oldLoad = loadRequests();
+        invalidateRequestContext();
+        resolveRequests(jsonResponse({ data: [], total: 0 }));
+        await oldLoad;
+
+        assert.equal(dom.requestBody.innerHTML, 'current-view');
+    } finally {
+        global.document = oldDocument;
+        global.fetch = oldFetch;
+        state.source = 'claude';
+        state.currentRange = 'today';
+    }
+});
+
+test('slower old Request Log page cannot overwrite a newer page', async () => {
+    const oldDocument = global.document;
+    const oldFetch = global.fetch;
+    try {
+        const dom = installRequestPanelDOM();
+        let resolvePage1;
+        let resolvePage2;
+        const page1 = new Promise(resolve => { resolvePage1 = resolve; });
+        const page2 = new Promise(resolve => { resolvePage2 = resolve; });
+        state.source = 'claude';
+        state.currentRange = 'today';
+        paging.requests.pageSize = 20;
+
+        const response = data => ({ ok: true, json: async () => data });
+        global.fetch = async (url) => {
+            const raw = String(url);
+            if (raw.startsWith('/api/durations')) return response([]);
+            const page = new URL('http://local' + raw).searchParams.get('page');
+            return page === '2' ? page2 : page1;
+        };
+
+        paging.requests.page = 1;
+        const oldLoad = loadRequests();
+        paging.requests.page = 2;
+        const newLoad = loadRequests();
+
+        const row = model => ({
+            timestamp: '2026-05-12T10:09:39+08:00',
+            model, service_name: 'claude-code', user_id: '',
+            input_tokens: 10, output_tokens: 2, cache_read_tokens: 0,
+            cache_creation_tokens: 0, cost_usd: 0.01, ttft_ms: 0, duration_ms: 100,
+        });
+        resolvePage2(response({ data: [row('new-model')], total: 21 }));
+        await newLoad;
+        resolvePage1(response({ data: [row('old-model')], total: 21 }));
+        await oldLoad;
+
+        assert.match(dom.requestBody.innerHTML, /new-model/);
+        assert.doesNotMatch(dom.requestBody.innerHTML, /old-model/);
+        assert.equal(paging.requests.page, 2);
+    } finally {
+        global.document = oldDocument;
+        global.fetch = oldFetch;
+        state.source = 'claude';
+        state.currentRange = 'today';
+        paging.requests.page = 1;
     }
 });

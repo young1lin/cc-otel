@@ -44,5 +44,5 @@ test('Intraday has an All-models escape hatch, hidden until a model is isolated'
 // asset change must bump them here too. Update both when you edit CSS or JS.
 test('cache-busting versions bumped', () => {
     assert.match(html, /style\.css\?v=29/);
-    assert.match(html, /app\.js\?v=70/);
+    assert.match(html, /app\.js\?v=71/);
 });

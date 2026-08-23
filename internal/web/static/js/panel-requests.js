@@ -2,6 +2,7 @@ import { state, paging } from './state.js';
 import { fmtNum, fmtDateTime, escapeHtml, formatUserCell, rangeToFromTo } from './utils.js';
 import { loadRequestsData, loadDurationsData, loadModelsData } from './api.js';
 import { renderPagination } from './pagination.js';
+import { beginLatestRequest } from './latest-request.js';
 
 // Maps the OTLP resource service_name to a friendly source badge so the
 // request log shows which client reported each row (Claude Code / OpenCode /
@@ -103,10 +104,11 @@ function renderDurationStatsTable() {
 export async function loadDurationStats(from, to, model) {
     const tbody = document.getElementById('duration-stats-tbody');
     if (!tbody) return;
+    const isCurrent = beginLatestRequest('request-durations');
     const sourceAtStart = state.source;
     try {
         const rows = await loadDurationsData({ from, to, model });
-        if (sourceAtStart !== state.source) return;
+        if (!isCurrent() || sourceAtStart !== state.source) return;
         state.durationStatsRows = Array.isArray(rows) ? rows : [];
         if (state.durationStatsRows.length === 0) {
             setTTFTColumnVisible(false);
@@ -115,7 +117,7 @@ export async function loadDurationStats(from, to, model) {
         }
         renderDurationStatsTable();
     } catch (e) {
-        if (sourceAtStart !== state.source) return;
+        if (!isCurrent() || sourceAtStart !== state.source) return;
         console.error('durations:', e);
         state.durationStatsRows = [];
         setTTFTColumnVisible(false);
@@ -124,6 +126,7 @@ export async function loadDurationStats(from, to, model) {
 }
 
 export async function loadRequests() {
+    const isCurrent = beginLatestRequest('request-log');
     const { from, to } = rangeToFromTo(state.currentRange);
     const { page, pageSize } = paging.requests;
     const sourceAtStart = state.source;
@@ -131,7 +134,7 @@ export async function loadRequests() {
         const model = document.getElementById('model-filter').value;
         loadDurationStats(from, to, model);
         const json = await loadRequestsData({ from, to, page, pageSize, model });
-        if (sourceAtStart !== state.source) return;
+        if (!isCurrent() || sourceAtStart !== state.source) return;
         paging.requests.total = json.total || 0;
         const data = json.data || [];
 
@@ -159,25 +162,40 @@ export async function loadRequests() {
             <td class="mono">${r.duration_ms ? r.duration_ms + 'ms' : '—'}</td>
         </tr>`).join('');
         renderPagination('requests-pagination', paging.requests, loadRequests);
-    } catch (e) { console.error('requests:', e); }
+    } catch (e) { if (isCurrent()) console.error('requests:', e); }
 }
 
 export async function loadModelFilter({ preserveCurrent = true } = {}) {
     const select = document.getElementById('model-filter');
     if (!select) return;
+    // Model loading spans source-context changes by design and has its own
+    // source + generation checks. Reset the live value synchronously so a
+    // Request Log refresh cannot query the new source with the old model.
+    const isCurrent = beginLatestRequest('model-filter', { trackContext: false });
+    const sourceAtStart = state.source;
     const current = preserveCurrent ? select.value : '';
-    select.innerHTML = '<option value="">All Models</option>';
-    select.value = '';
+    if (!preserveCurrent) {
+        select.innerHTML = '<option value="">All Models</option>';
+        select.value = '';
+    }
 
     try {
         const models = await loadModelsData();
+        if (!isCurrent() || sourceAtStart !== state.source) return;
+
+        // Commit the complete option set only after the latest response wins, so
+        // concurrent source switches cannot mix options from two endpoints.
+        select.innerHTML = '<option value="">All Models</option>';
+        select.value = '';
         models.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m; opt.textContent = m;
             select.appendChild(opt);
         });
         if (preserveCurrent && models.includes(current)) select.value = current;
-    } catch(e) { console.error('models:', e); }
+    } catch(e) {
+        if (isCurrent()) console.error('models:', e);
+    }
 }
 
 export function initPanelRequests() {
