@@ -63,7 +63,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **Claude Code** | OTLP gRPC `:4317` | OTEL env vars in `~/.claude/settings.json` (`/cc-otel:setup` does it for you) | [below](#configure-clients) |
 | **Codex CLI** | OTLP gRPC `:4317` | `[otel]` block in `~/.codex/config.toml` | [below](#codex-cli) |
 | **opencode** | OTLP/HTTP `:4318` | toggle in `opencode.jsonc` + `OTEL_EXPORTER_OTLP_ENDPOINT` env var | [below](#opencode) |
-| **DeepSeek Harness** | OTLP/HTTP `:4318` | `DSH_TELEMETRY_*` env vars or `cordis.patch.yml` | [below](#deepseek-harness-dsh) |
+| **DeepSeek Harness** | OTLP/HTTP `:4318` | npm plugin (recommended): `dsh plugin --profile web add @young1lin/dsh-cc-otel`; or `DSH_TELEMETRY_*` env vars / `cordis.patch.yml` | [below](#deepseek-harness-dsh) |
 
 - Every client shares the same cc-otel instance; the request log's **Source column** labels each row.
 - Codex reports a fundamentally different ledger, so it routes to its own `codex_*` tables and `?source=codex` tab; all other clients are normalized into the Claude Code event shape and share the **All Clients** main view.
@@ -90,6 +90,22 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | `/cc-otel:status` | Show service status + today's cost summary |
 | `/cc-otel:open` | Open Web dashboard in browser |
 | `/cc-otel:report [today\|7d\|30d\|all]` | Generate cost report |
+
+### DeepSeek Harness plugin (npm)
+
+```bash
+dsh plugin --profile web add @young1lin/dsh-cc-otel
+```
+
+One command, any profile (swap `web` for `tui` / `headless` / custom). `dsh plugin` is a pnpm forwarder; installing the package:
+
+1. picks exactly one platform binary via optionalDependencies (one of `@young1lin/cc-otel-{linux,darwin,win32}-{x64,arm64}`, matched to your OS/CPU);
+2. registers the bundle layer, whose patch repoints dsh's `session-telemetry-otel` row at local `http://localhost:4318/v1/logs` (`mode: FEEDBACK_ONLY`);
+3. on profile boot, a runtime plugin version-syncs the binary into `~/.cc-otel` (shared with the Claude Code plugin) and idempotently starts the daemon.
+
+`DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` keep working; update/remove with `dsh plugin --profile web update|remove @young1lin/dsh-cc-otel`. See the [package docs](./npm/dsh-cc-otel/README.md) and [publishing notes](./npm/README.md).
+
+> **Privacy & upload cadence**: dsh 0.1.5 removed the `FULL` mode (a config carrying it fails validation at startup); the default is now `FEEDBACK_ONLY` — ordinary conversation **uploads nothing**, and only an explicit feedback action (like/dislike, `/feedback`) uploads that session's full prefix once (cc-otel stores tokens/cost only, never message bodies, and the traffic stays on localhost). For continuous statistics, backfill from the local session logs with `go run ./tools/dsh_ingest -db ~/.cc-otel/cc-otel.db` (idempotent, safe to re-run).
 
 ### From Source
 
@@ -285,14 +301,24 @@ Restart opencode and run one model reply; the dashboard's Source column should s
 cc-otel also receives [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) session telemetry. Two things differ from Claude Code / Codex:
 
 - **It speaks OTLP/HTTP (`:4318`), not gRPC.** DSH uses the OTel JS SDK's HTTP log exporter; the endpoint must be the **full logs path** `/v1/logs`, not just host:port.
-- **DSH exports its whole session ledger** (every user/assistant message, tool call, tool result). cc-otel turns only the usage-bearing `assistant/message` records into `api_requests` rows; every other record is **dropped, never stored** — in `FULL` mode they contain complete prompts, command output, and file contents.
+- **DSH exports its whole session ledger** (every user/assistant message, tool call, tool result). cc-otel turns only the usage-bearing `assistant/message` records into `api_requests` rows; every other record is **dropped, never stored** — the feedback-triggered full-prefix upload carries complete prompts, command output, and file contents.
 
-DSH's `dsh-base` bundle already ships the `session-telemetry-otel` line, `DISABLED` by default and pointed at DeepSeek's official collector. Two ways to switch it to a local cc-otel:
+DSH's `dsh-base` bundle already ships the `session-telemetry-otel` line, `DISABLED` by default and pointed at DeepSeek's official collector. Three ways to switch it to a local cc-otel:
+
+**Option 0: npm plugin (recommended — one command)**
+
+```bash
+dsh plugin --profile web add @young1lin/dsh-cc-otel
+```
+
+The plugin does both jobs below for you: it patches the telemetry row to point at local cc-otel and keeps the daemon alive on profile boot (binaries ship per platform inside the package). Env overrides and the `DSH_TELEMETRY_DISABLED` kill switch keep working. See the [install section](#deepseek-harness-plugin-npm).
+
+The manual options below suit machines that must not install npm packages, or setups needing full manual control — user patch layers outrank the plugin's bundle layer, so both can coexist.
 
 **Option 1: environment variables (temporary, one shell)**
 
 ```powershell
-$env:DSH_TELEMETRY_MODE = "FULL"
+$env:DSH_TELEMETRY_MODE = "FEEDBACK_ONLY"
 $env:DSH_TELEMETRY_OTLP_URL = "http://localhost:4318/v1/logs"
 npx @deepseek-ai/dsh web
 ```
@@ -305,7 +331,7 @@ npx @deepseek-ai/dsh web
 - id: session-telemetry-otel
   name: '@deepseek-ai/dsh-session-telemetry-otel'
   config:
-    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FULL'
+    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
     shutdownTimeoutMillis: 3000
     exporter:
       url: !!js process.env.DSH_TELEMETRY_OTLP_URL ?? 'http://localhost:4318/v1/logs'
@@ -322,20 +348,22 @@ npx @deepseek-ai/dsh web
 
 Verify the composed config with `npx @deepseek-ai/dsh web --dump-config`: exactly **one** `id: session-telemetry-otel` line should appear, with the local URL.
 
-Start DSH and chat normally; the dashboard's (`http://localhost:8899`) Source column shows `deepseek-harness`.
+Start DSH and chat normally. Since dsh 0.1.5, `FEEDBACK_ONLY` **does not upload ordinary conversation**: like/dislike a reply or run `/feedback`, and that session's full prefix (seq 0 through the feedback event) uploads once; for continuous statistics backfill from the local session logs with `go run ./tools/dsh_ingest -db ~/.cc-otel/cc-otel.db` (idempotent, safe to re-run). The dashboard's (`http://localhost:8899`) Source column shows `deepseek-harness`.
 
 **Troubleshooting** (ordered by frequency):
 
 | Symptom | Cause |
 |---------|-------|
-| No data at all | `mode` defaults to `DISABLED`; config is read at plugin load — **restart dsh** after changing it |
+| Chatted but no data | Expected: since 0.1.5 `FEEDBACK_ONLY` uploads nothing for ordinary conversation; only explicit feedback triggers one upload — use `tools/dsh_ingest` for continuous statistics |
+| Boot fails with `mode expected "FEEDBACK_ONLY" \| "DISABLED" but got "FULL"` | dsh 0.1.5 removed the `FULL` mode — remove it from the config (every example in this repo is already updated) |
+| No data at all | without the patch, `mode` defaults to `DISABLED`; config is read at plugin load — **restart dsh** after changing it |
 | No data despite correct config | any non-empty `DSH_TELEMETRY_DISABLED` (including `0` / `false`) vetoes everything |
 | Rows appear after a few seconds | batch processor `scheduledDelayMillis: 10000` — up to 10s export delay |
-| Only recent rows, no history | DSH hands over from the live boundary where telemetry was enabled; earlier history is not replayed |
+| Only recent rows, no history | DSH hands over from the live boundary where telemetry was enabled; earlier history is not replayed (`tools/dsh_ingest` backfills it from local logs) |
 | Cost is $0 | no pricing entry for that model (e.g. `glm-5.x` not yet catalogued) — add it in the Pricing Table, then ↻ 重算历史 |
 | Server logs `malformed OTLP payload` | cc-otel too old: DSH always sends `compression: gzip`; decompression needs v0.1.0+ |
 
-> **⚠️ Privacy**: `mode: FULL` ships your complete session content (prompts, tool output, file contents) to the endpoint above. cc-otel stores only tokens and cost — no body is persisted (`raw_otlp_events` stays empty) — but the data does traverse the connection; keep it pointed at localhost. Use `mode: FEEDBACK_ONLY` to report only when you run `/feedback`.
+> **⚠️ Privacy**: the feedback-triggered upload ships your complete session content (prompts, tool output, file contents) to the endpoint above. cc-otel stores only tokens and cost — no body is persisted (`raw_otlp_events` stays empty) — but the data does traverse the connection; keep it pointed at localhost. `tools/dsh_ingest` reads local files only; nothing leaves the machine.
 
 ## Pricing table & non-Claude cost recompute
 
@@ -442,6 +470,14 @@ Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model
 ```bash
 /plugin update cc-otel@claude-token-monitor
 ```
+
+### Update the dsh plugin (npm)
+
+```bash
+dsh plugin --profile web update @young1lin/dsh-cc-otel
+```
+
+On the next profile boot the runtime plugin version-syncs the new binary into `~/.cc-otel` (`install` + daemon restart only when versions differ). It shares the `~/.cc-otel` install with the Claude Code plugin — whichever channel upgrades last wins, and both keep working.
 
 ### Update Binary
 

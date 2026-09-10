@@ -1,0 +1,57 @@
+{
+  "name": "@young1lin/dsh-cc-otel",
+  "version": "0.0.0",
+  "description": "DeepSeek Harness (dsh) plugin for cc-otel: points dsh session telemetry at the local cc-otel collector and keeps its daemon running. Platform binaries arrive via optionalDependencies.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/young1lin/cc-otel.git",
+    "directory": "npm/dsh-cc-otel"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cc-otel",
+    "otel",
+    "opentelemetry",
+    "telemetry",
+    "token-usage",
+    "dashboard"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "cc-otel": "./bin/cc-otel.mjs"
+  },
+  "files": [
+    "lib",
+    "bin",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@young1lin/cc-otel-linux-x64": "0.0.0",
+    "@young1lin/cc-otel-linux-arm64": "0.0.0",
+    "@young1lin/cc-otel-darwin-x64": "0.0.0",
+    "@young1lin/cc-otel-darwin-arm64": "0.0.0",
+    "@young1lin/cc-otel-win32-x64": "0.0.0",
+    "@young1lin/cc-otel-win32-arm64": "0.0.0"
+  }
+}

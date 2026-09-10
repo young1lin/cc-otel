@@ -6,6 +6,27 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.2] - 2026-09-10
+
+> New npm distribution channel: one-command cc-otel onboarding for DeepSeek Harness, with the Go binary split into six per-platform npm packages that ship automatically alongside the main package. All existing channels (GoReleaser / GitHub Releases / Claude Code plugin marketplace / source builds) are untouched.
+
+### Added
+
+- **npm distribution**: main package `@young1lin/dsh-cc-otel` (the dsh profile bundle: telemetry patch + daemon-keepalive runtime plugin + a `cc-otel` CLI shim) plus six `@young1lin/cc-otel-{linux,darwin,win32}-{x64,arm64}` binary packages. Platform packages carry `os`/`cpu` fields and hang off the main package's `optionalDependencies`, so package managers install exactly the one matching the environment; no install scripts, nothing trips pnpm 10+'s build-script allowlist. Install: `dsh plugin --profile web add @young1lin/dsh-cc-otel` (any profile works).
+- **dsh plugin runtime** (`npm/dsh-cc-otel/lib/index.js`): on profile boot it resolves the platform binary and version-syncs `~/.cc-otel` — `cc-otel install` runs only when versions differ (version-gated, a no-op in steady state, so a healthy shared daemon is never bounced); the daemon always runs from the stable `~/.cc-otel` path, so `dsh plugin update/remove` cannot fail on Windows just because the executable is in use; `cc-otel start` is idempotent ("already running" counts as success) and the shared daemon is never stopped on dsh exit unless `stopOnUnload` opts in. `autoStart` / `manageHomeBinary` / `binary` (`CC_OTEL_BIN`) overrides are supported.
+- **Zero-config telemetry wiring**: the bundle's `cordis.patch.yml` overrides dsh-base's `session-telemetry-otel` row by `id` (whole-key replacement) to point at local `http://localhost:4318/v1/logs` (`mode` defaults to `FEEDBACK_ONLY` — dsh 0.1.5 removed `FULL` upstream and a config carrying it fails validation at startup; upload-cadence and privacy notes in the README). `DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` and any hand-written `cordis.patch.yml` user layers keep applying after the bundle — fully compatible and coexistent with the manual onboarding methods.
+- **DSH 0.1.5 adaptation**: the receiver's `request_id` is now `dsh-v<session.format_version>-<session.id>-<event.seq>` (falling back to the legacy versionless key when the attribute is missing), so v3-generation renumbered seqs can no longer collide with stored v0 rows; new `tools/dsh_ingest` — with `FULL` telemetry removed, ordinary conversation uploads nothing, so this tool backfills usage idempotently straight from the local session logs (`~/.dsh/sessions/**/session.v3.jsonl.zstd`), deleting the session's old rows in both key shapes first to avoid double-counting; every `mode: FULL` example (Chinese/English READMEs, otel-setup skill, npm package) now reads `FEEDBACK_ONLY`, and the troubleshooting table gains "boot fails with `mode expected …`" and "chatted but no data" rows.
+- **Release pipeline**: a new `npm` job in the release workflow — downloads the artifacts GoReleaser just published, assembles the seven npm packages with `scripts/build-npm.mjs` (binaries byte-identical to the GitHub release; each platform package keeps its binary at the package root, deliberately not in `bin/`, to dodge cc-otel's dev-mode data-dir rule), and publishes each with `npm publish --access public` (prerelease versions go to the `next` dist-tag). Authentication is **npm Trusted Publishing (GitHub Actions OIDC)** — no `NPM_TOKEN` secret anywhere, same scheme as dsh-cc's publish.yml; each package is bootstrapped once (first publish by hand with OTP, then bind user/repo/workflow on npmjs.com). In-repo versions stay `0.0.0` placeholders; the tag version is injected at assembly time.
+- **Docs**: Chinese/English READMEs gain npm install + update sections, an npm-plugin entry point in the supported-clients table and the DSH onboarding chapter; `npm/README.md` records the package family, the publishing flow, and the design rationale.
+
+### Verification
+
+- `dsh --profile web --dump-config --patch` confirmed the patch semantics: the telemetry row is replaced whole-key with exactly one row pointing at the local endpoint, and the plugin row inserts cleanly.
+- A real `dsh plugin --profile <scratch> add file:…` end to end: pnpm installed only the one matching platform package (the other five skipped by `os`/`cpu`), the bundle auto-registered into `dsh.profile.bundles`, and during a real host boot the loader imported the plugin and ran the full install/start flow.
+- With an isolated `CC_OTEL_HOME` (propagated to child processes on both sides) verified version syncing, idempotent start, and that the real `~/.cc-otel` is untouched; `npm pack --dry-run` checked file lists and sizes for all seven packages (main 7.6 kB, platform 9–10 MB).
+
+---
+
 ## [v0.1.1] - 2026-08-23
 
 > Patch release fixing stale Web-panel data, asynchronous response races, and write stability while SQLite is busy.

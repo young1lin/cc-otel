@@ -63,7 +63,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **Claude Code** | OTLP gRPC `:4317` | `~/.claude/settings.json` 加 OTEL 环境变量（`/cc-otel:setup` 一键完成） | [下文](#配置客户端) |
 | **Codex CLI** | OTLP gRPC `:4317` | `~/.codex/config.toml` 加 `[otel]` 段 | [下文](#codex-cli-接入) |
 | **opencode** | OTLP/HTTP `:4318` | `opencode.jsonc` 开关 + `OTEL_EXPORTER_OTLP_ENDPOINT` 环境变量 | [下文](#opencode-接入) |
-| **DeepSeek Harness** | OTLP/HTTP `:4318` | `DSH_TELEMETRY_*` 环境变量或 `cordis.patch.yml` | [下文](#deepseek-harness-dsh-接入) |
+| **DeepSeek Harness** | OTLP/HTTP `:4318` | npm 插件（推荐）：`dsh plugin --profile web add @young1lin/dsh-cc-otel`；或 `DSH_TELEMETRY_*` 环境变量 / `cordis.patch.yml` 手工接入 | [下文](#deepseek-harness-dsh-接入) |
 
 - 所有客户端共用同一个 cc-otel 实例，数据统一落到仪表盘；请求日志的 **Source 列**逐行标注来源。
 - Codex 因为上报格式完全不同（无结构化账本），路由到独立的 `codex_*` 表和 `?source=codex` 标签页；其余客户端都归一化成 Claude Code 事件形态，共享 **All Clients** 主视图。
@@ -90,6 +90,22 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | `/cc-otel:status` | 查看服务状态 + 今日费用摘要 |
 | `/cc-otel:open` | 在浏览器中打开 Web 仪表盘 |
 | `/cc-otel:report [today\|7d\|30d\|all]` | 生成费用报告 |
+
+### DeepSeek Harness 插件（npm）
+
+```bash
+dsh plugin --profile web add @young1lin/dsh-cc-otel
+```
+
+一条命令完成接入（`web` 可换成任意 profile：`tui` / `headless` / 自定义）。`dsh plugin` 是 pnpm 转发器，安装时会：
+
+1. 通过 optionalDependencies 自动挑一个平台二进制包（`@young1lin/cc-otel-{linux,darwin,win32}-{x64,arm64}` 之一，与 OS/CPU 匹配）；
+2. 把本包登记为 profile 的 bundle 层，其 patch 会把 dsh 的 `session-telemetry-otel` 行指向本地 `http://localhost:4318/v1/logs`（`mode: FEEDBACK_ONLY`）；
+3. profile 启动时由运行时插件把二进制版本对齐到 `~/.cc-otel/`（与 Claude Code 插件共享同一守护进程）并幂等拉起服务。
+
+`DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` 等环境变量照常生效；更新与卸载用 `dsh plugin --profile web update|remove @young1lin/dsh-cc-otel`。详见[包内文档](./npm/dsh-cc-otel/README.md)与[发布说明](./npm/README.md)。
+
+> **隐私与上报时机**：dsh 0.1.5 起 `FULL` 模式已被移除（设了会在启动时校验失败），默认 `FEEDBACK_ONLY`——普通对话**零上报**，只在显式反馈（点赞 / 点踩 / `/feedback`）时把该会话的完整前缀上传一次（cc-otel 只保存 token/费用，不落库正文，流量不出 localhost）。要持续统计，用本仓库的 `go run ./tools/dsh_ingest -db ~/.cc-otel/cc-otel.db` 从本地会话日志补录（幂等，可重跑）。
 
 ### 从源码编译
 
@@ -284,14 +300,24 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 cc-otel 也支持接收 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 session telemetry。与 Claude Code / Codex 不同的两点：
 
 - **走 OTLP/HTTP（`:4318`），不是 gRPC。** DSH 用的是 OTel JS SDK 的 HTTP log exporter，端点必须写**完整的 logs 路径** `/v1/logs`，而不是只写主机端口。
-- **DSH 上报的是整份 session 账本**（每一条 user/assistant 消息、工具调用、工具结果）。cc-otel 只把带 `usage` 的 `assistant/message` 转成 `api_requests` 一行，其余记录**一律丢弃不落库**——因为在 `FULL` 模式下它们包含完整的提示词、命令输出和文件内容。
+- **DSH 上报的是整份 session 账本**（每一条 user/assistant 消息、工具调用、工具结果）。cc-otel 只把带 `usage` 的 `assistant/message` 转成 `api_requests` 一行，其余记录**一律丢弃不落库**——因为反馈触发的全量上传里它们包含完整的提示词、命令输出和文件内容。
 
-DSH 的 `dsh-base` bundle 已经内置了 `session-telemetry-otel` 这一行，默认 `DISABLED` 且指向 DeepSeek 官方 collector。改成本地 cc-otel 有两种方式。
+DSH 的 `dsh-base` bundle 已经内置了 `session-telemetry-otel` 这一行，默认 `DISABLED` 且指向 DeepSeek 官方 collector。改成本地 cc-otel 有三种方式。
+
+**方式〇：npm 插件（推荐，一条命令）**
+
+```bash
+dsh plugin --profile web add @young1lin/dsh-cc-otel
+```
+
+插件自动完成下面两件事：patch 遥测行指向本地 cc-otel，并在 profile 启动时保活守护进程（二进制随包按平台分发）。环境变量覆盖与 `DSH_TELEMETRY_DISABLED` 一票否决照常生效。详见[安装章节](#deepseek-harness-插件npm)。
+
+以下手工方式适合不想装包、或需要完全手控的场景——用户 patch 层优先级高于插件 bundle 层，两种方式也可共存。
 
 **方式一：环境变量（临时，单个 shell 生效）**
 
 ```powershell
-$env:DSH_TELEMETRY_MODE = "FULL"
+$env:DSH_TELEMETRY_MODE = "FEEDBACK_ONLY"
 $env:DSH_TELEMETRY_OTLP_URL = "http://localhost:4318/v1/logs"
 npx @deepseek-ai/dsh web
 ```
@@ -304,7 +330,7 @@ npx @deepseek-ai/dsh web
 - id: session-telemetry-otel
   name: '@deepseek-ai/dsh-session-telemetry-otel'
   config:
-    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FULL'
+    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
     shutdownTimeoutMillis: 3000
     exporter:
       url: !!js process.env.DSH_TELEMETRY_OTLP_URL ?? 'http://localhost:4318/v1/logs'
@@ -321,20 +347,22 @@ npx @deepseek-ai/dsh web
 
 改完用 `npx @deepseek-ai/dsh web --dump-config` 确认合成结果：应当只出现**一行** `id: session-telemetry-otel`，且 URL 已是本地地址。
 
-启动 DSH 正常对话即可，dashboard (`http://localhost:8899`) 的 Source 列会显示 `deepseek-harness`。
+启动 DSH 正常对话即可。dsh 0.1.5 起 `FEEDBACK_ONLY` 下普通对话**不会自动上报**：对某条回复点 👍/👎 或运行 `/feedback`，该会话的完整前缀（seq 0 到反馈事件）会一次性上传；持续统计用 `go run ./tools/dsh_ingest -db ~/.cc-otel/cc-otel.db` 从本地会话日志补录（幂等，可重跑）。dashboard (`http://localhost:8899`) 的 Source 列会显示 `deepseek-harness`。
 
 **排查清单**（按出现频率排序）：
 
 | 现象 | 原因 |
 |------|------|
-| 完全没数据 | `mode` 默认是 `DISABLED`；配置在插件加载时读取，改完**必须重启 dsh** |
+| 对话了但没数据 | 预期行为：0.1.5 起 `FEEDBACK_ONLY` 下普通对话零上报，只有显式反馈触发一次上传；持续统计用 `tools/dsh_ingest` 补录 |
+| 启动报 `mode expected "FEEDBACK_ONLY" \| "DISABLED" but got "FULL"` | dsh 0.1.5 移除了 `FULL` 模式——配置里删掉它（本仓库所有示例已改） |
+| 完全没数据 | patch 未生效时 `mode` 默认是 `DISABLED`；配置在插件加载时读取，改完**必须重启 dsh** |
 | 完全没数据，且配置无误 | `DSH_TELEMETRY_DISABLED` 只要非空（含 `0` / `false`）就一票否决 |
 | 等了几秒还没出现 | 批处理 `scheduledDelayMillis: 10000`，最多延迟 10 秒才导出 |
-| 只收到最近几条，历史对话没有 | DSH 只从 telemetry 启用时的 live 边界开始交接，之前的历史事件不会补发 |
+| 只收到最近几条，历史对话没有 | DSH 只从 telemetry 启用时的 live 边界开始交接，之前的历史事件不会补发（`tools/dsh_ingest` 可从本地日志补全） |
 | 费用是 $0 | 该模型没有价格条目（如 `glm-5.x` 上游价目表尚未收录），需在 Pricing Table 手动添加后点 ↻ 重算历史 |
 | 服务端报 `malformed OTLP payload` | cc-otel 版本过旧：DSH 默认 `compression: gzip`，需要 v0.1.0+ 才会解压 |
 
-> **⚠️ 隐私**: `mode: FULL` 会把完整会话内容（提示词、工具输出、文件内容）发到上面配置的端点。cc-otel 只保存 token 与费用、不落库任何正文（`raw_otlp_events` 也为空），但数据确实经过了这个连接——请保持指向 localhost。只想在 `/feedback` 时才上报可改用 `mode: FEEDBACK_ONLY`。
+> **⚠️ 隐私**: 显式反馈触发的上传会把完整会话内容（提示词、工具输出、文件内容）发到上面配置的端点。cc-otel 只保存 token 与费用、不落库任何正文（`raw_otlp_events` 也为空），但数据确实经过了这个连接——请保持指向 localhost。`tools/dsh_ingest` 补录只读本机文件，数据不出本机。
 
 ## 价格表与非 Claude 模型重算
 
@@ -441,6 +469,14 @@ raw_ttl_days: 5       # raw_otlp_events / codex_raw_otlp_events 的留存上限�
 ```bash
 /plugin update cc-otel@claude-token-monitor
 ```
+
+### 更新 dsh 插件（npm）
+
+```bash
+dsh plugin --profile web update @young1lin/dsh-cc-otel
+```
+
+更新后首次启动 profile 时，运行时插件会自动把新版二进制对齐到 `~/.cc-otel/`（版本不一致时 `install` 并重启守护进程）。与 Claude Code 插件共享同一份 `~/.cc-otel/` 安装，任一渠道升级都会带动守护进程更新。
 
 ### 更新二进制
 
