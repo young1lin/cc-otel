@@ -6,6 +6,27 @@
 
 ---
 
+## [v0.1.2] - 2026-09-10
+
+> 新增 npm 分发渠道：DeepSeek Harness 一条命令接入 cc-otel；Go 二进制按平台拆成 6 个 npm 包随主包自动分发。原有发布方式（GoReleaser / GitHub Releases / Claude Code 插件市场 / 源码编译）零改动。
+
+### 新增
+
+- **npm 分发**：主包 `@young1lin/dsh-cc-otel`（dsh profile bundle：遥测 patch + 守护进程保活插件 + `cc-otel` CLI shim）+ `@young1lin/cc-otel-{linux,darwin,win32}-{x64,arm64}` 六个平台二进制包。平台包用 `os`/`cpu` 字段 + 主包 `optionalDependencies` 声明，包管理器只安装与当前环境匹配的一个；无 install 脚本，不触发 pnpm 10+ 的构建脚本白名单。安装：`dsh plugin --profile web add @young1lin/dsh-cc-otel`（任意 profile 通用）。
+- **dsh 插件运行时**（`npm/dsh-cc-otel/lib/index.js`）：profile 启动时解析平台二进制，与 `~/.cc-otel/` 做版本对齐——版本不一致才执行 `cc-otel install`（版本门控，稳定状态下是空操作，不会反复重启健康守护进程）；守护进程始终从 `~/.cc-otel/` 稳定路径运行，Windows 上 `dsh plugin update/remove` 不再因可执行文件被占用而失败；`cc-otel start` 幂等（"already running" 视为成功），默认不在 dsh 退出时停掉共享守护进程（`stopOnUnload` 可选）。支持 `autoStart` / `manageHomeBinary` / `binary`（`CC_OTEL_BIN`）配置覆盖。
+- **遥测接入零配置**：bundle 的 `cordis.patch.yml` 按 `id` 整键覆盖 dsh-base 的 `session-telemetry-otel` 行，指向本地 `http://localhost:4318/v1/logs`（`mode` 默认 `FEEDBACK_ONLY`——dsh 0.1.5 起上游移除了 `FULL`，设了会在启动时校验失败；上报时机与隐私说明见 README）；`DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` 环境变量、用户手写的 `cordis.patch.yml` patch 层全部照常生效（层级在插件之后），与既有手工接入方式完全兼容、可共存。
+- **DSH 0.1.5 适配**：receiver 的 `request_id` 升级为 `dsh-v<session.format_version>-<session.id>-<event.seq>`（属性缺失时回退旧的无版本键形），v3 世代重编号后的 seq 不再与库存 v0 行碰撞互吞；新增 `tools/dsh_ingest`——0.1.5 移除 `FULL` 遥测后普通对话零上报，该工具直接读本地会话日志（`~/.dsh/sessions/**/session.v3.jsonl.zstd`）幂等补录用量，写入前先清掉同会话新旧两种键形的旧行避免双计；全仓 `mode: FULL` 示例（README 中英 / otel-setup skill / npm 包）统一改为 `FEEDBACK_ONLY`，排查清单补「启动报 `mode expected …`」与「对话了但没数据」两项。
+- **发布流水线**：Release workflow 新增 `npm` job——下载 GoReleaser 刚上传的产物、`scripts/build-npm.mjs` 组装 7 个 npm 包（二进制与 GitHub Releases 字节一致；平台包内二进制放包根目录，刻意不放 `bin/` 以避开 cc-otel 的开发模式数据目录规则）、逐包 `npm publish --access public`（预发布版本走 `next` dist-tag）。认证用 **npm Trusted Publishing（GitHub Actions OIDC）**，全程无 `NPM_TOKEN` secret（与 dsh-cc 的 publish.yml 同方案）；每个包一次性引导：新包名首次手工带 OTP 发布，再到 npmjs.com 绑定 user/repo/workflow。仓库内版本号永远 `0.0.0` 占位，组装时注入 tag 版本。
+- **文档**：README（中英）新增 npm 安装与更新章节、支持客户端表与 DSH 接入章节的"npm 插件（推荐）"入口；`npm/README.md` 记录包族矩阵、发布流程与设计依据。
+
+### 验证
+
+- `dsh --profile web --dump-config --patch` 确认 patch 合成语义：遥测行被整键覆盖、仅剩一行且指向本地端点，插件行正确插入。
+- 真实 `dsh plugin --profile <scratch> add file:…` 端到端：pnpm 只装 1 个匹配平台包（其余 5 个被 `os`/`cpu` 跳过）、bundle 自动登记进 `dsh.profile.bundles`、宿主 boot 中插件经 loader 导入并完成 install/start 全流程。
+- 隔离 HOME（`CC_OTEL_HOME` 全栈透传到子进程）验证版本对齐、幂等启动、真实 `~/.cc-otel` 不受影响；`npm pack --dry-run` 核对 7 个包的文件清单与体积（主包 7.6 kB，平台包 9–10 MB）。
+
+---
+
 ## [v0.1.1] - 2026-08-23
 
 > 补丁版本：修复 Web 面板切换后的陈旧数据、异步响应竞态，以及数据库繁忙时的写入稳定性。

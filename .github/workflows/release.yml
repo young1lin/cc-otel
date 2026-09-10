@@ -26,3 +26,73 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # npm distribution: @young1lin/dsh-cc-otel (the dsh plugin bundle) plus six
+  # @young1lin/cc-otel-<os>-<cpu> binary packages assembled from the goreleaser
+  # artifacts, so npm users get byte-identical binaries to the GitHub release.
+  #
+  # Authentication is npm Trusted Publishing (OIDC): the GitHub Actions OIDC
+  # token identifies this workflow to npm — no NPM_TOKEN / NODE_AUTH_TOKEN
+  # secret anywhere, and provenance is generated automatically by npm.
+  # One-time bootstrap per package (7 in total, same as dsh-cc):
+  #   1. the first publish of each NEW package name is done by hand (a trusted
+  #      publisher cannot be configured before the package exists): assemble
+  #      locally with scripts/build-npm.mjs, then npm publish with OTP;
+  #   2. npmjs.com -> package Settings -> Trusted publishing -> add
+  #      user young1lin / repo cc-otel / workflow release.yml.
+  # Afterwards every vX.Y.Z tag publishes tokenlessly. Prerelease tags
+  # (v1.2.3-rc.1) publish under the "next" dist-tag, never latest.
+  #
+  # Node 24 because Trusted Publishing needs npm >= 11.5.1; Node 22's bundled
+  # npm is older, so the step below upgrades npm only when below that bar.
+  npm:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm Trusted Publishing / provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm >= 11.5.1 (Trusted Publishing requirement)
+        run: |
+          npm --version
+          if [ "$(printf '%s\n' '11.5.1' "$(npm --version)" | sort -V | head -n1)" != '11.5.1' ]; then
+            npm install -g npm@latest
+            npm --version
+          fi
+
+      - name: Download goreleaser artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "$GITHUB_REF_NAME" --repo young1lin/cc-otel --dir dist/release --pattern 'cc-otel_*'
+
+      - name: Assemble npm packages
+        run: node scripts/build-npm.mjs --version "${GITHUB_REF_NAME#v}" --artifacts dist/release --out dist/npm
+
+      - name: Publish to npm (Trusted Publishing — no secrets)
+        run: |
+          set -euo pipefail
+          tag_flag=""
+          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+            tag_flag="--tag next"
+          fi
+          for pkg in dist/npm/*/; do
+            name=$(node -p "require('./${pkg}package.json').name")
+            version=$(node -p "require('./${pkg}package.json').version")
+            echo "::group::publish ${name}@${version}"
+            # Idempotent: the one-time manual bootstrap (first publish of a
+            # new package name needs a human OTP) and workflow re-runs must
+            # converge instead of failing on an already-published version.
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "already published — skipping"
+            else
+              (cd "${pkg}" && npm publish --access public ${tag_flag})
+            fi
+            echo "::endgroup::"
+          done

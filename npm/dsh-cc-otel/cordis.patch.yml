@@ -1,0 +1,53 @@
+# @young1lin/dsh-cc-otel — dsh profile bundle patch layer.
+#
+# This file is what `dsh plugin --profile <name> add @young1lin/dsh-cc-otel`
+# activates. It is applied AFTER the in-box bundles (dsh-base, dsh-web-app, …),
+# so its id-targeted record below overrides the dsh-base telemetry row.
+# A patch layer is a top-level YAML array; see the loader's patch semantics:
+#   - `insert:` rows append new loader entries;
+#   - a record carrying `id` replaces that key on the existing row (whole-key
+#     replacement, NOT a deep merge) — every field the base row set must be
+#     restated, and a `name` mismatch skips the patch with a warning.
+#
+# Layers applied later still win over this one: the user's own
+# $DSH_HOME/cordis.patch.yml, `--patch` overlays, and the
+# DSH_TELEMETRY_DISABLED kill-switch all apply after bundle layers.
+
+# 1) The runtime plugin row. On boot it resolves the platform binary that
+#    pnpm selected via optionalDependencies (@young1lin/cc-otel-<os>-<arch>),
+#    syncs it into ~/.cc-otel (cc-otel install, version-gated), and ensures
+#    the shared daemon is running (idempotent; it never stops the daemon on
+#    unload — Claude Code / Codex / opencode clients share it). Config knobs
+#    (autoStart / manageHomeBinary / stopOnUnload / binary) are documented in
+#    the package README and can be overridden by a user patch targeting this id.
+- insert:
+    - id: dsh-cc-otel
+      name: '@young1lin/dsh-cc-otel'
+
+# 2) Point the harness's session telemetry at the local cc-otel OTLP/HTTP
+#    receiver (full logs path — the OTel JS HTTP exporter needs /v1/logs).
+#    mode defaults to FEEDBACK_ONLY: dsh 0.1.5 (2026-09) removed FULL, and
+#    a config carrying it fails validation at startup. Under FEEDBACK_ONLY
+#    an ordinary conversation uploads nothing; an explicit feedback action
+#    (like/dislike, /feedback) uploads that session's full ledger prefix
+#    once (cc-otel stores tokens/cost only and never persists message
+#    bodies — traffic stays on localhost). Continuous statistics come from
+#    backfilling the local session logs instead (tools/dsh_ingest in the
+#    cc-otel repo, idempotent). Env seams survive:
+#      DSH_TELEMETRY_MODE=DISABLED       never export
+#      DSH_TELEMETRY_OTLP_URL=…          point somewhere else (e.g. a dev port)
+#      DSH_TELEMETRY_DISABLED=1          launcher-level kill switch, wins last
+- id: session-telemetry-otel
+  name: '@deepseek-ai/dsh-session-telemetry-otel'
+  config:
+    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
+    shutdownTimeoutMillis: 3000
+    exporter:
+      url: !!js process.env.DSH_TELEMETRY_OTLP_URL ?? 'http://localhost:4318/v1/logs'
+      compression: gzip
+      timeoutMillis: 1000
+    processor:
+      scheduledDelayMillis: 10000
+      maxQueueSize: 2048
+      maxExportBatchSize: 2048
+      exportTimeoutMillis: 1500

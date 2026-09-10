@@ -20,6 +20,12 @@ dist/
 bin/
 build/
 
+# npm distribution source ships a bin/ CLI shim on purpose
+!npm/dsh-cc-otel/bin/
+
+# Node (fake platform packages in local plugin tests, tooling caches)
+node_modules/
+
 # Coverage output
 coverage.out
 coverage.html
