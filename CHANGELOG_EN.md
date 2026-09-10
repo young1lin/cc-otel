@@ -6,6 +6,12 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.3] - 2026-09-10
+
+### Added
+
+- **dsh telemetry adapter (continuous reporting)**: the `@young1lin/dsh-cc-otel` runtime plugin gains a transparent `llm/stream` listener (`npm/dsh-cc-otel/lib/telemetry.js`) that maps each settled provider attempt onto one OTLP `api_request` record (Claude Code vocabulary — the generic ingestion path stores it with zero receiver changes) and pushes it to the local :4318 in real time — the proper source of continuous statistics now that dsh 0.1.5 removed FULL. Resource `service.name` is `deepseek-harness-plugin` (the exact string `deepseek-harness` routes records into the session-ledger parser, which drops them); `request_id = dshp-<uuid>`; batches flush at 3s/16 records, failures drop silently and never touch the model call. The bundle patch pins the native telemetry row to `DISABLED` (its feedback-time full-prefix export would double-count beside the adapter); configurable via `CC_OTEL_OTLP_URL` / the plugin row's `telemetry.{url,enabled}`. Note: adapter rows use a key namespace disjoint from `tools/dsh_ingest` — do not run the session-log backfill for sessions already covered by adapter rows.
+
 ## [v0.1.2] - 2026-09-10
 
 > New npm distribution channel: one-command cc-otel onboarding for DeepSeek Harness, with the Go binary split into six per-platform npm packages that ship automatically alongside the main package. All existing channels (GoReleaser / GitHub Releases / Claude Code plugin marketplace / source builds) are untouched.

@@ -6,6 +6,12 @@
 
 ---
 
+## [v0.1.3] - 2026-09-10
+
+### 新增
+
+- **dsh 遥测 adapter（持续上报）**：`@young1lin/dsh-cc-otel` 运行时插件新增透明 `llm/stream` 监听（`npm/dsh-cc-otel/lib/telemetry.js`），每次 provider 调用 settle 后把用量、时长、TTFT 组一条 OTLP `api_request` 记录（Claude Code 词汇，cc-otel 通用 ingestion 零改动直收）实时推给本地 4318——dsh 0.1.5 移除 `FULL` 后持续统计的正式来源。Resource `service.name` 用 `deepseek-harness-plugin`（精确 `deepseek-harness` 会被路由进 session 账本解析器丢弃）；`request_id = dshp-<uuid>`；批量 3s/16 条冲刷，失败即丢、绝不影响模型调用。bundle patch 把原生遥测行钉在 `DISABLED`（防反馈前缀导出双计）；`CC_OTEL_OTLP_URL` / 插件行 `telemetry.{url,enabled}` 可配置。注意：adapter 行与 `tools/dsh_ingest` 的键命名空间不相交，adapter 上线后不要再对同一批会话跑 session-log 补录。
+
 ## [v0.1.2] - 2026-09-10
 
 > 新增 npm 分发渠道：DeepSeek Harness 一条命令接入 cc-otel；Go 二进制按平台拆成 6 个 npm 包随主包自动分发。原有发布方式（GoReleaser / GitHub Releases / Claude Code 插件市场 / 源码编译）零改动。
