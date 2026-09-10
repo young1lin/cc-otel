@@ -100,12 +100,12 @@ dsh plugin --profile web add @young1lin/dsh-cc-otel
 一条命令完成接入（`web` 可换成任意 profile：`tui` / `headless` / 自定义）。`dsh plugin` 是 pnpm 转发器，安装时会：
 
 1. 通过 optionalDependencies 自动挑一个平台二进制包（`@young1lin/cc-otel-{linux,darwin,win32}-{x64,arm64}` 之一，与 OS/CPU 匹配）；
-2. 把本包登记为 profile 的 bundle 层，其 patch 会把 dsh 的 `session-telemetry-otel` 行指向本地 `http://localhost:4318/v1/logs`（`mode: FEEDBACK_ONLY`）；
+2. **遥测 adapter 持续上报**——运行时插件挂一个透明的 `llm/stream` 监听，每次 provider 调用 settle 后把用量（in/out/cacheRead/cacheWrite）、时长、**首字延迟（TTFT）**组一条 OTLP `api_request` 记录实时推给本地 cc-otel；只上报数字，**不含任何提示词或工具输出**，失败即丢、绝不影响模型调用。bundle 的 patch 同时把原生 `session-telemetry-otel` 钉在 `DISABLED`（dsh 0.1.5 移除了 `FULL`，原生反馈触发的整段前缀导出会与 adapter 双计）；
 3. profile 启动时由运行时插件把二进制版本对齐到 `~/.cc-otel/`（与 Claude Code 插件共享同一守护进程）并幂等拉起服务。
 
-`DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` 等环境变量照常生效；更新与卸载用 `dsh plugin --profile web update|remove @young1lin/dsh-cc-otel`。详见[包内文档](./npm/dsh-cc-otel/README.md)与[发布说明](./npm/README.md)。
+`CC_OTEL_OTLP_URL` 可重定向 adapter 上报端点；`DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` 管的是原生导出路径。更新与卸载用 `dsh plugin --profile web update|remove @young1lin/dsh-cc-otel`。详见[包内文档](./npm/dsh-cc-otel/README.md)与[发布说明](./npm/README.md)。
 
-> **隐私与上报时机**：dsh 0.1.5 起 `FULL` 模式已被移除（设了会在启动时校验失败），默认 `FEEDBACK_ONLY`——普通对话**零上报**，只在显式反馈（点赞 / 点踩 / `/feedback`）时把该会话的完整前缀上传一次（cc-otel 只保存 token/费用，不落库正文，流量不出 localhost）。要持续统计，用本仓库的 `go run ./tools/dsh_ingest -db ~/.cc-otel/cc-otel.db` 从本地会话日志补录（幂等，可重跑）。
+> **隐私**：adapter 每次调用只上报用量与计时数字——没有提示词、没有消息内容、没有工具输出，流量不出 localhost。原生 `FEEDBACK_ONLY` 路径（bundle 默认关闭）在显式反馈时会上传该会话完整前缀，cc-otel 同样只保存 token/费用、不落库正文。
 
 ### 从源码编译
 
@@ -310,7 +310,7 @@ DSH 的 `dsh-base` bundle 已经内置了 `session-telemetry-otel` 这一行，�
 dsh plugin --profile web add @young1lin/dsh-cc-otel
 ```
 
-插件自动完成下面两件事：patch 遥测行指向本地 cc-otel，并在 profile 启动时保活守护进程（二进制随包按平台分发）。环境变量覆盖与 `DSH_TELEMETRY_DISABLED` 一票否决照常生效。详见[安装章节](#deepseek-harness-插件npm)。
+插件自动完成三件事：挂遥测 adapter 实时上报每次调用的用量与计时（0.1.5 移除 `FULL` 后这就是持续统计的来源）、把原生遥测行钉在 `DISABLED`、并在 profile 启动时保活守护进程（二进制随包按平台分发）。详见[安装章节](#deepseek-harness-插件npm)。
 
 以下手工方式适合不想装包、或需要完全手控的场景——用户 patch 层优先级高于插件 bundle 层，两种方式也可共存。
 

@@ -100,12 +100,12 @@ dsh plugin --profile web add @young1lin/dsh-cc-otel
 One command, any profile (swap `web` for `tui` / `headless` / custom). `dsh plugin` is a pnpm forwarder; installing the package:
 
 1. picks exactly one platform binary via optionalDependencies (one of `@young1lin/cc-otel-{linux,darwin,win32}-{x64,arm64}`, matched to your OS/CPU);
-2. registers the bundle layer, whose patch repoints dsh's `session-telemetry-otel` row at local `http://localhost:4318/v1/logs` (`mode: FEEDBACK_ONLY`);
+2. **reports telemetry continuously** — the runtime plugin installs a transparent `llm/stream` listener that pushes one OTLP `api_request` record per settled provider call (tokens, duration, **TTFT**) to the local cc-otel in real time; numbers only, never prompts or tool output, fail-soft to the point of never touching the model call. The bundle patch also pins the native `session-telemetry-otel` row to `DISABLED` (dsh 0.1.5 removed `FULL`, and the native feedback-time full-prefix export would double-count beside the adapter);
 3. on profile boot, a runtime plugin version-syncs the binary into `~/.cc-otel` (shared with the Claude Code plugin) and idempotently starts the daemon.
 
-`DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` keep working; update/remove with `dsh plugin --profile web update|remove @young1lin/dsh-cc-otel`. See the [package docs](./npm/dsh-cc-otel/README.md) and [publishing notes](./npm/README.md).
+`CC_OTEL_OTLP_URL` redirects the adapter's endpoint; `DSH_TELEMETRY_MODE` / `DSH_TELEMETRY_OTLP_URL` / `DSH_TELEMETRY_DISABLED` govern the native exporter path. Update/remove with `dsh plugin --profile web update|remove @young1lin/dsh-cc-otel`. See the [package docs](./npm/dsh-cc-otel/README.md) and [publishing notes](./npm/README.md).
 
-> **Privacy & upload cadence**: dsh 0.1.5 removed the `FULL` mode (a config carrying it fails validation at startup); the default is now `FEEDBACK_ONLY` — ordinary conversation **uploads nothing**, and only an explicit feedback action (like/dislike, `/feedback`) uploads that session's full prefix once (cc-otel stores tokens/cost only, never message bodies, and the traffic stays on localhost). For continuous statistics, backfill from the local session logs with `go run ./tools/dsh_ingest -db ~/.cc-otel/cc-otel.db` (idempotent, safe to re-run).
+> **Privacy**: the adapter reports usage and timing numbers only — no prompts, no message content, no tool output, and the traffic stays on localhost. The native `FEEDBACK_ONLY` path (off by default in this bundle) uploads a session's full prefix on explicit feedback; cc-otel still stores tokens/cost only, never bodies.
 
 ### From Source
 
@@ -311,7 +311,7 @@ DSH's `dsh-base` bundle already ships the `session-telemetry-otel` line, `DISABL
 dsh plugin --profile web add @young1lin/dsh-cc-otel
 ```
 
-The plugin does both jobs below for you: it patches the telemetry row to point at local cc-otel and keeps the daemon alive on profile boot (binaries ship per platform inside the package). Env overrides and the `DSH_TELEMETRY_DISABLED` kill switch keep working. See the [install section](#deepseek-harness-plugin-npm).
+The plugin installs the telemetry adapter (real-time per-call reporting — the source of continuous statistics since 0.1.5 removed `FULL`), pins the native telemetry row to `DISABLED`, and keeps the daemon alive on profile boot (binaries ship per platform inside the package). See the [install section](#deepseek-harness-plugin-npm).
 
 The manual options below suit machines that must not install npm packages, or setups needing full manual control — user patch layers outrank the plugin's bundle layer, so both can coexist.
 

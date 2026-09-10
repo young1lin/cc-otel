@@ -24,23 +24,25 @@
     - id: dsh-cc-otel
       name: '@young1lin/dsh-cc-otel'
 
-# 2) Point the harness's session telemetry at the local cc-otel OTLP/HTTP
-#    receiver (full logs path — the OTel JS HTTP exporter needs /v1/logs).
-#    mode defaults to FEEDBACK_ONLY: dsh 0.1.5 (2026-09) removed FULL, and
-#    a config carrying it fails validation at startup. Under FEEDBACK_ONLY
-#    an ordinary conversation uploads nothing; an explicit feedback action
-#    (like/dislike, /feedback) uploads that session's full ledger prefix
-#    once (cc-otel stores tokens/cost only and never persists message
-#    bodies — traffic stays on localhost). Continuous statistics come from
-#    backfilling the local session logs instead (tools/dsh_ingest in the
-#    cc-otel repo, idempotent). Env seams survive:
-#      DSH_TELEMETRY_MODE=DISABLED       never export
-#      DSH_TELEMETRY_OTLP_URL=…          point somewhere else (e.g. a dev port)
+# 2) Keep the harness's NATIVE session telemetry off. This bundle's runtime
+#    plugin (lib/telemetry.js) is the telemetry source: a transparent
+#    llm/stream listener reports every settled provider call to the local
+#    cc-otel OTLP/HTTP receiver as one api_request record (tokens, duration,
+#    TTFT) — continuous, per-call, prompt-free. The native exporter stays
+#    DISABLED because dsh 0.1.5 (2026-09) removed the FULL mode entirely and
+#    its FEEDBACK_ONLY export (full ledger prefix on an explicit like/dislike
+#    or /feedback) would double-count beside the adapter. Re-enabling it is
+#    an explicit opt-out of the adapter:
+#      DSH_TELEMETRY_MODE=FEEDBACK_ONLY  restore the native exporter (and
+#                                        disable telemetry.enabled in the
+#                                        plugin row to avoid double counting)
+#      DSH_TELEMETRY_MODE=DISABLED       the default this patch pins
+#      DSH_TELEMETRY_OTLP_URL=…          where the native exporter would send
 #      DSH_TELEMETRY_DISABLED=1          launcher-level kill switch, wins last
 - id: session-telemetry-otel
   name: '@deepseek-ai/dsh-session-telemetry-otel'
   config:
-    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
+    mode: !!js process.env.DSH_TELEMETRY_MODE || 'DISABLED'
     shutdownTimeoutMillis: 3000
     exporter:
       url: !!js process.env.DSH_TELEMETRY_OTLP_URL ?? 'http://localhost:4318/v1/logs'

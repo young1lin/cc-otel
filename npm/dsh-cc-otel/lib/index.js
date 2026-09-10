@@ -20,10 +20,13 @@
  *    with the Claude Code / Codex / opencode clients, so this plugin never
  *    stops it on unload unless stopOnUnload: true is set.
  *
- * The telemetry override itself lives in this package's cordis.patch.yml
- * (bundle layer), not in code: it repoints the harness's session-telemetry
- * row at the local cc-otel OTLP/HTTP receiver. This file only keeps the
- * receiver alive.
+ * 4. Report every provider call to cc-otel (lib/telemetry.js): a transparent
+ *    `llm/stream` listener maps each settled attempt onto one OTLP/HTTP JSON
+ *    `api_request` log record — Claude Code's vocabulary, which cc-otel's
+ *    generic ingestion path stores natively, `ttft_ms` included. The native
+ *    session-telemetry row is disabled by the bundle patch (dsh 0.1.5 removed
+ *    FULL; its feedback-only export would double-count beside this adapter),
+ *    so this plugin IS the telemetry source wherever the bundle is installed.
  */
 
 import { spawn } from 'node:child_process'
@@ -31,6 +34,8 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
+
+import { DEFAULT_OTLP_URL, installTelemetry } from './telemetry.js'
 
 /** Stable Cordis plugin name (the loader row id in cordis.patch.yml matches). */
 export const name = 'dsh-cc-otel'
@@ -201,18 +206,33 @@ async function ensureDaemon(logger, config) {
 /**
  * Plugin entry: the loader mounts this with the row's (usually empty) config.
  * Everything is best-effort — a telemetry helper must never fail the host.
- * @param {{ logger?: { info: Function, warn: Function }, effect: Function }} ctx Cordis context.
- * @param {{ autoStart?: boolean, manageHomeBinary?: boolean, stopOnUnload?: boolean }} [config] row config.
+ * @param {{ logger?: { info: Function, warn: Function }, effect: Function, on: Function }} ctx Cordis context.
+ * @param {{ autoStart?: boolean, manageHomeBinary?: boolean, stopOnUnload?: boolean, telemetry?: { url?: string, enabled?: boolean } }} [config] row config.
  */
 export function apply(ctx, config = {}) {
   const logger = ctx.logger ?? console
   void ensureDaemon(logger, config).catch((error) => {
     logger.warn('dsh-cc-otel: ' + String(error))
   })
-  if (config.stopOnUnload === true) {
+  // Telemetry adapter: on by default — installing this package IS the choice
+  // to report. CC_OTEL_OTLP_URL redirects (e.g. a dev receiver on 14318).
+  const telemetry = config.telemetry ?? {}
+  const url = telemetry.url ?? process.env.CC_OTEL_OTLP_URL ?? DEFAULT_OTLP_URL
+  let disposeTelemetry = undefined
+  if (telemetry.enabled !== false) {
+    try {
+      disposeTelemetry = installTelemetry(ctx, { url, logger })
+    } catch (error) {
+      logger.warn('dsh-cc-otel: telemetry adapter failed to install — calls run unreported: ' + String(error))
+    }
+  }
+  if (config.stopOnUnload === true || disposeTelemetry !== undefined) {
     ctx.effect(() => () => {
-      // Opt-in: normally the daemon outlives dsh because other clients share it.
-      void run(homeBinary(), ['stop'], 15000)
+      disposeTelemetry?.()
+      if (config.stopOnUnload === true) {
+        // Opt-in: normally the daemon outlives dsh because other clients share it.
+        void run(homeBinary(), ['stop'], 15000)
+      }
     })
   }
 }
