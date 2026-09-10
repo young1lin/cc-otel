@@ -3,14 +3,22 @@ package receiver
 // DeepSeek Harness (DSH) session telemetry → Claude-Code-shaped api_requests.
 //
 // DSH ships session telemetry through the OTel JS SDK's OTLP/HTTP log exporter
-// (@deepseek-ai/dsh-session-telemetry-otel, mode: FULL). The wire contract below
-// is read off that package's source, NOT its README — the README documents a
-// scope name ("dsh-session-sessionTelemetry-otel") that the code does not emit.
+// (@deepseek-ai/dsh-session-telemetry-otel). Since dsh 0.1.5 there is no FULL
+// mode — configuration accepts FEEDBACK_ONLY (default) or DISABLED — and
+// ordinary conversation is never uploaded: an explicit feedback action
+// (like/dislike/submit) uploads the session's complete prefix, from seq 0 to
+// the feedback event, once. Only those feedback exports reach this receiver;
+// continuous coverage comes from tools/dsh_ingest reading the local session
+// logs. The wire contract below is read off that package's source, NOT its
+// README — the README documents a scope name
+// ("dsh-session-sessionTelemetry-otel") that the code does not emit.
 //
 //	scope      "@deepseek-ai/dsh-session-telemetry-otel"      ledger records
 //	           "@deepseek-ai/dsh-session-telemetry-otel/ops"  operational records
 //	resource   service.name = "deepseek-harness", service.version, user.id
 //	attributes session.id (string), event.type (string), event.seq (int),
+//	           session.format_version (a number, e.g. "3" — the session
+//	           ledger's format generation; v3 renumbers seq relative to v0),
 //	           optional session.cwd / session.parent_id / session.seed_length
 //	body       a deep copy of the session event's `data`, as a structured OTLP
 //	           value (KvlistValue) — the event envelope is NOT in the body, so
@@ -216,11 +224,12 @@ func dshScalars(kvs []*commontpb.KeyValue) map[string]any {
 
 // decodeDSHBody decodes the fields this file reads out of a log record body.
 // Structured bodies (the SDK's own encoding) are walked key by key and ONLY
-// the keys the reader structs use are converted: a FULL-mode body also carries
-// the assembled message text, tool output and whole file contents — often
-// megabytes — and converting those just to discard them would dominate the
-// cost of ingestion. A body that arrived as a JSON string (a proxy that
-// stringifies bodies) is decoded directly.
+// the keys the reader structs use are converted: a feedback-upload body
+// carries the full session prefix, whose records also hold the assembled
+// message text, tool output and whole file contents — often megabytes — and
+// converting those just to discard them would dominate the cost of ingestion.
+// A body that arrived as a JSON string (a proxy that stringifies bodies) is
+// decoded directly.
 func decodeDSHBody(body *commontpb.AnyValue, out any) bool {
 	if s, ok := body.GetValue().(*commontpb.AnyValue_StringValue); ok {
 		return json.Unmarshal([]byte(s.StringValue), out) == nil
@@ -282,6 +291,25 @@ func dshAttrs(lr *logspb.LogRecord, resource *resourcepb.Resource) map[string]st
 	return attrs
 }
 
+// dshRequestID builds the request_id that carries the ledger's own identity,
+// so exporter retries collapse onto the partial unique index on
+// api_requests(request_id). The format generation is folded into the key —
+// "dsh-v<formatVersion>-<session>-<tail>" — because v3 renumbers event.seq
+// relative to the v0 generation: (session, seq) alone is not unique across
+// generations, and the v3 event at seq N would be silently swallowed as a
+// duplicate of the v0 event that landed at seq N. A missing
+// session.format_version falls back to the legacy versionless key
+// "dsh-<session>-<tail>": every generation-aware export carries the attribute,
+// so absence means a pre-0.1.5 exporter — exactly the exporter whose rows are
+// already stored under the versionless key — and keeping that shape lets its
+// retries collapse onto those rows instead of double-counting them.
+func dshRequestID(formatVersion, sessionID, tail string) string {
+	if formatVersion == "" {
+		return "dsh-" + sessionID + "-" + tail
+	}
+	return "dsh-v" + formatVersion + "-" + sessionID + "-" + tail
+}
+
 // dshAPIRequest maps one "assistant/message" record onto an api_requests row.
 // Returns nil when the record reports no usage — DSH omits `usage` when the
 // adapter reported none, and a row with no tokens has nothing to account.
@@ -297,7 +325,7 @@ func dshAPIRequest(lr *logspb.LogRecord, attrs map[string]string, timing dshStep
 	if seqErr == nil {
 		requestTail = strconv.FormatInt(seq, 10)
 	}
-	requestID := "dsh-" + sessionID + "-" + requestTail
+	requestID := dshRequestID(attrs["session.format_version"], sessionID, requestTail)
 
 	event := &db.Event{
 		Timestamp:           time.Unix(0, nanos),
@@ -315,12 +343,11 @@ func dshAPIRequest(lr *logspb.LogRecord, attrs map[string]string, timing dshStep
 		CostUSD:        0,
 		ServiceName:    db.NormalizeServiceName(attrs["service.name"]),
 		ServiceVersion: attrs["service.version"],
-		// The ledger's own identity, so exporter retries collapse onto the
-		// partial unique index on api_requests(request_id). event.seq is pinned
-		// by the wire contract; if a nonconforming exporter ever omitted it, the
-		// record time keeps replays idempotent (a retry resends the same
-		// timestamp) instead of collapsing every row in the session onto
-		// "...-0", where the index would silently drop all but the first.
+		// Built by dshRequestID above. event.seq is pinned by the wire
+		// contract; if a nonconforming exporter ever omitted it, the record
+		// time keeps replays idempotent (a retry resends the same timestamp)
+		// instead of collapsing every row in the session onto "...-0", where
+		// the index would silently drop all but the first.
 		RequestID: requestID,
 	}
 	if timing.startNanos > 0 && nanos > timing.startNanos {
@@ -337,10 +364,10 @@ func dshAPIRequest(lr *logspb.LogRecord, attrs map[string]string, timing dshStep
 //
 // Lifecycle events (step/start, assistant/chunk, step/end) are consumed for
 // timing only. Every other DSH event — user messages, tool calls, tool results,
-// compaction summaries — is deliberately dropped rather than stored: in FULL
-// mode those bodies carry whole file contents, command output, and the system
-// prompt, none of which cc-otel displays, and persisting them would grow the
-// database without bound.
+// compaction summaries — is deliberately dropped rather than stored: the
+// feedback-triggered full-prefix upload carries those bodies with whole file
+// contents, command output, and the system prompt, none of which cc-otel
+// displays, and persisting them would grow the database without bound.
 func (s *logsServiceServer) handleDSHResourceLogs(ctx context.Context, rl *logspb.ResourceLogs) bool {
 	shouldNotify := false
 	for _, sl := range rl.ScopeLogs {
