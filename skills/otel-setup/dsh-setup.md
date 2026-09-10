@@ -13,10 +13,12 @@ DSH speaks **OTLP/HTTP (`:4318`)**, not gRPC, and its endpoint must be the **ful
 
 DSH's `dsh-base` bundle already mounts a `session-telemetry-otel` row. It defaults to `DISABLED` and points at DeepSeek's own collector, so you only need to redirect it.
 
+> **dsh 0.1.5+**: the `FULL` mode was removed upstream (2026-09) — a config carrying it fails validation and crashes the boot. The only accepted values are `FEEDBACK_ONLY` (default below) and `DISABLED`. Under `FEEDBACK_ONLY` ordinary conversation uploads **nothing**; an explicit like/dislike or `/feedback` uploads that session's full prefix once.
+
 **Option A — environment variables (one shell, good for a first test):**
 
 ```powershell
-$env:DSH_TELEMETRY_MODE = "FULL"
+$env:DSH_TELEMETRY_MODE = "FEEDBACK_ONLY"
 $env:DSH_TELEMETRY_OTLP_URL = "http://localhost:4318/v1/logs"
 npx @deepseek-ai/dsh web
 ```
@@ -29,7 +31,7 @@ Append this as a **top-level** list item. Do not nest it inside an existing `ins
 - id: session-telemetry-otel
   name: '@deepseek-ai/dsh-session-telemetry-otel'
   config:
-    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FULL'
+    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
     shutdownTimeoutMillis: 3000
     exporter:
       url: !!js process.env.DSH_TELEMETRY_OTLP_URL ?? 'http://localhost:4318/v1/logs'
@@ -55,15 +57,18 @@ Exactly **one** `id: session-telemetry-otel` row should appear, carrying the loc
 ## Verify
 
 1. Start DSH and complete one exchange — only an assembled `assistant/message` carries `usage`, so a cancelled turn records nothing
-2. Wait up to 10s (`scheduledDelayMillis`)
-3. Open `http://localhost:8899`; rows appear with **Source** = `deepseek-harness`
+2. Trigger the export: like/dislike the reply or run `/feedback` (under `FEEDBACK_ONLY` this is the only thing that uploads — the session's full prefix, once)
+3. Wait up to 10s (`scheduledDelayMillis`)
+4. Open `http://localhost:8899`; rows appear with **Source** = `deepseek-harness`
+
+For **continuous statistics** (no feedback clicks needed), backfill from the local session logs instead: `go run ./tools/dsh_ingest -db ~/.cc-otel/cc-otel.db` — idempotent, safe to re-run.
 
 ## Differences from Claude Code
 
 - **No cost reported.** DSH sends no `cost_usd`, so cc-otel always recomputes from the local pricing table.
-- **Only usage-bearing assistant messages are stored.** `step/start`, `assistant/chunk` and `step/end` are consumed to reconstruct `duration_ms` and `ttft_ms`; every other ledger record is dropped without being written.
-- **History is not backfilled.** DSH hands off events from its live boundary forward, so a session that existed before telemetry was enabled exports only what happens after.
-- **`request_id` is `dsh-<session.id>-<event.seq>`**, so retries of the same batch collapse onto one row.
+- **Only usage-bearing assistant messages are stored.** `step/start`, `assistant/chunk` and `step/end` are consumed to reconstruct `duration_ms` and `ttft_ms`; every other ledger record is dropped without being written. Note the v3 session format (dsh 0.1.5) no longer emits `assistant/chunk`, so v3-era uploads leave `ttft_ms` at 0.
+- **History is not backfilled over OTLP.** DSH hands off events from its live boundary forward, so a session that existed before telemetry was enabled exports only what happens after — `tools/dsh_ingest` backfills the rest from local logs.
+- **`request_id` is `dsh-v<session.format_version>-<session.id>-<event.seq>`** (falling back to the versionless `dsh-<session.id>-<event.seq>` when the attribute is missing), so retries of the same batch collapse onto one row and the renumbered v3 generation cannot collide with stored v0 rows.
 
 ## How cc-otel Identifies DSH Data
 
@@ -82,6 +87,6 @@ By the instrumentation scope `@deepseek-ai/dsh-session-telemetry-otel` (the `/op
 
 ## Privacy
 
-`mode: FULL` puts the **entire session** on the wire — prompts, tool output, file contents, and the system prompt. cc-otel reads token counts from it and stores nothing else (`raw_otlp_events` stays empty; no prompt or tool-result rows are written for DSH sessions), but the content does cross the connection. Keep the endpoint on localhost.
+The feedback-triggered upload puts the **entire session prefix** on the wire — prompts, tool output, file contents, and the system prompt. cc-otel reads token counts from it and stores nothing else (`raw_otlp_events` stays empty; no prompt or tool-result rows are written for DSH sessions), but the content does cross the connection. Keep the endpoint on localhost.
 
-Use `mode: FEEDBACK_ONLY` to export only when the user records `/feedback`, or `DISABLED` to keep everything local.
+`FEEDBACK_ONLY` (the default) exports only when the user records feedback; `DISABLED` keeps everything local. `FULL` no longer exists (dsh 0.1.5 removed it). Continuous statistics via `tools/dsh_ingest` never leave the machine.

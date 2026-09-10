@@ -17,8 +17,9 @@ import (
 // The DSH wire contract these tests pin down, read off
 // @deepseek-ai/dsh-session-telemetry-otel's source: `event.type` lives in the
 // record ATTRIBUTES (the body is only the session event's `data`), `event.seq`
-// arrives as an int, and the body is a structured KvlistValue rather than a
-// JSON string. Getting any of those wrong silently ingests nothing.
+// arrives as an int, `session.format_version` rides along as a number-valued
+// attribute, and the body is a structured KvlistValue rather than a JSON
+// string. Getting any of those wrong silently ingests nothing.
 
 const dshSecond = int64(1_000_000_000)
 
@@ -47,6 +48,7 @@ func dshRecord(seq int64, eventType string, nanos int64, body *commontpb.AnyValu
 			strAttr("session.id", "sess-dsh"),
 			strAttr("event.type", eventType),
 			intAttr("event.seq", seq), // a number on the wire, not a string
+			strAttr("session.format_version", "3"),
 			strAttr("session.cwd", "/repo"),
 		},
 	}
@@ -116,7 +118,8 @@ func dshStepRecords(base int64) []*logspb.LogRecord {
 
 // A nonconforming exporter that omits event.seq must not collapse a whole
 // session onto one row ("dsh-<session>-0") — the unique index on request_id
-// would then silently drop every row after the first.
+// would then silently drop every row after the first. These records also
+// omit session.format_version, pinning the legacy versionless fallback key.
 func TestDSHMissingSeq_StillStoresEveryRow(t *testing.T) {
 	rcv, repo := newDSHTestReceiver(t)
 	base := int64(1_700_000_000) * dshSecond
@@ -190,8 +193,66 @@ func TestDSHAssistantMessage_BecomesAPIRequest(t *testing.T) {
 	if ttft != 1000 {
 		t.Errorf("ttft_ms = %d, want 1000", ttft)
 	}
-	if requestID != "dsh-sess-dsh-2" {
-		t.Errorf("request_id = %q, want dsh-sess-dsh-2 (session + event.seq)", requestID)
+	if requestID != "dsh-v3-sess-dsh-2" {
+		t.Errorf("request_id = %q, want dsh-v3-sess-dsh-2 (format version + session + event.seq)", requestID)
+	}
+}
+
+// v3 renumbers seq relative to the v0 generation of the same session, so the
+// format generation is folded into request_id: the v3 event at seq N must not
+// be swallowed as a duplicate of the already-stored v0 event that landed at
+// seq N (observed live: 44 of one session's 662 rows silently dropped before
+// the generation segment existed).
+func TestDSHFormatGeneration_RequestIDsDoNotCollide(t *testing.T) {
+	rcv, repo := newDSHTestReceiver(t)
+	base := int64(1_700_000_000) * dshSecond
+
+	assistant := func(seq, nanos int64, formatVersion string) *logspb.LogRecord {
+		rec := &logspb.LogRecord{
+			TimeUnixNano: uint64(nanos),
+			Body: kvValue(
+				kvInt("turn", 1), kvInt("step", 1),
+				kvNested("usage", kvInt("inputTokens", 10), kvInt("outputTokens", 5)),
+			),
+			Attributes: []*commontpb.KeyValue{
+				strAttr("session.id", "sess-gen"),
+				strAttr("event.type", "assistant/message"),
+				intAttr("event.seq", seq),
+			},
+		}
+		if formatVersion != "" {
+			rec.Attributes = append(rec.Attributes,
+				strAttr("session.format_version", formatVersion))
+		}
+		return rec
+	}
+
+	// The v0-era exporter (no session.format_version attr) stored seq 7 first;
+	// the v3 feedback upload then re-sends the renumbered event that also
+	// lands at seq 7.
+	sendDSHLogs(t, rcv, dshScopeName, assistant(7, base, ""))
+	sendDSHLogs(t, rcv, dshScopeName, assistant(7, base+dshSecond, "3"))
+
+	var ids []string
+	rows, err := repo.DB().QueryContext(context.Background(),
+		`SELECT request_id FROM api_requests ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	if len(ids) != 2 {
+		t.Fatalf("api_requests request_ids = %v, want 2 rows — the v3 row was swallowed as a duplicate of the v0 row", ids)
+	}
+	if ids[0] != "dsh-sess-gen-7" || ids[1] != "dsh-v3-sess-gen-7" {
+		t.Errorf("request_ids = %v, want [dsh-sess-gen-7 dsh-v3-sess-gen-7]", ids)
 	}
 }
 
@@ -214,8 +275,9 @@ func TestDSHExport_IsIdempotent(t *testing.T) {
 	}
 }
 
-// FULL mode ships the whole session ledger — prompts, tool results, file
-// contents. Only usage-bearing records may be persisted.
+// The feedback-triggered full-prefix upload ships the whole session ledger —
+// prompts, tool results, file contents. Only usage-bearing records may be
+// persisted.
 func TestDSHNonUsageRecords_AreNotStored(t *testing.T) {
 	rcv, repo := newDSHTestReceiver(t)
 	base := int64(1_700_000_000) * dshSecond
