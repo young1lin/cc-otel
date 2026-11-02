@@ -1,31 +1,13 @@
 import { state, paging } from './state.js';
-import { fmtNum, fmtDateTime, escapeHtml, formatUserCell, rangeToFromTo } from './utils.js';
+import { fmtNum, fmtDateTime, escapeHtml, formatUserCell, rangeToFromTo, formatSourceTag } from './utils.js';
 import { loadRequestsData, loadDurationsData, loadModelsData } from './api.js';
 import { renderPagination } from './pagination.js';
 import { beginLatestRequest } from './latest-request.js';
 
-// Maps the OTLP resource service_name to a friendly source badge so the
-// request log shows which client reported each row (Claude Code / OpenCode /
-// Codex / Pi / ...). Data already carries service_name from the backend; this
-// only controls display.
-const SOURCE_LABELS = {
-    'claude-code': 'Claude Code',
-    'opencode': 'OpenCode',
-    'pi': 'Pi',
-};
-function formatSource(name) {
-    const raw = String(name || '').trim();
-    if (!raw) return '<span class="source-tag source-unknown">—</span>';
-    const key = raw.toLowerCase();
-    let label = SOURCE_LABELS[key];
-    if (!label) label = key.startsWith('codex') ? 'Codex' : raw;
-    // Collapse every codex variant (codex / codex_exec / codex-cli / ...) onto
-    // the single .source-codex class so they share the curated green dot.
-    const cls = key.startsWith('codex')
-        ? 'source-codex'
-        : 'source-' + key.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    return `<span class="source-tag ${cls}">${escapeHtml(label)}</span>`;
-}
+// Client badge rendering lives in utils.js (formatSourceTag) and is shared
+// with the Clients panel so both tables show identical names for the same
+// service_name.
+const formatSource = formatSourceTag;
 
 function setTTFTColumnVisible(visible) {
     const th = document.querySelector('#duration-stats-wrap th.ttft-col');

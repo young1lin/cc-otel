@@ -1310,6 +1310,25 @@ span.flatpickr-weekday {
 .panel { display: none; }
 .panel.active { display: block; }
 
+/* Hour-of-Day pivot filters (client / model dropdowns in the subtab header) */
+.hourday-filters { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+.hourday-select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: var(--radius-xs);
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    max-width: 220px;
+    transition: border-color 0.15s, color 0.15s;
+}
+.hourday-select:hover, .hourday-select:focus {
+    border-color: var(--border-hover);
+    color: var(--text);
+    outline: none;
+}
+
 /* ── Tables ───────────────────────────────────────────── */
 .table-wrap {
     overflow-x: auto;
@@ -1437,6 +1456,27 @@ td.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: 
 .pagination button:disabled {
     opacity: 0.3;
     cursor: default;
+}
+.pagination .pg-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+}
+.pagination .pg-jump input {
+    width: 58px;
+    padding: 3px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    text-align: center;
+}
+.pagination .pg-jump input:focus {
+    outline: none;
+    border-color: var(--border-hover);
 }
 
 /* ── Responsive ────────────────────────────────────────── */

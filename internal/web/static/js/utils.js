@@ -22,6 +22,31 @@ export function fmtTokens(n) {
     return fmtNum(n);
 }
 
+// Maps the OTLP resource service_name to a friendly source badge so the
+// Request Log and the Clients panel render the SAME name for the same
+// client. Known clients get a curated label (aliases live HERE, in this
+// one shared map — both panels show them); everything else shows the raw
+// service_name VERBATIM. Every codex* variant collapses onto the curated
+// green dot.
+const SOURCE_LABELS = {
+    'claude-code': 'Claude Code',
+    'opencode': 'OpenCode',
+    'pi': 'Pi',
+    'deepseek-harness': 'DeepSeek Harness',
+    'deepseek-harness-plugin': 'DSH Plugin',
+};
+export function formatSourceTag(name) {
+    const raw = String(name || '').trim();
+    if (!raw) return '<span class="source-tag source-unknown">' + '\u2014' + '</span>';
+    const key = raw.toLowerCase();
+    let label = SOURCE_LABELS[key];
+    if (!label) label = key.startsWith('codex') ? 'Codex' : raw;
+    const cls = key.startsWith('codex')
+        ? 'source-codex'
+        : 'source-' + key.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return '<span class="source-tag ' + cls + '">' + escapeHtml(label) + '</span>';
+}
+
 // Local-time, 24-hour, locale-independent "YYYY-MM-DD HH:mm:ss".
 // Built from local getters so midnight renders as 00:xx (never the 12-hour "12:xx AM").
 function fmtDate24(d) {

@@ -63,6 +63,14 @@ export const loadStatusData = () => fetchJSON('/api/status');
 export const loadDashboardData = (from, to) =>
     fetchJSON(apiPath('dashboard') + qs({ from, to }));
 
+// Per-client (service_name) token accounting and hour-of-day buckets — both
+// read the merged non-Codex pool, so they never mirror to /api/codex/*.
+export const loadClientsData = ({ from, to }) =>
+    fetchJSON('/api/clients' + qs({ from, to }));
+
+export const loadHoursData = ({ from, to }) =>
+    fetchJSON('/api/hours' + qs({ from, to }));
+
 export const loadDailyData = ({ from, to, page = 1, pageSize = 20, granularity = 'day' } = {}) =>
     fetchJSON(apiPath('daily') + qs({ from, to, page, page_size: pageSize, granularity }));
 

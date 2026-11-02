@@ -151,6 +151,24 @@ type CalendarDay struct {
 	TopModel            string  `json:"top_model"`
 }
 
+// ClientSummary is one telemetry client's (service_name) aggregate for a date
+// range — the per-client token accounting behind /api/clients and the Clients
+// panel. Rows that predate service_name attribution fold onto DefaultServiceName.
+type ClientSummary struct {
+	ServiceName         string  "json:\"service_name\""
+	ModelCount          int64   "json:\"model_count\""
+	InputTokens         int64   "json:\"input_tokens\""
+	OutputTokens        int64   "json:\"output_tokens\""
+	CacheReadTokens     int64   "json:\"cache_read_tokens\""
+	CacheCreationTokens int64   "json:\"cache_creation_tokens\""
+	TotalTokens         int64   "json:\"total_tokens\""
+	CostUSD             float64 "json:\"cost_usd\""
+	RequestCount        int64   "json:\"request_count\""
+	CacheHitRate        float64 "json:\"cache_hit_rate\""
+	FirstDate           string  "json:\"first_date\""
+	LastDate            string  "json:\"last_date\""
+}
+
 // DurationStat holds per-model latency and throughput stats for a time range.
 //
 // duration_ms is the end-to-end Claude API request latency reported by Claude Code:
@@ -795,6 +813,127 @@ func (r *Repository) GetDashboardForRange(ctx context.Context, from, to string) 
 		d.CacheHitRate = float64(totalCacheRead) / float64(d.TotalInputTokens)
 	}
 	return d, nil
+}
+
+// GetClientStats returns per-client (service_name) token/cost aggregates for a
+// date range, largest total-token consumer first. It reads api_requests —
+// the deliberately never-retention-pruned ledger — rather than
+// daily_model_agg, whose rows are trimmed to the retention window: a client
+// that only ran months ago must not vanish from this table. The GROUP BY is
+// one indexed range scan; ~250k rows aggregate in the tens of milliseconds.
+func (r *Repository) GetClientStats(ctx context.Context, from, to string) ([]ClientSummary, error) {
+	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(NULLIF(service_name, ''), ?) AS svc,
+			COUNT(DISTINCT model),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0),
+			COALESCE(SUM(cost_usd), 0),
+			COUNT(*),
+			MIN(date(timestamp, 'unixepoch', 'localtime')),
+			MAX(date(timestamp, 'unixepoch', 'localtime'))
+		FROM api_requests
+		WHERE timestamp >= ? AND timestamp < ?
+		GROUP BY svc
+		ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)
+			+ COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_creation_tokens), 0)) DESC`,
+		DefaultServiceName, fromUnix, toUnix)
+	if err != nil {
+		return nil, fmt.Errorf("client stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []ClientSummary
+	for rows.Next() {
+		var s ClientSummary
+		var cost int64
+		if err := rows.Scan(&s.ServiceName, &s.ModelCount, &s.InputTokens, &s.OutputTokens,
+			&s.CacheReadTokens, &s.CacheCreationTokens, &cost, &s.RequestCount,
+			&s.FirstDate, &s.LastDate); err != nil {
+			return nil, err
+		}
+		s.TotalTokens = s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheCreationTokens
+		s.CostUSD = costToFloat64(cost)
+		// Same cache-hit definition as the dashboard KPI (see GetDashboardForRange).
+		inputSide := s.InputTokens + s.CacheReadTokens + s.CacheCreationTokens
+		if inputSide > 0 {
+			s.CacheHitRate = float64(s.CacheReadTokens) / float64(inputSide)
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
+// HourOfDayDetail is one (local hour-of-day, client, model) cell aggregated
+// across every day in the range — the wire shape behind the Hour of Day
+// view. The client pivots these rows: stack by model, by client, or pin
+// both for a single series ("how much Claude Opus at 13:00, from Claude
+// Code"). Complements the Intraday chart: that one is chronological
+// per-bucket detail for a short span; this one folds the whole range into
+// 24 hour buckets.
+type HourOfDayDetail struct {
+	Hour                int     "json:\"hour\""
+	ServiceName         string  "json:\"service_name\""
+	Model               string  "json:\"model\""
+	InputTokens         int64   "json:\"input_tokens\""
+	OutputTokens        int64   "json:\"output_tokens\""
+	CacheReadTokens     int64   "json:\"cache_read_tokens\""
+	CacheCreationTokens int64   "json:\"cache_creation_tokens\""
+	TotalTokens         int64   "json:\"total_tokens\""
+	CostUSD             float64 "json:\"cost_usd\""
+	RequestCount        int64   "json:\"request_count\""
+}
+
+// GetHourOfDayStats aggregates api_requests into (local hour-of-day,
+// client, model) cells for the date range. The client-side pivot turns
+// these into "stack by model / by client / pinned single series" views.
+// api_requests carries exact timestamps; daily_model_agg is date-granular
+// and cannot answer hour-of-day questions.
+func (r *Repository) GetHourOfDayStats(ctx context.Context, from, to string) ([]HourOfDayDetail, error) {
+	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			CAST(strftime('%H', timestamp, 'unixepoch', 'localtime') AS INTEGER) AS h,
+			COALESCE(NULLIF(service_name, ''), ?),
+			model,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0),
+			COALESCE(SUM(cost_usd), 0),
+			COUNT(*)
+		FROM api_requests
+		WHERE timestamp >= ? AND timestamp < ?
+		GROUP BY h, COALESCE(NULLIF(service_name, ''), ?), model
+		ORDER BY h, COALESCE(NULLIF(service_name, ''), ?), model`,
+		DefaultServiceName, fromUnix, toUnix, DefaultServiceName, DefaultServiceName)
+	if err != nil {
+		return nil, fmt.Errorf("hour-of-day stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []HourOfDayDetail
+	for rows.Next() {
+		var s HourOfDayDetail
+		var cost int64
+		if err := rows.Scan(&s.Hour, &s.ServiceName, &s.Model, &s.InputTokens, &s.OutputTokens,
+			&s.CacheReadTokens, &s.CacheCreationTokens, &cost, &s.RequestCount); err != nil {
+			return nil, err
+		}
+		s.TotalTokens = s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheCreationTokens
+		s.CostUSD = costToFloat64(cost)
+		result = append(result, s)
+	}
+	return result, rows.Err()
 }
 
 // GetDailyStats returns per-day aggregated token and cost statistics.

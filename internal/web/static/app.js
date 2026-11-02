@@ -23,9 +23,10 @@ import { initBreakdownModal } from './js/breakdown.js';
 import { loadInsights, setInsightsVisible, initInsightsModal } from './js/insights.js';
 import { loadChart, buildBarTooltip } from './js/chart-main.js';
 import {
-    loadDailyTable, refreshDailyPanel,
+    loadDailyTable, refreshDailyPanel, loadHourOfDay,
     setDailyDetailView, updateDailyViewControls, initPanelDaily, initIntradayBucketDropdown,
 } from './js/panel-daily.js';
+import { loadClients, initPanelClients } from './js/panel-clients.js';
 import { loadSessions } from './js/panel-sessions.js';
 import {
     loadRequests, loadDurationStats, loadModelFilter, initPanelRequests,
@@ -139,13 +140,21 @@ function syncSourceTabsUI() {
     // Rate is backed only by the non-Codex api_requests table. Never present
     // those curves as Codex data; if the source changes while Rate is open,
     // move to Daily Detail before the source-specific refresh runs.
-    const rateBtn = document.querySelector('.panel-btn[data-panel="rate"]');
-    if (rateBtn) {
-        const hideRate = state.source === 'codex';
-        rateBtn.hidden = hideRate;
-        rateBtn.style.display = hideRate ? 'none' : '';
+    const hideForCodex = state.source === 'codex';
+    for (const name of ['rate', 'clients']) {
+        const btn = document.querySelector('.panel-btn[data-panel="' + name + '"]');
+        if (btn) {
+            btn.hidden = hideForCodex;
+            btn.style.display = hideForCodex ? 'none' : '';
+        }
     }
-    if (state.source === 'codex' && document.getElementById('panel-rate')?.classList.contains('active')) {
+    // Rate and Clients are backed only by the non-Codex api_requests /
+    // daily_model_agg pool. If either is open when the source flips to Codex,
+    // move to Daily Detail before the source-specific refresh runs.
+    if (hideForCodex && (
+        document.getElementById('panel-rate')?.classList.contains('active') ||
+        document.getElementById('panel-clients')?.classList.contains('active')
+    )) {
         // Switch state without fetching yet; the caller resets pagination and
         // performs one coherent loadAll() for the new source immediately after.
         activatePanel('daily', { notify: false });
@@ -235,6 +244,7 @@ function refreshPanel(panel = activePanelName()) {
     else if (panel === 'sessions') loadSessions();
     else if (panel === 'requests') loadRequests();
     else if (panel === 'rate') loadRate();
+    else if (panel === 'clients') loadClients();
 }
 
 function loadAll() {
@@ -307,6 +317,7 @@ initTheme({
     onThemeChange: () => {
         if (state.mainChart) loadChart();
         if (state.rateChart && document.querySelector('.panel.active')?.id === 'panel-rate') loadRate();
+        if (state.hourdayChart && state.dailyDetailView === 'hourday') loadHourOfDay();
         if (state.customRangeFlatpickr && typeof state.customRangeFlatpickr.redraw === 'function') {
             state.customRangeFlatpickr.redraw();
         }
@@ -324,6 +335,7 @@ initPanelDaily();
 initIntradayBucketDropdown();
 initPanelRequests();
 initPanelRate();
+initPanelClients();
 initPanelPricing({ openPopover, closePopover });
 initDatabaseImport({
     openPopover,

@@ -1,7 +1,7 @@
 import { state, paging } from './state.js';
 import { fmtNum, escapeHtml, rangeToFromTo } from './utils.js';
 import { chartColors } from './theme.js';
-import { loadDailyData, loadIntradayData } from './api.js';
+import { loadDailyData, loadIntradayData, loadHoursData } from './api.js';
 import { renderPagination } from './pagination.js';
 import { tokenParts } from './token-math.js';
 import { buildBarTooltip, makeTokenBarColor } from './chart-main.js';
@@ -65,6 +65,7 @@ function isIntradayRangeSelected() {
 export function updateDailyViewControls() {
     const dayBtn = document.getElementById('daily-view-day');
     const hourBtn = document.getElementById('daily-view-hour');
+    const hourdayBtn = document.getElementById('daily-view-hourday');
     if (!dayBtn || !hourBtn) return;
 
     const canHour = isIntradayRangeSelected();
@@ -75,17 +76,28 @@ export function updateDailyViewControls() {
 
     if (!canHour && state.dailyDetailView === 'hour') state.dailyDetailView = 'day';
 
+    // /api/hours reads the merged non-Codex pool and has no codex mirror
+    // yet, so the subtab disappears under the Codex source.
+    const canHourday = state.source !== 'codex';
+    if (hourdayBtn) hourdayBtn.style.display = canHourday ? '' : 'none';
+    if (!canHourday && state.dailyDetailView === 'hourday') state.dailyDetailView = 'day';
+
     dayBtn.classList.toggle('active', state.dailyDetailView === 'day');
     hourBtn.classList.toggle('active', state.dailyDetailView === 'hour');
+    // Hour-of-day works for ANY span (it folds the whole range into 24 bars),
+    // so it stays enabled where Intraday gives up.
+    hourdayBtn?.classList.toggle('active', state.dailyDetailView === 'hourday');
 
     const byDay = document.getElementById('daily-byday');
     const byHour = document.getElementById('daily-byhour');
+    const byHourDay = document.getElementById('daily-byhourday');
     if (byDay) byDay.style.display = state.dailyDetailView === 'day' ? '' : 'none';
     if (byHour) byHour.style.display = state.dailyDetailView === 'hour' ? '' : 'none';
+    if (byHourDay) byHourDay.style.display = state.dailyDetailView === 'hourday' ? '' : 'none';
 }
 
 export function setDailyDetailView(view) {
-    state.dailyDetailView = view === 'hour' ? 'hour' : 'day';
+    state.dailyDetailView = (view === 'hour' || view === 'hourday') ? view : 'day';
     updateDailyViewControls();
     refreshDailyPanel();
 }
@@ -94,6 +106,8 @@ export function refreshDailyPanel() {
     updateDailyViewControls();
     if (state.dailyDetailView === 'hour' && isIntradayRangeSelected()) {
         loadIntraday();
+    } else if (state.dailyDetailView === 'hourday') {
+        loadHourOfDay();
     } else {
         loadDailyTable();
     }
@@ -274,6 +288,323 @@ export async function loadIntraday() {
     state.hourlyChart.resize();
 }
 
+// ── Hour of Day: hour x client x model pivot ────────────────────────────
+// The backend sends one row per (local hour, client, model) cell; this view
+// pivots them into 24 stacked bars. Two dropdowns pick the lens:
+//   - nothing pinned  -> bars split by MODEL (top N + Other)
+//   - client pinned   -> that client's models, hour by hour
+//   - model pinned    -> bars split by CLIENT ("who ran Claude Opus at 13:00")
+//   - both pinned     -> single series ("Claude Code's Claude Opus at 13:00")
+// That is the dimension Intraday cannot show: it is chronological per-bucket
+// detail for a short span, while this folds the whole range by hour-of-day
+// AND cross-cuts it by client/model.
+
+const HOURDAY_TOP_N = 8;
+
+function hourdayMetricOf(r, metric) {
+    if (metric === 'cost') return Number(r.cost_usd) || 0;
+    if (metric === 'requests') return Number(r.request_count) || 0;
+    return Number(r.total_tokens) || 0;
+}
+
+function hourdayMergeCell(dst, r) {
+    dst.input_tokens += Number(r.input_tokens) || 0;
+    dst.output_tokens += Number(r.output_tokens) || 0;
+    dst.cache_read_tokens += Number(r.cache_read_tokens) || 0;
+    dst.cache_creation_tokens += Number(r.cache_creation_tokens) || 0;
+    dst.total_tokens += Number(r.total_tokens) || 0;
+    dst.cost_usd += Number(r.cost_usd) || 0;
+    dst.request_count += Number(r.request_count) || 0;
+    dst.hour = r.hour;
+    return dst;
+}
+
+const hourdayEmptyCell = (hour) => ({
+    hour, service_name: '', model: '', input_tokens: 0, output_tokens: 0,
+    cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 0,
+    cost_usd: 0, request_count: 0,
+});
+
+// Pure pivot from (hour, service, model) rows to stacked series data.
+// Exported for hourday.test.mjs — no DOM, no echarts.
+export function buildHourdayView(rows, { client = '', model = '', metric = 'tokens' } = {}) {
+    const list = Array.isArray(rows) ? rows : [];
+
+    // Dropdown options come from the UNFILTERED rows so both selects stay
+    // usable no matter which one is pinned.
+    const clientTotals = new Map();
+    const modelTotals = new Map();
+    for (const r of list) {
+        clientTotals.set(r.service_name, (clientTotals.get(r.service_name) || 0) + hourdayMetricOf(r, metric));
+        modelTotals.set(r.model, (modelTotals.get(r.model) || 0) + hourdayMetricOf(r, metric));
+    }
+    const ranked = (m) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name);
+
+    const sel = list.filter((r) =>
+        (!client || r.service_name === client) && (!model || r.model === model));
+
+    // Pinning a model switches the breakdown axis to clients (the question
+    // becomes "who used it"); anything else breaks down by model.
+    const byModel = !model;
+    const dimOf = (r) => (byModel ? r.model : r.service_name);
+
+    const dimTotals = new Map();
+    for (const r of sel) dimTotals.set(dimOf(r), (dimTotals.get(dimOf(r)) || 0) + hourdayMetricOf(r, metric));
+    const dims = ranked(dimTotals);
+    const top = dims.slice(0, HOURDAY_TOP_N);
+    const rest = dims.slice(HOURDAY_TOP_N);
+    const otherLabel = 'Other' + (rest.length ? ' (' + rest.length + ')' : '');
+    const dimKey = (d) => (rest.includes(d) ? '__other__' : d);
+
+    // cellByHour: hour -> dimKey -> merged cell + the OTHER dimension's
+    // contributions (clients inside a model bar / models inside a client
+    // bar), so tooltips can answer "which client's which model" inline.
+    const cellByHour = new Map();
+    for (const r of sel) {
+        if (!cellByHour.has(r.hour)) cellByHour.set(r.hour, new Map());
+        const m = cellByHour.get(r.hour);
+        const key = dimKey(dimOf(r));
+        let entry = m.get(key);
+        if (!entry) { entry = { cell: hourdayEmptyCell(r.hour), parts: new Map() }; m.set(key, entry); }
+        hourdayMergeCell(entry.cell, r);
+        const sub = byModel ? r.service_name : r.model;
+        entry.parts.set(sub, (entry.parts.get(sub) || 0) + hourdayMetricOf(r, metric));
+    }
+
+    const names = rest.length ? [...top, otherLabel] : [...top];
+    const keyOf = (name) => (name === otherLabel ? '__other__' : name);
+    const categories = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0') + ':00');
+    const series = names.map((name) => ({
+        name,
+        data: categories.map((_, h) => {
+            const entry = cellByHour.get(h)?.get(keyOf(name));
+            if (!entry) return { value: 0, raw: hourdayEmptyCell(h), parts: [] };
+            const parts = [...entry.parts.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .map(([nm, v]) => ({ name: nm, value: v }));
+            return { value: hourdayMetricOf(entry.cell, metric), raw: entry.cell, parts };
+        }),
+    }));
+
+    const sum = (fn) => sel.reduce((s, r) => s + fn(r), 0);
+    return {
+        categories,
+        series,
+        meta: { client, model, byModel },
+        clients: ranked(clientTotals),
+        models: ranked(modelTotals),
+        totals: {
+            tokens: sum((r) => Number(r.total_tokens) || 0),
+            cost: sum((r) => Number(r.cost_usd) || 0),
+            requests: sum((r) => Number(r.request_count) || 0),
+        },
+    };
+}
+
+// Rows of the currently loaded range, kept so the dropdowns can re-pivot
+// without a refetch.
+let hourdayRowsCache = [];
+
+function populateHourdaySelects(view) {
+    const fill = (el, values, selected, allLabel) => {
+        if (!el) return;
+        const keep = values.includes(selected) ? selected : '';
+        el.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = allLabel;
+        el.appendChild(opt);
+        for (const v of values) {
+            const o = document.createElement('option');
+            o.value = v;
+            o.textContent = v;
+            el.appendChild(o);
+        }
+        el.value = keep;
+    };
+    fill(document.getElementById('hourday-client'), view.clients, state.hourdayClient, 'All Clients');
+    fill(document.getElementById('hourday-model'), view.models, state.hourdayModel, 'All Models');
+    state.hourdayClient = document.getElementById('hourday-client')?.value || '';
+    state.hourdayModel = document.getElementById('hourday-model')?.value || '';
+}
+
+export async function loadHourOfDay() {
+    const isCurrent = beginLatestRequest('daily-panel');
+    const chartEl = document.getElementById('hourday-chart');
+    if (!chartEl) return;
+
+    const { from, to } = rangeToFromTo(state.currentRange);
+    const sourceAtStart = state.source;
+    let json;
+    try {
+        json = await loadHoursData({ from, to });
+    } catch (e) {
+        if (isCurrent()) showHourdayMessage(chartEl, 'Failed to load hour-of-day data.');
+        return;
+    }
+    if (!isCurrent() || state.source !== sourceAtStart) return;
+
+    const rows = Array.isArray(json.data) ? json.data : [];
+    hourdayRowsCache = rows;
+    const hasData = rows.some((r) => (Number(r.total_tokens) || 0) > 0 || (Number(r.request_count) || 0) > 0);
+    if (!hasData) {
+        showHourdayMessage(chartEl, 'No data in this range.');
+        return;
+    }
+    renderHourdayChart(chartEl);
+}
+
+export function renderHourdayChart(chartEl) {
+    const el = chartEl || document.getElementById('hourday-chart');
+    if (!el) return;
+    const rows = hourdayRowsCache;
+    if (!rows.length) {
+        showHourdayMessage(el, 'No data in this range.');
+        return;
+    }
+
+    const view = buildHourdayView(rows, {
+        client: state.hourdayClient,
+        model: state.hourdayModel,
+        metric: state.chartMetric === 'cost' ? 'cost' : state.chartMetric === 'requests' ? 'requests' : 'tokens',
+    });
+    populateHourdaySelects(view);
+
+    const c = chartColors();
+    const isCost = state.chartMetric === 'cost';
+    const fmtVal = (v) => (isCost ? '$' + Number(v).toFixed(4) : fmtNum(v));
+    // With a model pinned the whole chart IS that model, so every client bar
+    // keeps the model's canonical color (same as the main chart) and the
+    // rank position varies the shade — the model's color identity must not
+    // change just because the breakdown axis flipped to clients.
+    const shadeOf = (base, i) => {
+        const m = /^#([0-9a-f]{6})$/i.exec(base);
+        if (!m) return base;
+        const a = Math.max(0.3, 1 - 0.12 * i);
+        const r = parseInt(m[1].slice(0, 2), 16), g = parseInt(m[1].slice(2, 4), 16), b = parseInt(m[1].slice(4, 6), 16);
+        return 'rgba(' + r + ',' + g + ',' + b + ',' + a.toFixed(2) + ')';
+    };
+    const pinnedModel = view.meta && view.meta.model && !view.meta.byModel ? makeTokenBarColor(view.meta.model) : null;
+    const colorOf = (name, i) => pinnedModel
+        ? shadeOf(pinnedModel, i)
+        : (name.indexOf('Other') === 0 ? '#8e8e93' : makeTokenBarColor(name));
+
+    const series = view.series.map((s, i) => ({
+        name: s.name,
+        type: 'bar',
+        stack: 'h',
+        barMaxWidth: 28,
+        itemStyle: { color: colorOf(s.name, i) },
+        data: s.data,
+    }));
+
+    if (!state.hourdayChart) {
+        // Clear any placeholder message BEFORE init: echarts.init() mounts its
+        // own canvas DOM inside the container, and wiping innerHTML afterwards
+        // would delete it and leave a permanently blank chart (the bug behind
+        // the 'nothing renders' report — pinned by hourday-render.test.mjs).
+        el.innerHTML = '';
+        state.hourdayChart = echarts.init(el, null, { renderer: 'canvas' });
+        window.addEventListener('resize', () => state.hourdayChart && state.hourdayChart.resize());
+    }
+    state.hourdayChart.setOption({
+        backgroundColor: 'transparent',
+        grid: { left: 56, right: 20, top: 44, bottom: 32 },
+        legend: { top: 4, type: 'scroll', textStyle: { color: c.legendText } },
+        tooltip: {
+            trigger: 'axis',
+            backgroundColor: c.tooltipBg,
+            borderColor: c.tooltipBorder,
+            textStyle: { color: c.tooltipText },
+            formatter: (params) => buildHourdayTooltip(params, view, c),
+        },
+        xAxis: {
+            type: 'category',
+            data: view.categories,
+            axisLine: { lineStyle: { color: c.axisLine } },
+            axisLabel: { color: c.axisLabel },
+        },
+        yAxis: {
+            type: 'value',
+            name: metricLabel(),
+            nameTextStyle: { color: c.axisLabel },
+            axisLabel: { color: c.axisLabel, formatter: (v) => fmtVal(v) },
+            splitLine: { lineStyle: { color: c.splitLine } },
+        },
+        series,
+    }, true);
+    state.hourdayChart.resize();
+}
+
+function buildHourdayTooltip(params, view, c) {
+    if (!Array.isArray(params) || params.length === 0) return '';
+    const hour = Number(params[0].data?.raw?.hour ?? params[0].dataIndex ?? 0);
+    const scope = view.meta ? [view.meta.client, view.meta.model].filter(Boolean).map(escapeHtml).join(' · ') : '';
+    const head = '<div style="font-weight:600;margin-bottom:4px">'
+        + String(hour).padStart(2, '0') + ':00 – ' + String((hour + 1) % 24).padStart(2, '0') + ':00'
+        + (scope ? ' · ' + scope : '') + '</div>';
+    const row = (k, v, color) => '<div style="display:flex;justify-content:space-between;gap:16px">'
+        + '<span style="color:' + (color || c.legendText) + '">' + k + '</span><span>' + v + '</span></div>';
+
+    const isCost = state.chartMetric === 'cost';
+    const isReqs = state.chartMetric === 'requests';
+    const fmtVal = (v) => (isCost ? '$' + Number(v).toFixed(4) : fmtNum(v));
+
+    // Series rows for this hour, biggest first, zero rows hidden. Each row
+    // carries the OTHER dimension's breakdown ("this model's bar at 13:00 =
+    // claude-code 70% · opencode 30%"), so the tooltip answers "which
+    // client's which model" without another click.
+    const subLine = (p) => {
+        if (params.length === 1) return ''; // both filters pinned: full breakdown below
+        const subs = p.data?.parts || [];
+        if (!subs.length) return '';
+        const total = subs.reduce((s, x) => s + x.value, 0);
+        const txt = subs.slice(0, 3)
+            .map((x) => escapeHtml(x.name) + ' ' + (total > 0 ? Math.round((x.value / total) * 100) : 0) + '%')
+            .join(' · ');
+        return '<div style="margin:-2px 0 2px 16px;font-size:11px;color:' + c.axisLabel + '">' + txt + '</div>';
+    };
+    const parts = params
+        .filter((p) => p.value > 0)
+        .sort((a, b) => b.value - a.value)
+        .map((p) => row(p.marker + ' ' + p.seriesName, fmtVal(p.value)) + subLine(p));
+    if (!parts.length) return head + row('No data', '—');
+
+    // Hour totals of the CURRENTLY FILTERED selection: the 24-bar stack sums.
+    const hourTotals = view.series.reduce((acc, s) => {
+        const d = s.data[hour] || { value: 0, raw: hourdayEmptyCell(hour) };
+        acc.value += d.value;
+        acc.req += Number(d.raw.request_count) || 0;
+        acc.cost += Number(d.raw.cost_usd) || 0;
+        return acc;
+    }, { value: 0, req: 0, cost: 0 });
+
+    let extra = '';
+    // Both filters pinned -> one series; show its full token composition so
+    // the tooltip answers "this client, this model, this hour" completely.
+    if (params.length === 1 && !isCost && !isReqs) {
+        const r = params[0].data.raw;
+        extra = row('Uncached Input', fmtNum(r.input_tokens))
+            + row('Cache Read', fmtNum(r.cache_read_tokens))
+            + row('Cache Create', fmtNum(r.cache_creation_tokens))
+            + row('Output', fmtNum(r.output_tokens));
+    }
+
+    return head + parts.join('') + extra
+        + '<div style="border-top:1px solid ' + c.tooltipBorder + ';margin:4px 0"></div>'
+        + row('<b>' + metricLabel() + ' total</b>', '<b>' + fmtVal(hourTotals.value) + '</b>')
+        + row('Requests', fmtNum(hourTotals.req))
+        + row('Cost', '$' + hourTotals.cost.toFixed(4));
+}
+
+function showHourdayMessage(chartEl, msg) {
+    if (state.hourdayChart) {
+        state.hourdayChart.dispose();
+        state.hourdayChart = null;
+    }
+    hourdayRowsCache = [];
+    chartEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:48px 24px">' + msg + '</div>';
+}
 function showIntradayMessage(chartEl, msg) {
     if (state.hourlyChart) {
         state.hourlyChart.dispose();
@@ -306,4 +637,14 @@ export async function loadDailyTable() {
 export function initPanelDaily() {
     document.getElementById('daily-view-day')?.addEventListener('click', () => setDailyDetailView('day'));
     document.getElementById('daily-view-hour')?.addEventListener('click', () => setDailyDetailView('hour'));
+    document.getElementById('daily-view-hourday')?.addEventListener('click', () => setDailyDetailView('hourday'));
+    // Re-pivot on dropdown change from the cached rows — no refetch needed.
+    document.getElementById('hourday-client')?.addEventListener('change', (e) => {
+        state.hourdayClient = e.target.value || '';
+        renderHourdayChart();
+    });
+    document.getElementById('hourday-model')?.addEventListener('change', (e) => {
+        state.hourdayModel = e.target.value || '';
+        renderHourdayChart();
+    });
 }
