@@ -78,6 +78,13 @@ jobs:
       - name: Publish to npm (Trusted Publishing — no secrets)
         run: |
           set -euo pipefail
+          # setup-node writes '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}'
+          # into the runner .npmrc. With an authToken present npm never
+          # attempts the OIDC exchange, and a token-authed PUT from CI gets
+          # a flat 404 (v0.1.4 first attempt). Strip it so npm >= 11.5.1
+          # falls back to Trusted Publishing.
+          unset NODE_AUTH_TOKEN
+          sed -i '/_authToken/d' "$NPM_CONFIG_USERCONFIG"
           tag_flag=""
           if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
             tag_flag="--tag next"
