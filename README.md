@@ -461,7 +461,7 @@ raw_ttl_days: 5       # raw_otlp_events 的留存上限，单位天；0 = 永不
 |------|------|
 | **Daily Detail** | 按日 / 按小时明细；Intraday 按桶柱状图（5 / 10 / 15 / 30 / 60 分钟，最长 7 天）；**Hour of Day** 子视图把整段区间折叠成 24 个小时桶，客户端 / 模型下拉切换透视（任意跨度可用） |
 | **Sessions** | 按会话聚合 Cost / Token |
-| **Clients** | 按 `service.name` 的客户端汇总表：Token 构成、请求数、成本、命中率、活跃区间、占比条（Codex 源下隐藏） |
+| **Clients** | 按 `service.name` 的客户端汇总表：Token 构成、请求数、成本、命中率、活跃区间、占比条（始终可见） |
 | **Request Log** | 按模型耗时与 **Out tok/s（平均 / 加权）** 汇总；单条请求列表含 TTFT；分页条支持页码直达 |
 | **Rate** | 各模型 **Token Rate over Time** 折线图；Weighted / Avg、Output / Total tok/s、5 / 15 / 30 / 60 min 桶；点击图例可 solo 单模型（**All models** 恢复） |
 

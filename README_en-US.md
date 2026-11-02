@@ -462,7 +462,7 @@ Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model
 |-------|-------------|
 | **Daily Detail** | Per-day / per-hour tables; Intraday per-bucket bar chart (5 / 10 / 15 / 30 / 60 min, up to 7 days); the **Hour of Day** subtab folds the whole range into 24 hour buckets with client / model pivot dropdowns (any span) |
 | **Sessions** | Per-session Cost / Token aggregates |
-| **Clients** | Per-`service.name` totals: token composition, requests, cost, hit rate, active span, share bar (hidden under the Codex source) |
+| **Clients** | Per-`service.name` totals: token composition, requests, cost, hit rate, active span, share bar (always visible) |
 | **Request Log** | Per-model duration and **Out tok/s (avg / weighted)** summary; per-request list with TTFT; pagination bar with page-number jump |
 | **Rate** | Per-model **Token Rate over Time** line chart; Weighted / Avg, Output / Total tok/s, 5 / 15 / 30 / 60 min buckets; click legend to solo one model (**All models** to restore) |
 
