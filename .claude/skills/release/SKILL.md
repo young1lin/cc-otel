@@ -4,7 +4,7 @@
 
 ## 0. 发布机制(背景,不要改)
 
-- 打 `vX.Y.Z` tag 并 push → `.github/workflows/release.yml`:goreleaser(`.goreleaser.yml`,ldflags 注入 `main.version`)构建全平台产物并创建 GitHub Release;随后 npm Trusted Publishing 发布 `@young1lin/dsh-cc-otel` 与平台二进制包(无 token)。
+- 打 `vX.Y.Z` tag 并 push → `.github/workflows/publish.yml`:goreleaser(`.goreleaser.yml`,ldflags 注入 `main.version`)构建全平台产物并创建 GitHub Release;随后 npm Trusted Publishing 发布 `@young1lin/dsh-cc-otel` 与平台二进制包(无 token)。
 - 预发布 tag(如 `v1.2.3-rc.1`)发到 npm `next` dist-tag,不会覆盖 `latest`。
 - CI 单测在 `.github/workflows/test.yml`(go test + race;前端 node 测试本地跑)。
 
@@ -61,7 +61,7 @@
 
 发布链路:goreleaser(资产)→ npm job(`scripts/build-npm.mjs` 组 7 个包 → `npm publish`)。认证是 OIDC 信任发布,没有 NPM_TOKEN。三个必要条件缺一不可:
 
-1. **npmjs 侧每包注册 Trusted Publisher**(一次性,只能账号本人在 npmjs.com 操作):包 Settings → Trusted publishing → GitHub Actions → 填 `young1lin` / `cc-otel` / `release.yml`,不勾 environment。**未注册时的报错是误导性的**:npm 拿 OIDC token 去 `/-/npm/v1/oidc/token/exchange/package/<name>` 换 token,失败会静默放弃,最终报 `ENEEDAUTH`(像没登录)或 `404 PUT`(像包不存在)——看到这两个错先查这里,不要去改 CI。
+1. **npmjs 侧每包注册 Trusted Publisher**(一次性,只能账号本人在 npmjs.com 操作):包 Settings → Trusted publishing → GitHub Actions → 填 `young1lin` / `cc-otel` / `publish.yml`,不勾 environment。**workflow 文件名必须与 npmjs 登记的完全一致**(OIDC claim 按文件名匹配;2026-11 曾因 release.yml vs publish.yml 不一致再挂一次)。**未注册时的报错是误导性的**:npm 拿 OIDC token 去 `/-/npm/v1/oidc/token/exchange/package/<name>` 换 token,失败会静默放弃,最终报 `ENEEDAUTH`(像没登录)或 `404 PUT`(像包不存在)——看到这两个错先查这里,不要去改 CI。
 2. **CI 侧剥掉 setup-node 注入的 token**:setup-node 会往 runner `.npmrc` 写 `_authToken=${NODE_AUTH_TOKEN}`,有 token 在 npm 就不做 OIDC 交换 → 404。发布步骤里已内置 `unset NODE_AUTH_TOKEN` + `sed -i '/_authToken/d'`,别删。
 3. **`npm publish --provenance`**:provenance 生成会取 OIDC token(信任发布搭同一趟车)。工作流已带,别删。
 

@@ -39,7 +39,10 @@ jobs:
   #      publisher cannot be configured before the package exists): assemble
   #      locally with scripts/build-npm.mjs, then npm publish with OTP;
   #   2. npmjs.com -> package Settings -> Trusted publishing -> add
-  #      user young1lin / repo cc-otel / workflow release.yml.
+  #      user young1lin / repo cc-otel / workflow publish.yml. The filename
+  #      must match the npmjs trusted-publisher registration exactly — the
+  #      GitHub OIDC claim carries the workflow FILENAME, not the workflow
+  #      name, so a mismatch fails the token exchange with ENEEDAUTH.
   # Afterwards every vX.Y.Z tag publishes tokenlessly. Prerelease tags
   # (v1.2.3-rc.1) publish under the "next" dist-tag, never latest.
   #
