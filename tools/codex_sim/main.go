@@ -156,8 +156,20 @@ func main() {
 			str("mcp_server", ""),
 		))
 
-		// 5) completion: input 1200 is INCLUSIVE of 800 cached + 100 written,
-		// so the unified row must store input = 300.
+		// 5a) TOKEN-LESS per-poll completion record: current codex fires
+		// codex.sse_event kind=response.completed for EVERY SSE event via the
+		// per-poll log, BEFORE the authoritative token-bearing record arrives.
+		// The receiver must treat it as a no-op (no tracker consumption, no
+		// phantom zero-token row) — mirror of the real wire shape.
+		send("codex.sse_event/response.completed (tokenless poll, no-op)", record(t0.Add(2200*time.Millisecond), span,
+			str("event.name", "codex.sse_event"),
+			str("event.kind", "response.completed"),
+			str("conversation.id", conv),
+			str("model", *model),
+		))
+
+		// 5b) authoritative completion: input 1200 is INCLUSIVE of 800 cached
+		// + 100 written, so the unified row must store input = 300.
 		completion := record(t0.Add(2300*time.Millisecond), span,
 			str("event.name", "codex.sse_event"),
 			str("event.kind", "response.completed"),
@@ -175,6 +187,14 @@ func main() {
 
 		// 6) byte-identical replay of the completion — dedup proof.
 		send("codex.sse_event (replay, must dedup)", completion)
+		// 6b) token-less record AFTER the authoritative one (export reordering
+		// / see_event_completed_failed shape) — also a no-op.
+		send("codex.sse_event (tokenless after, no-op)", record(t0.Add(2400*time.Millisecond), span,
+			str("event.name", "codex.sse_event"),
+			str("event.kind", "response.completed"),
+			str("conversation.id", conv),
+			str("model", *model),
+		))
 	}
 
 	// Orphan completion without a preceding api_request: fallback INSERT.

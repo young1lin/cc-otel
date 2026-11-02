@@ -220,6 +220,85 @@ func TestCodexE2E_TokenlessCompletionIsNoOp(t *testing.T) {
 	}
 }
 
+// TestCodexE2E_TTFTOnlyCompletionFinalizes pins the ttft_ms escape: a
+// completion with genuinely zero usage everywhere but a measured TTFT is a
+// REAL authoritative completion (ttft_ms exists at exactly one emit site —
+// sse_event_completed), so it must pass the gate, finalize the pending row's
+// ttft/duration, and still not mint a second row.
+func TestCodexE2E_TTFTOnlyCompletionFinalizes(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+	broker := api.NewBroker()
+	rcv := New(repo, &fakeResolver{}, broker, nil)
+
+	srv := grpc.NewServer()
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	codexResource := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+		{Key: "service.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "codex-cli"}}},
+	}}
+	send := func(attrs []*commontpb.KeyValue) {
+		_, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{
+			ResourceLogs: []*logspb.ResourceLogs{{
+				Resource: codexResource,
+				ScopeLogs: []*logspb.ScopeLogs{{
+					LogRecords: []*logspb.LogRecord{{
+						TimeUnixNano: uint64(time.Now().UnixNano()),
+						Attributes:   attrs,
+					}},
+				}},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("export: %v", err)
+		}
+	}
+
+	send([]*commontpb.KeyValue{
+		{Key: "event.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "codex.api_request"}}},
+		{Key: "conversation.id", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "conv-ttft-only"}}},
+		{Key: "model", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "gpt-5.1"}}},
+	})
+	send([]*commontpb.KeyValue{
+		{Key: "event.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "codex.sse_event"}}},
+		{Key: "event.kind", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "response.completed"}}},
+		{Key: "conversation.id", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "conv-ttft-only"}}},
+		{Key: "model", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "gpt-5.1"}}},
+		{Key: "ttft_ms", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_IntValue{IntValue: 410}}},
+	})
+
+	var rows int
+	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE service_name = 'codex'`).Scan(&rows)
+	if rows != 1 {
+		t.Fatalf("expected exactly 1 codex row, got %d", rows)
+	}
+	var ttft int64
+	repo.DB().QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE service_name = 'codex'`).Scan(&ttft)
+	if ttft != 410 {
+		t.Fatalf("expected ttft 410 to be finalized on the pending row, got %d", ttft)
+	}
+}
+
 type fakeResolver struct{}
 
 func (fakeResolver) ResolveActualModel(s string) string { return s }
