@@ -251,7 +251,22 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 		// cannot be matched exactly because the finalized row keeps the
 		// API-REQUEST's timestamp (up to one tracker window earlier than the
 		// completion), while an orphan-path first insert keeps the completion's
-		// own. Match a window covering both shapes. The check AND the fallback
+		// own. Match a window covering both shapes.
+		//
+		// DOCUMENTED LIMITATIONS of token-vector identity (R4 integrity F2/F3,
+		// protocol F6 — accepted after review, fixing them needs wire-level
+		// identity Codex does not send):
+		//  (a) a DISTINCT second request in the same session whose six token
+		//      fields exactly equal an earlier one within the 31-minute window
+		//      is treated as a replay and dropped (silent undercount; realistic
+		//      only for deterministic scripted loops — conversation input grows
+		//      per turn, so vectors differ);
+		//  (b) two DIFFERENT authoritative completions for one span both land
+		//      (exact replays are no-ops, but a conflicting vector inserts);
+		//  (c) an archive copy of an orphan-fallback row never identity-matches
+		//      the live row (different ts/event_shape) — a cross-source double
+		//      count the sanity check cannot see.
+		// The check AND the fallback
 		// INSERT run inside the SAME tx: two concurrent orphan redeliveries
 		// both passing an autocommit check was a double-insert TOCTOU (R4
 		// concurrency F3); if the sibling commits first, this tx's COMMIT
