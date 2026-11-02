@@ -402,14 +402,23 @@ func MigrateCodexToAll(ctx context.Context, target *sql.DB, options Options) (Re
 	// applied cover this; the sanity check below is a cheap backstop. Both
 	// counts run in ONE statement: two separate autocommit reads race against
 	// the live receiver (a commit between them fails every migration by 1).
-	// Caveat: daily_model_agg is retention-pruned by Cleanup while
-	// api_requests is not; if retention pruning ever runs against codex rows
-	// this comparison must be scoped to the retention window.
+	// daily_model_agg is retention-pruned by Cleanup while api_requests is
+	// not, so with RetentionDays > 0 BOTH subselects are scoped to the
+	// retention window — the pruned tail is intentionally absent from agg
+	// and must not fail the comparison (R3 retention + error-recovery
+	// finding: the unscoped check bricked every re-run after the first
+	// post-migration restart pruned old agg rows).
+	query := `SELECT (SELECT COUNT(*) FROM api_requests WHERE service_name = ?),
+		        (SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ?)`
+	args := []any{db.CodexServiceName, db.CodexServiceName}
+	if options.RetentionDays > 0 {
+		cutoff := time.Now().In(options.Location).AddDate(0, 0, -options.RetentionDays)
+		query = `SELECT (SELECT COUNT(*) FROM api_requests WHERE service_name = ? AND timestamp >= ?),
+		        (SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ? AND date >= ?)`
+		args = []any{db.CodexServiceName, cutoff.Unix(), db.CodexServiceName, cutoff.Format("2006-01-02")}
+	}
 	var unifiedCount, aggCount int64
-	if err := target.QueryRowContext(ctx,
-		`SELECT (SELECT COUNT(*) FROM api_requests WHERE service_name = ?),
-		        (SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ?)`,
-		db.CodexServiceName, db.CodexServiceName).Scan(&unifiedCount, &aggCount); err != nil {
+	if err := target.QueryRowContext(ctx, query, args...).Scan(&unifiedCount, &aggCount); err != nil {
 		return result, err
 	}
 	if unifiedCount != aggCount {

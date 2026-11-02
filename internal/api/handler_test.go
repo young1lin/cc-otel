@@ -1023,3 +1023,33 @@ func TestHoursEndpoint(t *testing.T) {
 		}
 	}
 }
+func TestSameOriginGuard(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := sameOriginGuard(inner)
+
+	do := func(method, origin, host string) int {
+		req := httptest.NewRequest(method, "http://local/api/pricing", nil)
+		req.Host = host
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := do(http.MethodPost, "", "local:18899"); got != 200 {
+		t.Fatalf("no-Origin POST (curl/CLI) = %d, want 200", got)
+	}
+	if got := do(http.MethodPost, "http://local:18899", "local:18899"); got != 200 {
+		t.Fatalf("same-origin POST = %d, want 200", got)
+	}
+	if got := do(http.MethodPost, "http://evil.example", "local:18899"); got != 403 {
+		t.Fatalf("cross-origin POST = %d, want 403", got)
+	}
+	if got := do(http.MethodGet, "http://evil.example", "local:18899"); got != 200 {
+		t.Fatalf("GET with foreign Origin must pass (read-only, SOP hides the response) = %d, want 200", got)
+	}
+}

@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm plugin (recommended): `dsh plugin --profile web add @young1lin/dsh-cc-otel`; or `DSH_TELEMETRY_*` env vars / `cordis.patch.yml` | [below](#deepseek-harness-dsh) |
 
 - Every client shares the same cc-otel instance; the request log's **Source column** labels each row.
-- Codex reports a fundamentally different ledger, so it routes to its own `codex_*` tables and `?source=codex` tab; all other clients are normalized into the Claude Code event shape and share the **All Clients** main view.
+- Codex's legacy archive (`codex_*` tables) merges into the unified pool via the one-click migration; live reports are normalized into `api_requests` (`service_name='codex'`) at ingest, sharing the **unified client pool** ("All Clients" tab, Source column) with Claude Code, OpenCode, etc. The old `?source=codex` URL parameter was removed with the merge.
 - Debugging a new client: `go run ./tools/otlp_dump` (both transports, prints without storing; for AI SDK spans it also prints the `would_store_api_request` cc-otel would derive).
 
 ## Install
@@ -258,7 +258,7 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source=codex`) to view Codex usage data. The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into `codex_api_requests.cost_usd`, so the Cost KPI matches the Claude tab.
+Start Codex and use normally. Open the dashboard (`http://localhost:8899`) and check the "All Clients" tab for Codex usage (Source column shows `codex`). The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into the unified pool's `cost_usd`, so the Cost KPI matches the Claude rows.
 
 ### opencode
 

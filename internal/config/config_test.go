@@ -263,3 +263,26 @@ func TestMigrateLegacy_RewritesConfigPaths(t *testing.T) {
 		t.Errorf("config does not point at the new db: %q", cfg)
 	}
 }
+func TestLoadRejectsMemoryDB(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "mem.yaml")
+	if err := os.WriteFile(p, []byte("db_path: \":memory:\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal(":memory: db_path must be rejected at load time")
+	} else if !strings.Contains(err.Error(), ":memory:") {
+		t.Fatalf("error should name :memory:, got %v", err)
+	}
+}
+
+func TestLoadRejectsPortZero(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "ports.yaml")
+	if err := os.WriteFile(p, []byte("otel_port: 0\nweb_port: 18899\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("otel_port 0 must be rejected (listener silently disabled)")
+	}
+}

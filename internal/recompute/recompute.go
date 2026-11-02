@@ -94,16 +94,23 @@ func Run(ctx context.Context, db *sql.DB, reg pricing.Registry, opts Options, ap
 		}
 		out.Detected += len(summary.changes)
 
-		if !apply || len(summary.changes) == 0 {
+		if !apply {
 			continue
 		}
-		if err := applyChanges(ctx, db, t, summary.changes); err != nil {
-			return out, fmt.Errorf("%s apply: %w", t, err)
+		if len(summary.changes) > 0 {
+			if err := applyChanges(ctx, db, t, summary.changes); err != nil {
+				return out, fmt.Errorf("%s apply: %w", t, err)
+			}
+			out.Updated += len(summary.changes)
 		}
+		// Apply was requested: rebuild the calendar even when this table had
+		// zero pricing changes — the apply button is also the recovery path
+		// for agg drift (R3 error-recovery finding: a 0-change apply skipped
+		// the rebuild, leaving a stale daily_model_agg forever with no way to
+		// repair it from the UI). rebuildAgg is idempotent and cheap.
 		if err := rebuildAgg(ctx, db, t); err != nil {
 			return out, fmt.Errorf("%s rebuild agg: %w", t, err)
 		}
-		out.Updated += len(summary.changes)
 	}
 	return out, nil
 }

@@ -139,7 +139,8 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 					apiReq := apiRequestFromEvent(event)
 					apiReq.ActualModel = s.cfg.ResolveActualModel(apiReq.Model)
 					if inserted, err := s.repo.InsertRequest(ctx, apiReq); err != nil {
-						log.Printf("failed to insert api_request: %v", err)
+						log.Printf("failed to insert api_request (session=%s model=%s request_id=%s): %v",
+						event.SessionID, event.Model, event.RequestID, err)
 						stats.fail()
 					} else if inserted {
 						shouldNotify = true

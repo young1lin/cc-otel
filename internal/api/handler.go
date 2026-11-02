@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -136,6 +137,8 @@ type Handler struct {
 	codexMigrate  *codexMigrationJob // singleton AllClient migration job; never nil after NewHandler
 	migrateWG     sync.WaitGroup     // tracks the migration goroutine so Close can join it
 
+	version string // daemon build version, set via SetVersion at startup
+
 	// otlpHTTPBound reports whether THIS process owns the OTLP/HTTP listener.
 	// A TCP probe cannot tell that apart from some other program squatting on
 	// the port, which reads as healthy while our own bind silently failed.
@@ -168,6 +171,14 @@ func (h *Handler) SetPricer(p pricing.Registry) { h.pricer = p }
 // SetPricingWriter injects the pricing Writer used by /api/pricing CRUD.
 // nil (the default) makes the collection endpoint return 503.
 func (h *Handler) SetPricingWriter(w pricing.Writer) { h.pricingWriter = w }
+
+// SetVersion records the daemon build version (ldflags -X in cmd/cc-otel)
+// for /api/status. Defaults to "dev".
+func (h *Handler) SetVersion(v string) {
+	if v != "" {
+		h.version = v
+	}
+}
 
 // SetShutdownContext supplies the context used to cancel a background
 // recompute goroutine when the daemon shuts down. If unset, the recompute
@@ -213,13 +224,63 @@ func (h *Handler) Close() {
 	h.migrateWG.Wait()
 }
 
+// sameOriginGuard rejects cross-origin browser requests to MUTATING
+// endpoints (POST/PUT/DELETE/PATCH). The dashboard is often bound to
+// 0.0.0.0 for LAN access, which makes every mutating route reachable from
+// any web page the operator visits: a hostile page can POST a pricing
+// override or start a migration cross-origin without SOP stopping the
+// SEND (SOP only hides the response). A browser always sends Origin on
+// cross-origin writes; same-origin navigations/fetches either omit it or
+// echo the site's own host, so only requests whose Origin names a
+// DIFFERENT host are refused. Non-browser clients (curl, OTLP exporters,
+// the CLI tools) never send Origin and are unaffected (R3 security F1).
+func sameOriginGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+			origin := r.Header.Get("Origin")
+			if origin != "" {
+				if u, err := url.Parse(origin); err != nil || u.Host == "" || !sameHost(u.Host, r.Host) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					json.NewEncoder(w).Encode(map[string]string{"error": "cross-origin mutations are not allowed"})
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sameHost compares two Host:port forms, tolerating default-port omission
+// (http://host:80 vs host) — both are the same site to a browser.
+func sameHost(originHost, requestHost string) bool {
+	if originHost == requestHost {
+		return true
+	}
+	normalize := func(s string) string {
+		if host, _, err := net.SplitHostPort(s); err == nil {
+			return host
+		}
+		return s
+	}
+	oh := normalize(originHost)
+	rh := normalize(requestHost)
+	if oh == rh {
+		return true
+	}
+	// Origin carries an explicit port the request host may lack (or vice
+	// versa) only when one side used the default; compare bare hosts then.
+	return oh != "" && oh == strings.Trim(rh, "[]")
+}
+
 // Register wires all API and static-file routes onto the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/api/health", h.Health)
+	mux.Handle("/api/health", http.HandlerFunc(h.Health))
 	mux.HandleFunc("/api/status", h.Status)
 	mux.HandleFunc("/api/pricing/lookup", h.PricingLookup)
-	mux.HandleFunc("/api/pricing", h.PricingCollection)          // GET list / POST upsert / DELETE
-	mux.HandleFunc("/api/pricing/recompute", h.PricingRecompute) // GET status / POST start
+	mux.Handle("/api/pricing", sameOriginGuard(http.HandlerFunc(h.PricingCollection)))          // GET list / POST upsert / DELETE
+	mux.Handle("/api/pricing/recompute", sameOriginGuard(http.HandlerFunc(h.PricingRecompute))) // GET status / POST start
 	mux.HandleFunc("/api/pricing/suggest", h.PricingSuggest)     // GET on-demand OpenRouter lookup
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
 	mux.HandleFunc("/api/clients", h.Clients)
@@ -235,10 +296,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/sessions", h.Sessions)
 	mux.HandleFunc("/api/models", h.Models)
 	mux.HandleFunc("/api/events", h.Events)
-	mux.HandleFunc("/api/import/inspect", h.ImportInspect)
+	mux.Handle("/api/import/inspect", sameOriginGuard(http.HandlerFunc(h.ImportInspect)))
 	mux.HandleFunc("/api/import/status", h.ImportStatus)
-	mux.HandleFunc("/api/import/start", h.ImportStart)
-	mux.HandleFunc("/api/import", h.ImportDelete)
+	mux.Handle("/api/import/start", sameOriginGuard(http.HandlerFunc(h.ImportStart)))
+	mux.Handle("/api/import", sameOriginGuard(http.HandlerFunc(h.ImportDelete)))
 
 	// Codex telemetry mirror routes (Task 11). Paths follow /api/codex/<name>.
 	mux.HandleFunc("/api/codex/dashboard", h.CodexDashboard)
@@ -251,7 +312,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/codex/intraday", h.CodexIntraday)
 
 	// AllClient one-click Codex migration (GET status / POST start).
-	mux.HandleFunc("/api/codex/migrate", h.CodexMigrate)
+	mux.Handle("/api/codex/migrate", sameOriginGuard(http.HandlerFunc(h.CodexMigrate)))
 
 	// Embedded static files reflect the tree at compile time. For local UI edits without
 	// rebuilding, set CC_OTEL_STATIC_DIR to the static folder (e.g. internal/web/static).
@@ -290,6 +351,11 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 
 type StatusResponse struct {
 	ServerTimeUnix int64 `json:"server_time_unix"`
+
+	// Version is the daemon build version (ldflags -X), "dev" for local
+	// builds. Lets a dashboard confirm which build it is talking to before
+	// reporting merge-behavior bugs (R3 config review F5).
+	Version string `json:"version"`
 
 	DBOK bool `json:"db_ok"`
 
@@ -386,8 +452,14 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	version := h.version
+	if version == "" {
+		version = "dev"
+	}
+
 	json.NewEncoder(w).Encode(StatusResponse{
 		ServerTimeUnix:            time.Now().Unix(),
+		Version:                   version,
 		DBOK:                      dbOK,
 		SSEClients:                sseClients,
 		LastUpdate:                lastUpdate,
@@ -533,6 +605,11 @@ func (h *Handler) PricingCollection(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"entries": out, "total": lr.Total})
 
 	case http.MethodPost:
+		// Cap the body: this endpoint is reachable from any origin on a
+		// LAN-bound dashboard; an unbounded Decode lets one request buffer
+		// the whole upload in memory (R3 security F2 — the import handler
+		// already caps its uploads the same way).
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var body struct {
 			Model       string   `json:"model"`
 			Input       float64  `json:"input"`

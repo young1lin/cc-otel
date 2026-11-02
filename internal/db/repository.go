@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"strings"
 	"time"
@@ -248,11 +247,14 @@ func NewRepository(db *sql.DB) *Repository {
 	r := &Repository{db: db}
 
 	// A Prepare failure leaves a nil *sql.Stmt; every later Exec panics.
-	// schema drift must surface as a clear startup log, not a runtime 500.
+	// There is no per-call fallback anywhere: schema drift must surface as a
+	// loud startup error (NewRepository returns the error and the caller
+	// refuses to serve), not a first-request panic (R3 error-recovery F6 —
+	// the old log line claimed a fallback that never existed).
 	prepare := func(target **sql.Stmt, label, query string) {
 		stmt, err := db.Prepare(query)
 		if err != nil {
-			log.Printf("repository: prepare %s failed: %v — falling back to per-call prepare", label, err)
+			panic(fmt.Sprintf("repository: prepare %s failed: %v", label, err))
 		}
 		*target = stmt
 	}
@@ -267,7 +269,7 @@ func NewRepository(db *sql.DB) *Repository {
 			 reasoning_tokens, total_tokens, http_status, endpoint, conversation_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
-	r.stmtUpsAgg, _ = db.Prepare(`
+	prepare(&r.stmtUpsAgg, "upsert daily_model_agg", `
 		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens,
 			cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -558,7 +560,13 @@ func (r *Repository) applyPendingTTFTForRequestTx(ctx context.Context, tx *sql.T
 }
 
 // InsertRawEvent stores the complete original OTEL event as JSON for future re-processing.
+// A future-dated client clock would otherwise pin the row outside every TTL
+// sweep and poison MIN(timestamp) statistics forever, so timestamps are
+// clamped to now (R3 review: malformed clocks must not outlive retention).
 func (r *Repository) InsertRawEvent(ctx context.Context, eventType string, timestamp int64, rawJSON string) error {
+	if now := time.Now().Unix(); timestamp > now+60 {
+		timestamp = now
+	}
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO raw_otlp_events (timestamp, event_type, raw_json) VALUES (?, ?, ?)`,
 		timestamp, eventType, rawJSON)
@@ -1647,6 +1655,9 @@ func (r *Repository) Cleanup(ctx context.Context, beforeUnix int64) (int64, erro
 // CleanupRaw deletes records older than beforeUnix from raw event tables only.
 // These tables store the full OTLP JSON and grow quickly; they are safe to prune
 // aggressively since the structured tables already hold the parsed data.
+// pending_ttft_spans rides the same sweep: processed rows are dead weight, and
+// unprocessed rows older than the window can never match a future request
+// (R3 security/observability finding: nothing else ever deleted them).
 func (r *Repository) CleanupRaw(ctx context.Context, beforeUnix int64) (int64, error) {
 	var total int64
 
@@ -1658,6 +1669,13 @@ func (r *Repository) CleanupRaw(ctx context.Context, beforeUnix int64) (int64, e
 		n, _ := res.RowsAffected()
 		total += n
 	}
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM pending_ttft_spans WHERE processed = 1 OR created_unix < ?`, beforeUnix)
+	if err != nil {
+		return total, fmt.Errorf("cleanup pending_ttft_spans: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	total += n
 
 	r.db.ExecContext(ctx, "PRAGMA incremental_vacuum")
 	return total, nil

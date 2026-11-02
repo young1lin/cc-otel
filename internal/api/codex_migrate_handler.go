@@ -67,6 +67,15 @@ func (j *codexMigrationJob) snapshot() codexMigrationStatus {
 // CodexMigrate serves GET (status) and POST (start) for the AllClient
 // migration. The POST body is ignored; the migration always runs against the
 // live database and is idempotent (identity-based dedup via import_ledger).
+// retentionDays reports the configured retention window (0 = keep
+// everything, the all-time sanity check).
+func (h *Handler) retentionDays() int {
+	if h.cfg == nil {
+		return 0
+	}
+	return h.cfg.RetentionDays
+}
+
 func (h *Handler) CodexMigrate(w http.ResponseWriter, r *http.Request) {
 	job := h.codexMigrate
 	switch r.Method {
@@ -142,12 +151,15 @@ func (h *Handler) runCodexMigration() {
 		}
 		job.err = err.Error()
 		job.mu.Unlock()
+		log.Printf("codex migration: FAILED: %v (batches committed before the failure are durable)", err)
 		// Partial commits may have changed the pool: refresh dashboards.
 		h.broker.NotifySource("all")
 	}
 
+	log.Printf("codex migration: starting (archive inspection)")
 	preview, err := dbmerge.InspectCodexToAll(ctx, h.repo.DB())
 	if err != nil {
+		log.Printf("codex migration: inspection failed: %v", err)
 		fail(err, nil)
 		return
 	}
@@ -168,11 +180,14 @@ func (h *Handler) runCodexMigration() {
 		job.duplicates = p.DuplicateRows
 		job.mu.Unlock()
 	}
-	// TotalRows from the preview above: skips the expensive re-inspect
-	// (a NOT EXISTS anti-join over the whole archive) inside MigrateCodexToAll.
+	// TotalRows from the preview above: skips MigrateCodexToAll's internal
+	// full-archive inspection. RetentionDays scopes the post-migration agg
+	// sanity check to the retention window (Cleanup prunes daily_model_agg
+	// older than this while api_requests is never pruned).
 	result, err := dbmerge.MigrateCodexToAll(ctx, h.repo.DB(), dbmerge.Options{
-		Progress:  progress,
-		TotalRows: job.total,
+		Progress:      progress,
+		TotalRows:     job.total,
+		RetentionDays: h.retentionDays(),
 	})
 	if err != nil {
 		fail(err, &result)
@@ -201,6 +216,8 @@ func (h *Handler) runCodexMigration() {
 	job.phase = PhaseMigrateDone
 	job.lastResult = &result
 	job.mu.Unlock()
+	log.Printf("codex migration: done — scanned=%d inserted=%d duplicates=%d verified=%d",
+		result.ScannedRows, result.InsertedRows, result.DuplicateRows, result.VerifiedIdentities)
 
 	// The migration wrote a large burst through WAL. A passive checkpoint
 	// folds the frames back into the main DB when idle (readers never

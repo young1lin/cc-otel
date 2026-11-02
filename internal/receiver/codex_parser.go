@@ -220,10 +220,18 @@ func (t *codexSpanTracker) recordRequest(spanID string, info spanInfo) string {
 
 	cutoff := info.startNanos - int64(30*time.Minute)
 	if cutoff > 0 {
+		evicted := 0
 		for key, existing := range t.spans {
 			if existing.startNanos > 0 && existing.startNanos < cutoff {
 				delete(t.spans, key)
+				evicted++
 			}
+		}
+		// B4 observability: an evicted pending entry means its completion
+		// never arrived (dropped connection, CLI crash) OR arrives later via
+		// the orphan path; the count is the signal for either.
+		if evicted > 0 {
+			log.Printf("codex tracker: evicted %d pending span(s) older than 30min", evicted)
 		}
 	}
 	// Size cap: time-based eviction only fires inside this method, so a

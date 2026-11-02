@@ -373,11 +373,18 @@ func cmdServe() {
 	// (openrouter_base_url / CC_OTEL_OPENROUTER_BASE_URL). No-op on the default.
 	pricing.SetOpenRouterBaseURL(cfg.OpenRouterBaseURL)
 
-	// Set up rotating log (5 MB cap, keep one backup)
+	// Set up rotating log (5 MB cap, keep one backup). Eager open: a
+	// read-only data dir must not kill the daemon, but silently discarding
+	// every log line is worse — fall back to stderr so startup is diagnosable.
 	logPath := filepath.Join(filepath.Dir(*cfgPath), "cc-otel.log")
 	lw := logrotate.New(logPath)
 	defer lw.Close()
-	log.SetOutput(lw)
+	if err := lw.Open(); err != nil {
+		fmt.Fprintf(os.Stderr, "cc-otel: cannot open log file %s: %v — logging to stderr\n", logPath, err)
+		log.SetOutput(os.Stderr)
+	} else {
+		log.SetOutput(lw)
+	}
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("cc-otel serve starting, log: %s", logPath)
 
@@ -509,6 +516,7 @@ func cmdServe() {
 
 	absCfgPath, _ := filepath.Abs(*cfgPath)
 	handler := api.NewHandler(repo, broker, cfg, absCfgPath)
+	handler.SetVersion(version)
 	handler.SetPricer(priceReg)
 	handler.SetShutdownContext(ctx)
 	handler.SetOTLPHTTPBound(otlpHTTPBound.Load)

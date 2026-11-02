@@ -508,23 +508,29 @@ func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, 
 func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*Dashboard, error) {
 	d := &Dashboard{}
 	var costUnits int64
+	var cacheCreate int64
 	err := r.db.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(SUM(cost_usd), 0),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(request_count), 0)
+			COALESCE(SUM(request_count), 0),
+			COALESCE(SUM(cache_creation_tokens), 0)
 		FROM daily_model_agg
 		WHERE service_name = ? AND date >= ? AND date <= ?`,
 		CodexServiceName, from, to,
-	).Scan(&costUnits, &d.TotalInputTokens, &d.TotalCacheReadTokens, &d.TotalOutputTokens, &d.RequestCount)
+	).Scan(&costUnits, &d.TotalInputTokens, &d.TotalCacheReadTokens, &d.TotalOutputTokens, &d.RequestCount, &cacheCreate)
 	if err != nil {
 		return nil, err
 	}
 	d.TotalCostUSD = costToFloat64(costUnits)
-	if d.TotalInputTokens+d.TotalCacheReadTokens > 0 {
-		d.CacheHitRate = float64(d.TotalCacheReadTokens) / float64(d.TotalInputTokens+d.TotalCacheReadTokens)
+	// Same denominator as the Claude dashboard (GetDailyStats) and the
+	// frontend token-math: the full input side, cache_creation included.
+	// The old input+cache_read form diverged for Codex, which reports
+	// large cache_creation volumes (docs review A6).
+	if d.TotalInputTokens+d.TotalCacheReadTokens+cacheCreate > 0 {
+		d.CacheHitRate = float64(d.TotalCacheReadTokens) / float64(d.TotalInputTokens+d.TotalCacheReadTokens+cacheCreate)
 	}
 	return d, nil
 }

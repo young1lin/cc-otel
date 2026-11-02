@@ -1,3 +1,9 @@
+// DEPRECATED — prefer the built-in AllClient migration (Dashboard →
+// AllClient → 一键迁移, backed by dbmerge.MigrateCodexToAll): it is
+// occurrence-aware (re-runnable, idempotent), streams batches under memory
+// bounds, writes the import ledger, and keeps the codex aggregate calendar
+// consistent with the unified pool. This tool predates that pipeline and
+// performs a one-shot raw SQL copy; kept only for historical databases.
 package main
 
 import (

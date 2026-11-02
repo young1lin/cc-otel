@@ -23,6 +23,18 @@ func New(path string) *Writer {
 	return &Writer{Path: path, MaxBytes: defaultMaxBytes}
 }
 
+// Open eagerly opens the log file. Without it the first failure to open
+// (read-only data dir, bad path) surfaces as silently discarded log lines
+// — the standard log package ignores Writer errors (R3 config review F2).
+func (w *Writer) Open() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file != nil {
+		return nil
+	}
+	return w.open()
+}
+
 func (w *Writer) open() error {
 	f, err := os.OpenFile(w.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {

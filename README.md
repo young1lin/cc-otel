@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm 插件（推荐）：`dsh plugin --profile web add @young1lin/dsh-cc-otel`；或 `DSH_TELEMETRY_*` 环境变量 / `cordis.patch.yml` 手工接入 | [下文](#deepseek-harness-dsh-接入) |
 
 - 所有客户端共用同一个 cc-otel 实例，数据统一落到仪表盘；请求日志的 **Source 列**逐行标注来源。
-- Codex 因为上报格式完全不同（无结构化账本），路由到独立的 `codex_*` 表和 `?source=codex` 标签页；其余客户端都归一化成 Claude Code 事件形态，共享 **All Clients** 主视图。
+- Codex 的历史存档（`codex_*` 表）通过一键迁移并入统一池；新上报在接收侧直接归一化写入 `api_requests`（`service_name='codex'`），与 Claude Code、OpenCode 等共享 **统一客户端池**（“All Clients” 页，Source 列区分来源）。旧的 `?source=codex` URL 参数已随合并移除。
 - 新客户端接入调试：`go run ./tools/otlp_dump`（双传输、只打印不落库，AI SDK span 还会打印 cc-otel 将派生的 `would_store_api_request`）。
 
 ## 安装
@@ -257,7 +257,7 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。上面的 `environment = "dev"` 会作为 OTLP Resource 属性 `env` 上报，cc-otel 将其写入与 Claude Code `user.id` 相同的字段——Request Log 的 **User 列**由此区分 `dev` / `company` / `staging` / `prod` 环境。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入 `codex_api_requests.cost_usd`，Cost KPI 与 Claude 视图等同。
+启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899`)，在 “All Clients” 页查看 Codex 用量（Source 列标注 `codex`）。上面的 `environment = "dev"` 会作为 OTLP Resource 属性 `env` 上报，cc-otel 将其写入与 Claude Code `user.id` 相同的字段——Request Log 的 **User 列**由此区分 `dev` / `company` / `staging` / `prod` 环境。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入统一池的 `cost_usd`，Cost KPI 与 Claude 行等同。
 
 ### opencode 接入
 

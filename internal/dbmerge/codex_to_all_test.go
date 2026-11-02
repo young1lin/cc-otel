@@ -2,8 +2,12 @@ package dbmerge
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/young1lin/cc-otel/internal/config"
+	"github.com/young1lin/cc-otel/internal/db"
 )
 
 // TestMigrateCodexToAllNormalizesAndIsIdempotent seeds the legacy archive
@@ -11,6 +15,50 @@ import (
 // migration: rows land in the unified pool with service_name='codex', input
 // normalized to uncached, optionals carried, aggregates exactly once, and a
 // second run is a full no-op (identity dedup). The archive stays untouched.
+
+// TestMigrateCodexToAllSurvivesRetentionPruning pins the R3 retention
+// finding: Cleanup prunes daily_model_agg older than the retention window
+// while api_requests is never pruned, so the post-migration sanity check
+// MUST be scoped to the window — an all-time comparison failed every re-run
+// after the first post-migration restart (false "codex agg mismatch").
+func TestMigrateCodexToAllSurvivesRetentionPruning(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: filepath.Join(t.TempDir(), "ret.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+
+	// One archive row far older than the retention window.
+	old := time.Now().AddDate(0, 0, -200)
+	if _, err := repo.DB().Exec(`INSERT INTO codex_api_requests
+		(timestamp, session_id, model, input_tokens, output_tokens, total_tokens) VALUES (?, ?, ?, 10, 5, 15)`,
+		old.Unix(), "prune-conv", "gpt-5.1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// First migration (retention-aware) writes the agg row at the archive's
+	// ancient date.
+	if _, err := MigrateCodexToAll(context.Background(), repo.DB(), Options{RetentionDays: 90}); err != nil {
+		t.Fatalf("first migration: %v", err)
+	}
+
+	// Simulate the retention pruning Cleanup performs on every daemon start.
+	cutoff := time.Now().AddDate(0, 0, -90).Format("2006-01-02")
+	if _, err := repo.DB().Exec(`DELETE FROM daily_model_agg WHERE date < ?`, cutoff); err != nil {
+		t.Fatal(err)
+	}
+
+	// The re-run must succeed: the deficit is entirely outside the window.
+	res, err := MigrateCodexToAll(context.Background(), repo.DB(), Options{RetentionDays: 90})
+	if err != nil {
+		t.Fatalf("re-migration after retention pruning must not fail: %v", err)
+	}
+	if res.InsertedRows != 0 {
+		t.Fatalf("re-migration inserted %d rows, want 0 (no-op)", res.InsertedRows)
+	}
+}
+
 func TestMigrateCodexToAllNormalizesAndIsIdempotent(t *testing.T) {
 	target := importTarget(t)
 	ctx := context.Background()

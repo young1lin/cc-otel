@@ -6,6 +6,32 @@
 
 ---
 
+## [v0.1.5] - 2026-11-03
+
+### 修复
+
+- **OTLP 交付契约**：一批记录**全部**落库失败时 Export 现在返回 gRPC Internal / HTTP 500，导出端会重试而不是把批次当已送达丢弃；部分失败返回 PartialSuccess（可见、不重试，且部分落库的记录不会被重试复制）。
+- **Codex completion 重投双计**：重投守卫原按时间戳精确匹配，但 tracker 终结行保留的是 api_request 的更早时间戳——真实重投漏过守卫插入了重复行。身份判定改为（会话、模型、完整 token 向量）+ 时间窗匹配，e2e 钉住重投 no-op。
+- **迁移后 sanity 检查按保留窗口范围化**：`daily_model_agg` 会被保留清理而 `api_requests` 不会，全时段对比在首次重启清理后误报 `codex agg mismatch`，重跑迁移必挂。新增 `dbmerge.Options.RetentionDays`，handler 注入配置，配 prune→re-migrate 回归测试。
+- **DSN 池化 PRAGMA**：`busy_timeout`/`cache_size`/`mmap_size`/`temp_store`/`journal_size_limit` 经 DSN 下发到**每个**连接（原只设在首个连接，池内其余连接裸奔）。
+- **WAL 高水位回收**：迁移后 PASSIVE 检查点从不收缩 `-wal` 文件（生产实测冻结在 340MB）；追加 TRUNCATE 检查点 + `journal_size_limit(64MB)`。
+- **recompute apply 0 变更也重建聚合**：apply 按钮是聚合漂移的唯一修复入口，原实现 0 变更时跳过重建导致漂移永久无法修复。
+- **Repository.Prepare 硬失败**：原日志声称的 per-call 回退并不存在，schema 漂移会在首个请求 panic；现在启动即 panic 并指名语句。
+- **配置守卫**：`db_path: :memory:`、`otel_port/web_port <= 0` 在 Load 时拒绝（原静默禁用监听却报健康）。
+- **同源守卫**：变更类 `/api/*`（pricing、import、codex/migrate）拒绝跨源浏览器请求（Origin 校验；curl/CLI 不受影响）。
+- **pricing POST 请求体上限 1MB**（MaxBytesReader，与 import 一致）。
+- **`pending_ttft_spans` 清理**：processed/过期行随 raw TTL 清扫删除（原只增不删）；raw 归档未来时间戳钳制到当前时间，恶意/错钟不得逃逸 TTL。
+- **Codex cache-hit 分母对齐**：分母补上 `cache_creation`，与 Claude 视图和前端 token-math 一致（Codex 大量上报 cache_creation，旧公式显著高估）。
+
+### 变更
+
+- `/api/status` 新增 `version` 字段（ldflags 注入，本地构建为 `dev`）。
+- Codex 迁移作业记录开始/完成/失败日志（含 scanned/inserted/duplicates/verified 计数）；no-op 重跑跳过 staging 后检视（省 ~3s）。
+- 日志轮转在 serve 启动时急切打开：只读数据目录不再静默吞日志，回退 stderr。
+- `tools/migrate_codex_data` 标记废弃，指向内置 AllClient 迁移。
+
+---
+
 ## [v0.1.4] - 2026-11-02
 
 ### 修复

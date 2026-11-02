@@ -6,6 +6,32 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.5] - 2026-11-03
+
+### Fixed
+
+- **OTLP delivery contract**: a batch where EVERY record fails storage now answers gRPC Internal / HTTP 500 so exporters retry instead of pruning the batch as delivered; partial failures return PartialSuccess (visible, not retried; partially-landed records cannot be duplicated by a retry).
+- **Codex completion replay double-count**: the replay guard matched timestamps exactly, but tracker-finalized rows keep the api_request's earlier timestamp — genuine redelivery slipped past and inserted a duplicate. Identity is now (session, model, full token vector) with a window match; e2e pins replay as a no-op.
+- **Retention-scoped migration sanity check**: daily_model_agg is retention-pruned while api_requests is not; the all-time comparison false-failed every re-run after the first post-migration prune. New `dbmerge.Options.RetentionDays` (handler injects config) + prune→re-migrate regression test.
+- **DSN pool pragmas**: busy_timeout/cache_size/mmap_size/temp_store/journal_size_limit now reach EVERY pooled connection via the DSN (previously only the first).
+- **WAL high-water reclamation**: post-migration PASSIVE never shrinks the -wal file (measured frozen at 340MB in production); added a TRUNCATE checkpoint + journal_size_limit(64MB).
+- **recompute apply rebuilds agg on 0 changes**: the apply button is the only repair path for agg drift; skipping the rebuild left drift permanent.
+- **Repository.Prepare hard-fails**: the logged per-call fallback never existed; schema drift panicked on first request. Startup now panics naming the statement.
+- **Config guards**: db_path ':memory:' and otel_port/web_port <= 0 are rejected at Load (they silently disabled listeners while health said ok).
+- **Same-origin guard**: mutating /api/* routes (pricing, import, codex/migrate) reject cross-origin browser requests (Origin check; curl/CLI unaffected).
+- **pricing POST body capped at 1MB** (MaxBytesReader, matching import).
+- **pending_ttft_spans purge**: processed/stale rows ride the raw TTL sweep (previously grew forever); raw archive future timestamps clamp to now.
+- **Codex cache-hit denominator aligned**: includes cache_creation like the Claude view and frontend token-math (Codex reports large cache_creation; the old formula overestimated).
+
+### Changed
+
+- `/api/status` gains a `version` field (ldflags -X; "dev" for local builds).
+- Codex migration job logs start/done/fail with scanned/inserted/duplicates/verified counts; no-op re-runs skip the staging re-inspect (~3s saved).
+- Log rotation opens eagerly at serve startup: a read-only data dir no longer silently swallows logs and falls back to stderr.
+- `tools/migrate_codex_data` marked deprecated in favour of the built-in AllClient migration.
+
+---
+
 ## [v0.1.4] - 2026-11-02
 
 ### Fixed

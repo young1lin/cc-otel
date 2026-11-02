@@ -82,10 +82,17 @@ type Options struct {
 	TotalRows    int64
 	Progress     ProgressFunc
 	Window       *TimeWindow
-	retryDelays  []time.Duration
-	beforeCommit func(batch int) error
-	batchBytes   int64
-	metrics      func(batchMetrics)
+	// RetentionDays scopes the post-migration agg sanity check to the
+	// retention window when > 0: Cleanup prunes daily_model_agg older than
+	// this while api_requests is never pruned, so an all-time comparison
+	// would fail every re-run on installs with retention (default 90d) and
+	// codex history older than the window. 0 keeps the all-time check
+	// (tests, retention disabled).
+	RetentionDays int
+	retryDelays   []time.Duration
+	beforeCommit  func(batch int) error
+	batchBytes    int64
+	metrics       func(batchMetrics)
 }
 
 type batchMetrics struct {

@@ -258,6 +258,9 @@ func Load(path string) (*Config, error) {
 
 	if path == "" {
 		applyEnvOverrides(cfg)
+		if err := cfg.validate(); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 
@@ -265,6 +268,9 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			applyEnvOverrides(cfg)
+			if err := cfg.validate(); err != nil {
+				return nil, err
+			}
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read config: %w", err)
@@ -276,7 +282,31 @@ func Load(path string) (*Config, error) {
 
 	cfg.DBPath = expandTilde(cfg.DBPath)
 	applyEnvOverrides(cfg)
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// validate rejects configs that would misbehave silently at runtime:
+// a :memory: database vanishes with the process (and defeats every
+// persistence expectation, including the migration button), and port 0
+// silently disables a listener while the daemon reports healthy
+// (R3 config review F1/F3).
+func (c *Config) validate() error {
+	if strings.TrimSpace(c.DBPath) == ":memory:" {
+		return fmt.Errorf("config: db_path ':memory:' is not supported — point db_path at a real file")
+	}
+	if c.OTELPort <= 0 || c.OTELPort > 65535 {
+		return fmt.Errorf("config: otel_port %d out of range (1-65535)", c.OTELPort)
+	}
+	if c.WebPort <= 0 || c.WebPort > 65535 {
+		return fmt.Errorf("config: web_port %d out of range (1-65535)", c.WebPort)
+	}
+	if c.OTLPHTTPPort < 0 || c.OTLPHTTPPort > 65535 {
+		return fmt.Errorf("config: otlp_http_port %d out of range (0 disables, 1-65535 binds)", c.OTLPHTTPPort)
+	}
+	return nil
 }
 
 func applyEnvOverrides(cfg *Config) {
