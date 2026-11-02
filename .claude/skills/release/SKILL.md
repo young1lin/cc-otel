@@ -57,6 +57,16 @@
 - 确认 `.gitignore` 覆盖 `bin/`、`*.db`、`*.exe`、`*.bak`、`cc-otel.yaml`、`.env`;`git ls-files bin/` 必须为空。
 - 提交信息里不得包含上述内容。
 
+## 1.7 npm Trusted Publishing(易踩坑,v0.1.4 三次失败换来的)
+
+发布链路:goreleaser(资产)→ npm job(`scripts/build-npm.mjs` 组 7 个包 → `npm publish`)。认证是 OIDC 信任发布,没有 NPM_TOKEN。三个必要条件缺一不可:
+
+1. **npmjs 侧每包注册 Trusted Publisher**(一次性,只能账号本人在 npmjs.com 操作):包 Settings → Trusted publishing → GitHub Actions → 填 `young1lin` / `cc-otel` / `release.yml`,不勾 environment。**未注册时的报错是误导性的**:npm 拿 OIDC token 去 `/-/npm/v1/oidc/token/exchange/package/<name>` 换 token,失败会静默放弃,最终报 `ENEEDAUTH`(像没登录)或 `404 PUT`(像包不存在)——看到这两个错先查这里,不要去改 CI。
+2. **CI 侧剥掉 setup-node 注入的 token**:setup-node 会往 runner `.npmrc` 写 `_authToken=${NODE_AUTH_TOKEN}`,有 token 在 npm 就不做 OIDC 交换 → 404。发布步骤里已内置 `unset NODE_AUTH_TOKEN` + `sed -i '/_authToken/d'`,别删。
+3. **`npm publish --provenance`**:provenance 生成会取 OIDC token(信任发布搭同一趟车)。工作流已带,别删。
+
+诊断顺序:Actions 里 npm job 挂 → 看错误码:404 PUT = 条件2被破坏;ENEEDAUTH = 交换失败(多半条件1);goreleaser 挂 asset 已存在 = 旧 release 未删,先 DELETE release 再重跑。重跑注意 rerun 用 tag 所指 commit 的工作流,改完 workflow 要 `git tag -f` + 删 release 重触发。
+
 ## 2. 发布步骤
 
 ```powershell
