@@ -257,7 +257,7 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入 `codex_api_requests.cost_usd`，Cost KPI 与 Claude 视图等同。
+启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899/?source=codex`) 查看 Codex 用量数据。上面的 `environment = "dev"` 会作为 OTLP Resource 属性 `env` 上报，cc-otel 将其写入与 Claude Code `user.id` 相同的字段——Request Log 的 **User 列**由此区分 `dev` / `company` / `staging` / `prod` 环境。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入 `codex_api_requests.cost_usd`，Cost KPI 与 Claude 视图等同。
 
 ### opencode 接入
 

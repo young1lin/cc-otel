@@ -284,9 +284,22 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		if pendingStream {
 			storedDurationMs = 0
 		}
+		// Codex never sends user.id. Its [otel] environment config
+		// (dev / company / staging / prod; default "dev" — codex-rs
+		// config/src/types.rs OtelConfigToml) rides on every OTLP signal as the
+		// Resource attribute "env" (otel/src/provider.rs ENV_ATTRIBUTE). Map it
+		// onto the same user_id column Claude Code's user.id uses, so the
+		// Request Log User column answers "which environment drove this
+		// request" instead of a permanent em-dash. An explicit user.id attr, if
+		// a future Codex build starts sending one, wins over the environment.
+		userID := attrs["user.id"]
+		if userID == "" {
+			userID = attrs["env"]
+		}
 		req := &db.CodexAPIRequest{
 			Timestamp:      ts,
 			SessionID:      attrs["conversation.id"],
+			UserID:         userID,
 			ConversationID: attrs["conversation.id"],
 			Model:          attrs["model"],
 			DurationMs:     storedDurationMs,

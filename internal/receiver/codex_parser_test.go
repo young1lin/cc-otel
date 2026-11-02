@@ -190,6 +190,59 @@ func TestDispatchCodexLog_APIRequestAnchorsSuccessfulStream(t *testing.T) {
 	}
 }
 
+// Codex reports its [otel] environment as the OTLP Resource attribute
+// "env"; it must land on user_id (same column as Claude Code's user.id)
+// so the Request Log User column shows dev/company instead of an em-dash.
+func TestDispatchCodexLog_EnvironmentMapsToUserID(t *testing.T) {
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+		attr("service.name", "codex-cli"),
+		attr("env", "company"),
+	}}
+
+	ok := dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", "env-session"),
+			attr("model", "gpt-5.1"),
+		},
+	}, res, nil, nil, nil)
+	if !ok {
+		t.Fatal("request was not inserted")
+	}
+	var userID string
+	if err := repo.DB().QueryRowContext(ctx,
+		`SELECT user_id FROM codex_api_requests WHERE session_id = 'env-session'`,
+	).Scan(&userID); err != nil {
+		t.Fatalf("read user_id: %v", err)
+	}
+	if userID != "company" {
+		t.Fatalf("user_id = %q, want the resource env attribute %q", userID, "company")
+	}
+
+	// An explicit user.id record attribute must win over the environment.
+	ok = dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", "uid-session"),
+			attr("model", "gpt-5.1"),
+			attr("user.id", "explicit-user"),
+		},
+	}, res, nil, nil, nil)
+	if !ok {
+		t.Fatal("second request was not inserted")
+	}
+	if err := repo.DB().QueryRowContext(ctx,
+		`SELECT user_id FROM codex_api_requests WHERE session_id = 'uid-session'`,
+	).Scan(&userID); err != nil {
+		t.Fatalf("read user_id: %v", err)
+	}
+	if userID != "explicit-user" {
+		t.Fatalf("user_id = %q, want explicit user.id to beat env", userID)
+	}
+}
+
 func TestDispatchCodexLog_APIRequestFailureKeepsReportedDuration(t *testing.T) {
 	repo := newCodexReceiverRepo(t)
 	ctx := context.Background()
