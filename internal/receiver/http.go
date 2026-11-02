@@ -102,8 +102,15 @@ func otlpEndpoint(newReq func() proto.Message, export func(context.Context, prot
 		}
 		body, err := ReadOTLPBody(w, r)
 		if err != nil {
+			// 413 for size violations (retrying the same body cannot succeed;
+			// OTLP collectors conventionally answer 413/400 here), 400 for
+			// transport-level read failures.
+			status := http.StatusBadRequest
+			if errors.Is(err, errOTLPBodyTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
 			log.Printf("OTLP/HTTP %s: read body: %v", r.URL.Path, err)
-			http.Error(w, "cannot read body", http.StatusBadRequest)
+			http.Error(w, "cannot read body", status)
 			return
 		}
 

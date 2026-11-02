@@ -3,6 +3,10 @@ package receiver
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"log"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,8 +40,9 @@ func eventNameFromCodexLog(lr *logspb.LogRecord, attrs map[string]string) string
 	return ""
 }
 
-// eventKindFromLog extracts event.kind from attributes first, then falls back
-// to the LogRecord body (Codex CLI puts event.kind in the body for websocket events).
+// eventKindFromLog extracts event.kind from the record attributes. The body
+// fallback below only matches websocket-era shapes from old builds; every
+// inspected codex build emits event.kind as an attribute.
 func eventKindFromLog(lr *logspb.LogRecord, attrs map[string]string) string {
 	if v := attrs["event.kind"]; v != "" {
 		return v
@@ -89,6 +94,22 @@ func attrIntOrLen(attrs map[string]string, intKey, stringKey string) int64 {
 	return int64(len(attrs[stringKey]))
 }
 
+// toolResultError surfaces why a tool call failed. Current codex builds
+// never send error.message on codex.tool_result (tool_result.rs: failure is
+// success="false" with the error text in the output preview), so fall back
+// to a trimmed output for failed calls.
+func toolResultError(attrs map[string]string, success int) string {
+	if msg := attrs["error.message"]; msg != "" || success == 1 {
+		return msg
+	}
+	out := attrs["output"]
+	const maxLen = 200
+	if len(out) > maxLen {
+		out = out[:maxLen]
+	}
+	return out
+}
+
 // toolOriginOrDerive reads tool_origin, deriving it from mcp_server presence
 // when absent: Codex computes tool_origin the same way (tool_result.rs trace:
 // block — "builtin" when mcp_server is empty, "mcp" otherwise).
@@ -100,6 +121,33 @@ func toolOriginOrDerive(attrs map[string]string) string {
 		return "mcp"
 	}
 	return "builtin"
+}
+
+// satAdd/satSub/satClampLow are saturating int64 helpers for client-reported
+// token counters: a hostile or buggy exporter must not wrap the arithmetic
+// (wrap-positive would defeat the <0 clamp and store garbage).
+func satAdd(a, b int64) int64 {
+	if a > 0 && b > math.MaxInt64-a {
+		return math.MaxInt64
+	}
+	if a < 0 && b < math.MinInt64-a {
+		return math.MinInt64
+	}
+	return a + b
+}
+
+func satSub(a, b int64) int64 {
+	if b == math.MinInt64 {
+		return math.MaxInt64
+	}
+	return satAdd(a, -b)
+}
+
+func satClampLow(v, floor int64) int64 {
+	if v < floor {
+		return floor
+	}
+	return v
 }
 
 func codexLogObservedUnixNanos(lr *logspb.LogRecord) int64 {
@@ -139,6 +187,11 @@ func codexRequestStartNanos(observedNanos, reportedDurationMs int64) int64 {
 // span_id are kept under an internal fallback:<n> key so session/model fallback
 // still works. Lookup is non-destructive: state is removed only by an explicit
 // removeRequest after the structured DB write commits.
+// codexSpanTrackerMaxEntries bounds the tracker map: time-based eviction
+// only runs inside recordRequest, so a chatty or clock-skewed client needs
+// a hard cap too. 10k entries is ~hours of normal single-daemon traffic.
+const codexSpanTrackerMaxEntries = 10000
+
 type codexSpanTracker struct {
 	mu           sync.Mutex
 	spans        map[string]spanInfo
@@ -171,6 +224,25 @@ func (t *codexSpanTracker) recordRequest(spanID string, info spanInfo) string {
 			if existing.startNanos > 0 && existing.startNanos < cutoff {
 				delete(t.spans, key)
 			}
+		}
+	}
+	// Size cap: time-based eviction only fires inside this method, so a
+	// chatty or clock-skewed client could otherwise grow the map unbounded.
+	// Evict oldest-start entries beyond the cap.
+	if len(t.spans) > codexSpanTrackerMaxEntries {
+		entries := make([]struct {
+			key        string
+			startNanos int64
+		}, 0, len(t.spans))
+		for k, v := range t.spans {
+			entries = append(entries, struct {
+				key        string
+				startNanos int64
+			}{k, v.startNanos})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].startNanos < entries[j].startNanos })
+		for _, e := range entries[:len(entries)-codexSpanTrackerMaxEntries] {
+			delete(t.spans, e.key)
 		}
 	}
 
@@ -276,7 +348,11 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 	// Claude path uses.
 	notify := func() {
 		if notifier != nil {
+			// Codex rows live in the shared pool since AllClient: refresh the
+			// "claude"-tagged All Clients page AND any legacy "codex"-tagged
+			// EventSource consumer (broker.go documents both tags).
 			notifier.NotifySource("claude")
+			notifier.NotifySource("codex")
 		}
 	}
 
@@ -338,13 +414,14 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			TerminalType:   attrs["terminal.type"],
 			ServiceName:    attrs["service.name"],
 			ServiceVersion: attrs["service.version"],
-			HostArch:       attrs["host.arch"],
-			OSType:         attrs["os.type"],
-			OSVersion:      attrs["os.version"],
-			ErrorMessage:   attrs["error.message"],
+			// Codex's OTLP resource carries only service.*, env and host.name
+			// (provider.rs) — host.arch/os.type/os.version never arrive, so those
+			// columns stay empty for codex rows (they remain claude-path data).
+			ErrorMessage: attrs["error.message"],
 		}
 		rowID, err := repo.InsertCodexAPIRequest(ctx, req)
 		if err != nil {
+			log.Printf("failed to insert codex api_request: %v", err)
 			return false
 		}
 		if pendingStream && tracker != nil {
@@ -376,6 +453,20 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				TotalTokens:         parseAttrInt(attrs, "tool_token_count"),
 				TTFTMs:              parseAttrInt(attrs, "ttft_ms"),
 			}
+			// Codex emits TWO response.completed records per successful
+			// HTTP-SSE request: a token-less per-poll record (session_telemetry.rs
+			// sse_event fires for every SSE event, deltas aside) and the
+			// authoritative sse_event_completed carrying usage. Only the latter
+			// may consume the tracker entry or trigger the fallback INSERT —
+			// a token-less record that lands after it would otherwise insert a
+			// phantom zero-token row (request_count +1), and landing first it
+			// would steal exact-row correlation from the real one.
+			if upd.InputTokens == 0 && upd.OutputTokens == 0 &&
+				upd.CacheReadTokens == 0 && upd.CacheCreationTokens == 0 &&
+				upd.ReasoningTokens == 0 && upd.TotalTokens == 0 &&
+				upd.TTFTMs == 0 {
+				return false
+			}
 			// total_tokens keeps the CLIENT-REPORTED raw total. Codex sends it
 			// as tool_token_count (otel/src/events/session_telemetry.rs
 			// sse_event_completed: tool_token_count = %usage.total_tokens — the
@@ -384,7 +475,7 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			// migrated archive, where total_tokens = input_tokens + output_tokens
 			// holds on every row.
 			if upd.TotalTokens == 0 {
-				upd.TotalTokens = parseAttrInt(attrs, "input_token_count") + upd.OutputTokens
+				upd.TotalTokens = satAdd(parseAttrInt(attrs, "input_token_count"), upd.OutputTokens)
 			}
 			// Normalize to Claude semantics BEFORE storing: OpenAI's Responses API
 			// reports input_token_count as the TOTAL input side, which already
@@ -396,11 +487,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			// clients. The raw reported value stays recoverable as
 			// input + cache_read + cache_creation.
 			if upd.InputTokens > 0 {
-				uncachedInput := upd.InputTokens - upd.CacheReadTokens - upd.CacheCreationTokens
-				if uncachedInput < 0 {
-					uncachedInput = 0
-				}
-				upd.InputTokens = uncachedInput
+				// Saturating subtraction: hostile values (input=1, caches=MaxInt64)
+				// must not wrap positive and defeat the clamp.
+				upd.InputTokens = satClampLow(satSub(satSub(upd.InputTokens, upd.CacheReadTokens), upd.CacheCreationTokens), 0)
 			}
 			// Compute cost from the local pricing table — Codex never reports
 			// cost_usd, and this path is never the authoritative Claude Code +
@@ -434,6 +523,7 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			}
 
 			if _, err := repo.UpdateCodexAPIRequestTokens(ctx, upd); err != nil {
+				log.Printf("failed to update codex request tokens (session=%s model=%s): %v", upd.SessionID, upd.Model, err)
 				return false
 			}
 			if tracker != nil {
@@ -454,13 +544,14 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			PromptLength:   parseAttrInt(attrs, "prompt_length"),
 			TerminalType:   attrs["terminal.type"],
 			ServiceName:    attrs["service.name"],
-			ServiceVersion: attrs["service_version"],
+			ServiceVersion: attrs["service.version"],
 		}
-		if err := repo.InsertCodexUserPrompt(ctx, ev); err == nil {
-			notify()
-			return true
+		if err := repo.InsertCodexUserPrompt(ctx, ev); err != nil {
+			log.Printf("failed to insert codex user_prompt: %v", err)
+			return false
 		}
-		return false
+		notify()
+		return true
 
 	case "codex.tool_decision":
 		ev := &db.CodexEvent{
@@ -473,11 +564,12 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			Source:         attrs["source"],
 			TerminalType:   attrs["terminal.type"],
 		}
-		if err := repo.InsertCodexToolDecision(ctx, ev); err == nil {
-			notify()
-			return true
+		if err := repo.InsertCodexToolDecision(ctx, ev); err != nil {
+			log.Printf("failed to insert codex tool_decision: %v", err)
+			return false
 		}
-		return false
+		notify()
+		return true
 
 	case "codex.tool_result":
 		success := 0
@@ -496,14 +588,15 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			OutputLength:    attrIntOrLen(attrs, "output_length", "output"),
 			ToolOrigin:      toolOriginOrDerive(attrs),
 			MCPServer:       attrs["mcp_server"],
-			ErrorMessage:    attrs["error.message"],
+			ErrorMessage:    toolResultError(attrs, success),
 			TerminalType:    attrs["terminal.type"],
 		}
-		if err := repo.InsertCodexToolResult(ctx, ev); err == nil {
-			notify()
-			return true
+		if err := repo.InsertCodexToolResult(ctx, ev); err != nil {
+			log.Printf("failed to insert codex tool_result: %v", err)
+			return false
 		}
-		return false
+		notify()
+		return true
 
 	case "codex.websocket_request":
 		if tracker != nil {
@@ -536,9 +629,11 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			if found && eventKind == "response.created" {
 				ttftMs := (observedNanos - info.startNanos) / int64(time.Millisecond)
 				if ttftMs > 0 {
-					_ = repo.UpdateCodexRequestTTFT(
+					if err := repo.UpdateCodexRequestTTFT(
 						ctx, info.rowID, info.sessionID, info.model, ts, ttftMs,
-					)
+					); err != nil {
+						log.Printf("failed to update codex ttft (session=%s): %v", info.sessionID, err)
+					}
 				}
 			}
 			if found && eventKind == "response.completed" {
@@ -549,6 +644,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				updated, err := repo.UpdateCodexRequestDuration(
 					ctx, info.rowID, info.sessionID, info.model, ts, durationMs,
 				)
+				if err != nil {
+					log.Printf("failed to update codex duration (session=%s): %v", info.sessionID, err)
+				}
 				if err == nil {
 					if updated {
 						notify()
@@ -563,7 +661,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 							DurationMs:     durationMs,
 							EventName:      "codex.websocket_event:response.completed",
 						})
-						if insertErr == nil {
+						if insertErr != nil {
+							log.Printf("failed to insert codex duration-only row (session=%s): %v", info.sessionID, insertErr)
+						} else {
 							notify()
 							return true
 						}
@@ -574,6 +674,20 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		return false
 
 	default:
+		// Accounting safety net: codex emits many events cc-otel does not
+		// model (turn_ttft, auth_recovery, sandbox_outcome, guardian_review,
+		// skill_invocation, ...). Archive them raw so a future widening of the
+		// model can backfill without losing data. sse_event kinds other than
+		// response.completed stay excluded: they are per-poll noise by design.
+		if eventName != "codex.sse_event" && strings.HasPrefix(eventName, "codex.") {
+			if raw, mErr := json.Marshal(attrs); mErr == nil {
+				if err := repo.InsertCodexRawEvent(ctx, eventName, ts.Unix(), string(raw)); err != nil {
+					log.Printf("failed to archive codex raw event %s: %v", eventName, err)
+					return false
+				}
+				return true
+			}
+		}
 		return false
 	}
 }
