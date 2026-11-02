@@ -50,6 +50,9 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 - **日期范围** -- Today、7 Days、30 Days、All Time，或自定义日期
 - **图表切换** -- Tokens、Cost、Requests 视图
 - **会话追踪** -- 按会话聚合费用和 Token
+- **客户端汇总（Clients）** -- 按 OTLP `service.name` 统计各客户端的 Token / 成本 / 请求数 / 命中率（直读永不清理的 `api_requests` 台账，历史全量）
+- **Hour of Day 时间段透视** -- 整个区间折叠成 24 个「几点钟」桶，客户端 × 模型双维度下钻：锁模型看「谁在烧」、锁客户端看「在烧什么」、都锁看单序列明细
+- **分页跳页** -- 长表格（Request Log 等）输入页码直达任意页
 - **Token 速率图（Rate）** -- 按模型查看 Out/Total tok/s 随时间变化（加权 / 平均、5–60 min 桶；最长 7 天）
 - **在线数据库导入** -- 上传 `.db` 合并进运行中的主库，不停进程、只增不改
 - **预聚合表** -- 查询延迟 < 3ms，百万行无压力
@@ -426,6 +429,7 @@ CC-OTEL 的数据目录按以下顺序解析（详见 `internal/config/config.go
 | `CC_OTEL_OTLP_HTTP_PORT` | OTLP/HTTP 接收端口（`0` = 禁用） | `4318` |
 | `CC_OTEL_WEB_PORT` | Web UI 端口 | `8899` |
 | `CC_OTEL_DB_PATH` | SQLite 数据库路径 | `~/.cc-otel/cc-otel.db` |
+| `CC_OTEL_OPENROUTER_BASE_URL` | 价格建议 OpenRouter API 基地址（镜像 / 自建网关；留空用官方） | `https://openrouter.ai/api/v1` |
 
 ### 数据保留
 
@@ -455,9 +459,10 @@ raw_ttl_days: 5       # raw_otlp_events / codex_raw_otlp_events 的留存上限�
 
 | 面板 | 说明 |
 |------|------|
-| **Daily Detail** | 按日 / 按小时明细；单日范围内有 Intraday 按桶柱状图（5 / 10 / 15 / 30 / 60 分钟，最长 7 天） |
+| **Daily Detail** | 按日 / 按小时明细；Intraday 按桶柱状图（5 / 10 / 15 / 30 / 60 分钟，最长 7 天）；**Hour of Day** 子视图把整段区间折叠成 24 个小时桶，客户端 / 模型下拉切换透视（任意跨度可用） |
 | **Sessions** | 按会话聚合 Cost / Token |
-| **Request Log** | 按模型耗时与 **Out tok/s（平均 / 加权）** 汇总；单条请求列表含 TTFT |
+| **Clients** | 按 `service.name` 的客户端汇总表：Token 构成、请求数、成本、命中率、活跃区间、占比条（Codex 源下隐藏） |
+| **Request Log** | 按模型耗时与 **Out tok/s（平均 / 加权）** 汇总；单条请求列表含 TTFT；分页条支持页码直达 |
 | **Rate** | 各模型 **Token Rate over Time** 折线图；Weighted / Avg、Output / Total tok/s、5 / 15 / 30 / 60 min 桶；点击图例可 solo 单模型（**All models** 恢复） |
 
 `duration_ms` 为 API 请求耗时（不含本地工具执行），故 tok/s 反映模型输出吞吐而非含 tool 的端到端时间。多天视图按自然日断开折线，避免跨夜斜线；切换日期范围时默认 **Today → 5 min**、**多天 → 30 min**（可手动改）。

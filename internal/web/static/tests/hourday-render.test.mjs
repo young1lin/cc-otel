@@ -66,6 +66,12 @@ test('render mounts the chart WITHOUT wiping echarts DOM after init', async () =
         assert.ok(dom.chartEl._children.includes('_echarts_root_'),
             'echarts DOM must survive rendering — innerHTML was wiped after init');
         assert.equal(dom.calls.lastOption.series.length, 2);
+        // Pinned chart rules from .claude/CLAUDE.md: never stacked bars,
+        // never trigger:'axis'. This chart must keep both prohibitions.
+        for (const s of dom.calls.lastOption.series) {
+            assert.equal(s.stack, undefined, 'stacked bars are forbidden');
+        }
+        assert.equal(dom.calls.lastOption.tooltip.trigger, 'item', 'axis tooltips are forbidden');
         assert.equal(dom.calls.lastOption.series[0].data[13].value, 100);
         // Dropdowns populated.
         assert.ok(dom.selects['hourday-client'].options.length >= 2);
