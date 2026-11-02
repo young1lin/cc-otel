@@ -208,3 +208,77 @@ func TestSuggestOpenRouter_EndpointsFailureFallsBackToBlended(t *testing.T) {
 		t.Fatalf("providers should be empty on endpoints failure, got %d", len(got.Providers))
 	}
 }
+
+// TestSuggestOpenRouter_HTTPErrorSurfacesBodyDetail pins the fix for the
+// "OpenRouter unreachable: HTTP 404" mystery: a non-200 response must surface
+// the upstream reason ({"error":{"message":"Not Found","code":404}}) so the
+// pricing toast tells the user WHY, not just that it failed.
+func TestSuggestOpenRouter_HTTPErrorSurfacesBodyDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":{"message":"Not Found","code":404}}`)
+	}))
+	defer srv.Close()
+	redirectBoth(t, srv.URL)
+
+	_, err := SuggestOpenRouter(context.Background(), "glm-4.6")
+	if err == nil {
+		t.Fatal("expected an error on HTTP 404")
+	}
+	if !strings.Contains(err.Error(), "HTTP 404") || !strings.Contains(err.Error(), "Not Found") {
+		t.Fatalf("error should carry status + upstream message, got: %v", err)
+	}
+}
+
+// TestSuggestOpenRouter_SendsProductUserAgent: the fetch must identify itself
+// with a product UA — the net/http default (Go-http-client/1.1) is filtered or
+// misrouted by some bot-protection layers on CDN edges.
+func TestSuggestOpenRouter_SendsProductUserAgent(t *testing.T) {
+	var gotUA string
+	var gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"z-ai/glm-4.6","pricing":{"prompt":"0.0000006","completion":"0.0000022"}}]}`)
+	}))
+	defer srv.Close()
+	redirectBoth(t, srv.URL)
+
+	if _, err := SuggestOpenRouter(context.Background(), "z-ai/glm-4.6"); err != nil {
+		t.Fatalf("suggest: %v", err)
+	}
+	if gotUA == "" || strings.Contains(gotUA, "Go-http-client") {
+		t.Fatalf("User-Agent should be a product UA, got %q", gotUA)
+	}
+	if gotAccept != "application/json" {
+		t.Fatalf("Accept header = %q, want application/json", gotAccept)
+	}
+}
+
+// TestSetOpenRouterBaseURL verifies the custom-root derivation (mirror /
+// gateway support) and the guards: trailing slash trimmed, empty ignored.
+func TestSetOpenRouterBaseURL(t *testing.T) {
+	t.Cleanup(func() { SetOpenRouterBaseURL(DefaultOpenRouterBaseURL) })
+
+	SetOpenRouterBaseURL("https://or-mirror.example.com/api/v1/")
+	if got := modelsURL(); got != "https://or-mirror.example.com/api/v1/models" {
+		t.Fatalf("modelsURL = %q", got)
+	}
+	if got := fmt.Sprintf(endpointsURLFmt(), "x/y"); got != "https://or-mirror.example.com/api/v1/models/x/y/endpoints" {
+		t.Fatalf("endpoints fmt produced %q", got)
+	}
+
+	// Empty (or the documented default) RESETS to the production URLs — that
+	// is also what makes the t.Cleanup restore below work.
+	SetOpenRouterBaseURL("")
+	if got := modelsURL(); got != DefaultOpenRouterBaseURL+"/models" {
+		t.Fatalf("empty base must reset to the default, modelsURL = %q", got)
+	}
+
+	SetOpenRouterBaseURL(DefaultOpenRouterBaseURL)
+	if got := modelsURL(); got != DefaultOpenRouterBaseURL+"/models" {
+		t.Fatalf("default base must be a no-op, modelsURL = %q", got)
+	}
+}
