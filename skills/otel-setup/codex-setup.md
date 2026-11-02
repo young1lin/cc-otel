@@ -33,7 +33,7 @@ Location varies by OS:
 
 - **No cost data**: Codex does not report `cost_usd`. cc-otel recomputes cost using the local pricing table.
 - **Token data via SSE events**: Codex sends token counts in `codex.sse_event(kind=response.completed)`, not in a single `api_request` event.
-- **Separate tables**: All Codex data is stored in `codex_*` tables, completely isolated from Claude Code data.
+- **Unified pool**: live Codex reports are normalized into `api_requests` (`service_name='codex'`) at ingest; legacy `codex_*` archive history merges via the one-click migration on the AllClient page.
 
 ## How cc-otel Identifies Codex Data
 

@@ -313,9 +313,9 @@ When changes touch any of the above rules, in addition to the standard "build ->
 
 ### Source routing (Claude Code vs Codex)
 
-cc-otel reads OTLP Resource attribute `service.name` to decide which storage path applies. Names containing `codex` (case-insensitive) go to `codex_*` tables and `/api/codex/*` routes; everything else goes to the Claude tables. A missing `service.name` is normalized to `claude-code` (`db.NormalizeServiceName`, applied identically by the receiver, the startup backfill, `RebuildDailyAggregates`, and `dbmerge`) — never store a bare `''`.
+cc-otel reads OTLP Resource attribute `service.name` for attribution. Since the AllClient merge, **all** clients — Codex included — are normalized into the unified `api_requests` pool at ingest; names containing `codex` (case-insensitive) get `service_name='codex'` and flow through the codex parser (`internal/receiver/codex_parser.go`), while the legacy `codex_*` archive is merged into the pool by the one-click migration (AllClient page, `dbmerge.MigrateCodexToAll`). A missing `service.name` is normalized to `claude-code` (`db.NormalizeServiceName`, applied identically by the receiver, the startup backfill, `RebuildDailyAggregates`, and `dbmerge`) — never store a bare `''`.
 
-`service_name` is an **attribution label, not a partition**: it is stored on `api_requests`, keyed into `daily_model_agg`, shown as the Source column in the request log, and used by the pricing rule below. There is deliberately **no per-source query filter and no by-source chart dimension** — every non-Codex client is normalized into the Claude Code shape and shares one pool. Frontend tabs key on `state.source` (`claude` default, `codex` via `?source=codex` URL param), and those are the only two values.
+`service_name` is an **attribution label, not a partition**: it is stored on `api_requests`, keyed into `daily_model_agg`, shown as the Source column in the request log, and used by the pricing rule below. There is deliberately **no per-source query filter and no by-source chart dimension** — every client is normalized into the Claude Code shape and shares one pool. The pre-merge `?source=codex` URL param is gone; the legacy `/api/codex/*` read routes still serve the codex-specific dashboards from the same pool.
 
 ### OTLP ingress (gRPC 4317 + HTTP 4318)
 
