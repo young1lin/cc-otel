@@ -77,6 +77,31 @@ func codexLogUnixNanos(lr *logspb.LogRecord) int64 {
 // ObservedTimeUnixNano and falls back to TimeUnixNano. codexLogUnixNanos keeps
 // the opposite ordering for the persisted event timestamp; changing that
 // historical timestamp semantics is out of scope.
+// attrIntOrLen reads a numeric attribute, falling back to the byte length
+// of a sibling string attribute. Codex puts arguments_length/output_length
+// only on the trace-safe variant of codex.tool_result (otel/src/tool_result.rs
+// trace: block); the OTLP logs path carries the full `arguments` string and
+// the output preview instead, so the length is derived from what IS present.
+func attrIntOrLen(attrs map[string]string, intKey, stringKey string) int64 {
+	if v := parseAttrInt(attrs, intKey); v > 0 {
+		return v
+	}
+	return int64(len(attrs[stringKey]))
+}
+
+// toolOriginOrDerive reads tool_origin, deriving it from mcp_server presence
+// when absent: Codex computes tool_origin the same way (tool_result.rs trace:
+// block — "builtin" when mcp_server is empty, "mcp" otherwise).
+func toolOriginOrDerive(attrs map[string]string) string {
+	if v := attrs["tool_origin"]; v != "" {
+		return v
+	}
+	if attrs["mcp_server"] != "" {
+		return "mcp"
+	}
+	return "builtin"
+}
+
 func codexLogObservedUnixNanos(lr *logspb.LogRecord) int64 {
 	if lr == nil {
 		return 0
@@ -348,13 +373,16 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				CacheReadTokens:     parseAttrInt(attrs, "cached_token_count"),
 				CacheCreationTokens: parseAttrInt(attrs, "cache_write_token_count"),
 				ReasoningTokens:     parseAttrInt(attrs, "reasoning_token_count"),
-				TotalTokens:         parseAttrInt(attrs, "total_token_count"),
+				TotalTokens:         parseAttrInt(attrs, "tool_token_count"),
 				TTFTMs:              parseAttrInt(attrs, "ttft_ms"),
 			}
-			// total_tokens keeps the CLIENT-REPORTED raw total (input side
-			// inclusive of cache + output), matching the migrated archive where
-			// total_tokens = input_tokens + output_tokens on every row. Derive it
-			// from the raw counters when the client omits the explicit attribute.
+			// total_tokens keeps the CLIENT-REPORTED raw total. Codex sends it
+			// as tool_token_count (otel/src/events/session_telemetry.rs
+			// sse_event_completed: tool_token_count = %usage.total_tokens — the
+			// name is historical, the value IS the Responses API total). Derive
+			// input+output when a client build omits it; that matches the
+			// migrated archive, where total_tokens = input_tokens + output_tokens
+			// holds on every row.
 			if upd.TotalTokens == 0 {
 				upd.TotalTokens = parseAttrInt(attrs, "input_token_count") + upd.OutputTokens
 			}
@@ -464,9 +492,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			CallID:          attrs["call_id"],
 			DurationMs:      parseAttrInt(attrs, "duration_ms"),
 			Success:         success,
-			ArgumentsLength: parseAttrInt(attrs, "arguments_length"),
-			OutputLength:    parseAttrInt(attrs, "output_length"),
-			ToolOrigin:      attrs["tool_origin"],
+			ArgumentsLength: attrIntOrLen(attrs, "arguments_length", "arguments"),
+			OutputLength:    attrIntOrLen(attrs, "output_length", "output"),
+			ToolOrigin:      toolOriginOrDerive(attrs),
 			MCPServer:       attrs["mcp_server"],
 			ErrorMessage:    attrs["error.message"],
 			TerminalType:    attrs["terminal.type"],

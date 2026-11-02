@@ -82,6 +82,10 @@ func TestCodexE2E_APIRequestThenSSECompletion(t *testing.T) {
 		{Key: "model", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "gpt-5.1"}}},
 		{Key: "input_token_count", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_IntValue{IntValue: 1500}}},
 		{Key: "output_token_count", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_IntValue{IntValue: 250}}},
+		// Real codex wire name for usage.total_tokens (session_telemetry.rs
+		// sse_event_completed: tool_token_count = %usage.total_tokens).
+		{Key: "reasoning_token_count", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_IntValue{IntValue: 30}}},
+		{Key: "tool_token_count", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_IntValue{IntValue: 1750}}},
 	})
 
 	var rows int
@@ -100,6 +104,17 @@ func TestCodexE2E_APIRequestThenSSECompletion(t *testing.T) {
 	repo.DB().QueryRowContext(ctx, `SELECT output_tokens FROM api_requests WHERE service_name = 'codex'`).Scan(&output)
 	if output != 250 {
 		t.Fatalf("expected 250 output tokens, got %d", output)
+	}
+
+	var reasoning, total int64
+	repo.DB().QueryRowContext(ctx,
+		`SELECT reasoning_tokens, total_tokens FROM api_requests WHERE service_name = 'codex'`).Scan(&reasoning, &total)
+	if reasoning != 30 {
+		t.Fatalf("expected 30 reasoning tokens, got %d", reasoning)
+	}
+	// tool_token_count is the client-reported total and must be stored as-is.
+	if total != 1750 {
+		t.Fatalf("expected total_tokens 1750 from tool_token_count, got %d", total)
 	}
 }
 

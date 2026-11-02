@@ -151,7 +151,9 @@ func main() {
 			str("call_id", callID),
 			num("duration_ms", 50),
 			str("success", "true"),
-			num("output_length", 120),
+			str("arguments", "ls -la"), // logs path: lengths derive from strings
+			str("output", "total 0\n"),
+			str("mcp_server", ""),
 		))
 
 		// 5) completion: input 1200 is INCLUSIVE of 800 cached + 100 written,
@@ -165,6 +167,7 @@ func main() {
 			num("cached_token_count", 800),
 			num("cache_write_token_count", 100),
 			num("reasoning_token_count", 40),
+			num("tool_token_count", 1350), // real codex wire name for usage.total_tokens
 			num("output_token_count", 150),
 			num("ttft_ms", 250),
 		)
