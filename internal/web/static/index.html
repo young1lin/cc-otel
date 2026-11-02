@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=29">
+    <link rel="stylesheet" href="style.css?v=31">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -120,6 +120,7 @@
             <button class="panel-btn" data-panel="sessions">Sessions</button>
             <button class="panel-btn" data-panel="requests">Request Log</button>
             <button class="panel-btn" data-panel="rate">Rate</button>
+            <button class="panel-btn" data-panel="clients">Clients</button>
         </div>
         <div class="panel-filter" id="request-filter">
             <select id="model-filter">
@@ -133,6 +134,7 @@
         <div class="daily-subtabs">
             <button type="button" class="daily-subtab active" id="daily-view-day">By day</button>
             <button type="button" class="daily-subtab" id="daily-view-hour">Intraday</button>
+            <button type="button" class="daily-subtab" id="daily-view-hourday" title="Fold the whole selected range into 24 hour-of-day buckets — how much do you burn at 13:00 vs 14:00. Complements Intraday, which shows a short span chronologically.">Hour of Day</button>
         </div>
 
         <div id="daily-byday">
@@ -180,6 +182,20 @@
                     <button type="button" id="intraday-legend-all-btn" class="rate-btn" style="display:none" title="Show every model">All models</button>
                 </div>
                 <div class="chart-wrap" id="hourly-chart"></div>
+            </div>
+        </div>
+
+        <div id="daily-byhourday" style="display:none">
+            <div class="chart-section hourly-section">
+                <div class="chart-section-header">
+                    <span class="chart-section-title">Tokens by Hour of Day</span>
+                    <span class="hourly-hint">Whole range folded into 24 local-hour buckets · pick a client / model to see who burned what at which hour</span>
+                    <div class="hourday-filters">
+                        <select id="hourday-client" class="hourday-select" aria-label="Filter hour-of-day by client"></select>
+                        <select id="hourday-model" class="hourday-select" aria-label="Filter hour-of-day by model"></select>
+                    </div>
+                </div>
+                <div class="chart-wrap" id="hourday-chart" style="height:380px"></div>
             </div>
         </div>
     </div>
@@ -273,6 +289,35 @@
                 <button type="button" id="rate-legend-all-btn" class="rate-btn" style="display:none" title="Show every model curve">All models</button>
             </div>
             <div class="chart-wrap" id="rate-chart" style="height:440px"></div>
+        </div>
+    </div>
+
+    <div id="panel-clients" class="panel">
+        <div class="chart-section-header" style="padding:2px 4px 10px">
+            <span class="chart-section-title">Consumption by Client</span>
+            <span class="hourly-hint">OTLP resource <code>service.name</code> attribution · follows the range selector · <b id="clients-count">—</b> client(s) · excludes the Codex ledger</span>
+            <button type="button" id="clients-refresh-btn" class="rate-btn">Refresh</button>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Client</th>
+                        <th>Requests</th>
+                        <th>Input (Uncached)</th>
+                        <th>Cache Read</th>
+                        <th>Cache Create</th>
+                        <th>Output</th>
+                        <th>Total Tokens</th>
+                        <th>Share</th>
+                        <th>Cache Hit</th>
+                        <th>Cost</th>
+                        <th>Models</th>
+                        <th>Active</th>
+                    </tr>
+                </thead>
+                <tbody id="clients-tbody"></tbody>
+            </table>
         </div>
     </div>
 
@@ -466,6 +511,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=71"></script>
+<script type="module" src="app.js?v=73"></script>
 </body>
 </html>

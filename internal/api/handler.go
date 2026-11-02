@@ -205,6 +205,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pricing/recompute", h.PricingRecompute) // GET status / POST start
 	mux.HandleFunc("/api/pricing/suggest", h.PricingSuggest)     // GET on-demand OpenRouter lookup
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
+	mux.HandleFunc("/api/clients", h.Clients)
+	mux.HandleFunc("/api/hours", h.Hours)
 	mux.HandleFunc("/api/calendar", h.Calendar)
 	mux.HandleFunc("/api/daily", h.DailyModel)
 	mux.HandleFunc("/api/hourly", h.HourlyModel)
@@ -806,6 +808,64 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
+}
+
+// Clients returns per-client (service_name) token/cost aggregates for a date
+// range — the "which client consumed what" table behind the Clients panel.
+// Range parsing mirrors Dashboard (range=all|today|week|month + from/to
+// overrides). This reads api_requests (the never-pruned ledger) in the
+// merged non-Codex pool; Codex keeps its own tables and its tab hides the
+// panel.
+func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.repo == nil {
+		json.NewEncoder(w).Encode(map[string][]db.ClientSummary{"data": {}})
+		return
+	}
+	from, to := rangeToFromTo(r.URL.Query().Get("range"))
+	if v := r.URL.Query().Get("from"); v != "" && isValidDate(v) {
+		from = v
+	}
+	if v := r.URL.Query().Get("to"); v != "" && isValidDate(v) {
+		to = v
+	}
+	data, err := h.repo.GetClientStats(r.Context(), from, to)
+	if err != nil {
+		log.Printf("clients error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if data == nil {
+		data = []db.ClientSummary{}
+	}
+	json.NewEncoder(w).Encode(map[string][]db.ClientSummary{"data": data})
+}
+
+// Hours returns (hour-of-day, client, model) detail cells aggregated across
+// the selected date range — the pivot input for the Hour of Day view
+// ("how many Claude Opus tokens at 13:00, from Claude Code"). The client
+// stacks by model or client; hours with no data are simply absent rows.
+// Reads api_requests, i.e. the merged non-Codex pool.
+func (h *Handler) Hours(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.repo == nil {
+		json.NewEncoder(w).Encode(map[string][]db.HourOfDayDetail{"data": {}})
+		return
+	}
+	from, to := rangeToFromTo(r.URL.Query().Get("range"))
+	if v := r.URL.Query().Get("from"); v != "" && isValidDate(v) {
+		from = v
+	}
+	if v := r.URL.Query().Get("to"); v != "" && isValidDate(v) {
+		to = v
+	}
+	data, err := h.repo.GetHourOfDayStats(r.Context(), from, to)
+	if err != nil {
+		log.Printf("hours error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string][]db.HourOfDayDetail{"data": data})
 }
 
 type CalendarResponse struct {

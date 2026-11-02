@@ -874,3 +874,152 @@ func TestBrokerNotifySource(t *testing.T) {
 		t.Errorf("LastSource: got %q want codex", got)
 	}
 }
+
+// TestClientsEndpoint covers /api/clients: per-service_name aggregation over
+// daily_model_agg, largest consumer first.
+func TestClientsEndpoint(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	inserts := []struct{ svc, model string }{
+		{"claude-code", "glm-5.2"},
+		{"claude-code", "glm-5.2"},
+		{"opencode", "qwen3-coder"},
+	}
+	for _, m := range inserts {
+		_, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+			Timestamp:    time.Now(),
+			Model:        m.model,
+			ServiceName:  m.svc,
+			InputTokens:  100,
+			OutputTokens: 50,
+			CostUSD:      0.01,
+		})
+		if err != nil {
+			t.Fatalf("InsertRequest: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/api/clients?range=all", nil)
+	w := httptest.NewRecorder()
+	h.Clients(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string][]db.ClientSummary
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	data := resp["data"]
+	if len(data) != 2 {
+		t.Fatalf("expected 2 clients, got %d: %+v", len(data), data)
+	}
+	// claude-code (2 requests, 300 tokens) outranks opencode (1 request, 150).
+	first, second := data[0], data[1]
+	if first.ServiceName != "claude-code" || second.ServiceName != "opencode" {
+		t.Fatalf("order: %+v then %+v", first, second)
+	}
+	if first.RequestCount != 2 || second.RequestCount != 1 {
+		t.Fatalf("request counts: %+v / %+v", first, second)
+	}
+	if first.TotalTokens != 300 || second.TotalTokens != 150 {
+		t.Fatalf("total tokens: %+v / %+v", first, second)
+	}
+	if first.ModelCount != 1 {
+		t.Fatalf("claude-code model_count = %d, want 1", first.ModelCount)
+	}
+}
+
+// TestClientsEndpointEmpty pins the empty-range shape ({"data":[]}).
+func TestClientsEndpointEmpty(t *testing.T) {
+	h, _, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/api/clients?from=2000-01-01&to=2000-01-02", nil)
+	w := httptest.NewRecorder()
+	h.Clients(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string][]db.ClientSummary
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp["data"]) != 0 {
+		t.Fatalf("expected empty data, got %+v", resp["data"])
+	}
+}
+
+// TestHoursEndpoint covers /api/hours: (hour, client, model) detail cells in
+// local time — the pivot input for the Hour of Day view.
+func TestHoursEndpoint(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	now := time.Now()
+	insertAt := func(hour int, svc, model string) {
+		ts := time.Date(now.Year(), now.Month(), now.Day(), hour, 10, 0, 0, time.Local)
+		_, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+			Timestamp:    ts,
+			Model:        model,
+			ServiceName:  svc,
+			InputTokens:  100,
+			OutputTokens: 50,
+			CostUSD:      0.01,
+		})
+		if err != nil {
+			t.Fatalf("InsertRequest: %v", err)
+		}
+	}
+	// 13:00 — claude-code runs two different models; 14:00 — opencode runs one.
+	insertAt(13, "claude-code", "claude-opus-5.5")
+	insertAt(13, "claude-code", "claude-opus-5.5")
+	insertAt(13, "claude-code", "glm-5.2")
+	insertAt(14, "opencode", "qwen3-coder")
+
+	req := httptest.NewRequest("GET", "/api/hours?range=today", nil)
+	w := httptest.NewRecorder()
+	h.Hours(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string][]db.HourOfDayDetail
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	data := resp["data"]
+	if len(data) != 3 {
+		t.Fatalf("expected 3 detail cells, got %d: %+v", len(data), data)
+	}
+	var opus, glm, qwen *db.HourOfDayDetail
+	for i := range data {
+		switch {
+		case data[i].Hour == 13 && data[i].Model == "claude-opus-5.5":
+			opus = &data[i]
+		case data[i].Hour == 13 && data[i].Model == "glm-5.2":
+			glm = &data[i]
+		case data[i].Hour == 14 && data[i].Model == "qwen3-coder":
+			qwen = &data[i]
+		}
+	}
+	if opus == nil || glm == nil || qwen == nil {
+		t.Fatalf("missing cells: %+v", data)
+	}
+	if opus.ServiceName != "claude-code" || opus.RequestCount != 2 || opus.TotalTokens != 300 {
+		t.Fatalf("opus cell: %+v", opus)
+	}
+	if glm.ServiceName != "claude-code" || glm.RequestCount != 1 || glm.TotalTokens != 150 {
+		t.Fatalf("glm cell: %+v", glm)
+	}
+	if qwen.ServiceName != "opencode" || qwen.RequestCount != 1 || qwen.TotalTokens != 150 {
+		t.Fatalf("qwen cell: %+v", qwen)
+	}
+	for _, c := range data {
+		if c.Hour != 13 && c.Hour != 14 {
+			t.Fatalf("unexpected hour bucket: %+v", c)
+		}
+	}
+}
