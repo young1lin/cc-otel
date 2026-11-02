@@ -484,7 +484,14 @@ func cmdServe() {
 	if cfg.OTLPHTTPPort == 0 {
 		log.Printf("OTLP/HTTP receiver disabled by config (otlp_http_port: 0)")
 	} else {
-		otlpHTTPSrv = &http.Server{Handler: otelReceiver.HTTPHandler()}
+		otlpHTTPSrv = &http.Server{
+			Handler: otelReceiver.HTTPHandler(),
+			// Hardening: without header/idle timeouts a silent or hostile peer
+			// holds a connection (and its goroutine) forever. WriteTimeout stays
+			// unset — OTLP/JSON batches can be large and parsing is streamed.
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
 		otlpLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.OTLPHTTPPort))
 		if err != nil {
 			log.Printf("OTLP/HTTP receiver DISABLED — cannot bind :%d: %v", cfg.OTLPHTTPPort, err)
@@ -518,7 +525,16 @@ func cmdServe() {
 	}
 	mux := http.NewServeMux()
 	handler.Register(mux)
-	webSrv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.WebPort), Handler: loggingMiddleware(api.GzipMiddleware(mux))}
+	webSrv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", cfg.WebPort),
+		Handler: loggingMiddleware(api.GzipMiddleware(mux)),
+		// SSE streams (dashboard refresh) hold connections open for hours,
+		// so IdleTimeout must exceed the SSE heartbeat cadence; WriteTimeout
+		// must cover a full SSE lifetime window between writes, hence generous.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       10 * time.Minute,
+		WriteTimeout:      24 * time.Hour,
+	}
 	go func() {
 		log.Printf("Web UI listening on http://localhost:%d", cfg.WebPort)
 		if err := webSrv.ListenAndServe(); err != http.ErrServerClosed {
@@ -531,6 +547,13 @@ func cmdServe() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	log.Println("shutting down...")
+
+	// Cancel background contexts FIRST: the AllClient migration and import
+	// manager derive their contexts from ctx, and handler.Close() joins those
+	// goroutines. Without this cancel the join blocks until their own
+	// deadlines fire (up to 30 minutes for a migration) before the deferred
+	// ctx cancel at the top of main ever runs (LIFO puts it after the join).
+	cancel()
 
 	// Graceful stop with timeout to avoid hanging on stuck clients.
 	done := make(chan struct{})
