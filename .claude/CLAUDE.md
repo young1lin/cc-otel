@@ -160,6 +160,7 @@ load before it as classic globals.
 | `panel-daily.js` | Daily by-day table + by-hour hourly chart. |
 | `panel-sessions.js` | Sessions table. |
 | `panel-requests.js` | Request log + duration stats sort. |
+| `panel-clients.js` | Clients panel: per-`service.name` totals from `/api/clients`. |
 | `pagination.js` | Pagination renderer shared by panels. |
 
 Tests live under `internal/web/static/tests/*.test.mjs` and import directly from

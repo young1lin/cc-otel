@@ -6,7 +6,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
-## [Unreleased]
+## [v0.2.0] - 2026-11-02
 
 ### Fixed
 
@@ -15,7 +15,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 ### Added
 
 - **Clients panel**: per-client (OTLP `service.name`) totals — tokens (uncached input / cache read / cache create / output / total), requests, cost, hit rate and active span, ranked by consumption with a share bar. Reads the deliberately never-pruned `api_requests` ledger for full history; the panel hides under the Codex source (separate ledger).
-- **Hour of Day sub-view (client x model dimensions)**: third subtab in Daily Detail folds the whole selected range into 24 hour-of-day buckets plus two dropdowns: unpinned stacks by model (top 8 + Other); pinning a client shows its model mix; **pinning a model flips the axis to clients** ("who burned Claude Opus at 01:00"); pinning both yields a single series ("Claude Code's Opus at 13:00") with the full token composition in the tooltip. Follows the Tokens/Cost/Requests switch; dropdown changes re-pivot cached rows without a refetch. The backend `/api/hours` now returns (hour, service_name, model) detail cells. Complements Intraday (chronological per-bucket detail, ≤7 days) and works for any span; the subtab hides under the Codex source until a codex mirror endpoint exists.
+- **Hour of Day sub-view (client x model dimensions)**: third subtab in Daily Detail folds the whole selected range into 24 hour-of-day buckets plus two dropdowns: unpinned draws grouped bars by model (top 8 + Other, never stacked); pinning a client shows its model mix; **pinning a model flips the axis to clients** ("who burned Claude Opus at 01:00"); pinning both yields a single series ("Claude Code's Opus at 13:00") with the full token composition in the tooltip. Follows the Tokens/Cost/Requests switch; dropdown changes re-pivot cached rows without a refetch. The backend `/api/hours` now returns (hour, service_name, model) detail cells. Complements Intraday (chronological per-bucket detail, ≤7 days) and works for any span; the subtab hides under the Codex source until a codex mirror endpoint exists. The chart obeys the project's pinned rules: grouped bars and a trigger:'item' own-bar tooltip (hover shows only that bar plus its cross-dimension breakdown).
 - **Pagination jump box**: the shared pagination bar (Daily/Sessions/Request Log/Pricing) gains a page-number input + Go (Enter works too); out-of-range input snaps to the nearest valid page. Fixed the Go-click blur race (the browser blurs the input before the click fires, and the cosmetic blur reset made every click a silent no-op — the handler now reads the last typed value cached from input events); `pagination.test.mjs` reproduces and pins the exact click sequence.
 - **Client names identical to the Request Log**: badge rendering converges on a shared `formatSourceTag` (utils.js); unknown `service_name`s always render verbatim (e.g. `deepseek-harness-plugin`) — no per-panel invented aliases.
 

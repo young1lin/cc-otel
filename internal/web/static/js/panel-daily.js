@@ -489,11 +489,13 @@ export function renderHourdayChart(chartEl) {
         ? shadeOf(pinnedModel, i)
         : (name.indexOf('Other') === 0 ? '#8e8e93' : makeTokenBarColor(name));
 
+    // Grouped bars, never stacked — a pinned chart rule from .claude/CLAUDE.md:
+    // stack distorts per-series magnitudes. Up to 9 series x 24 hours stay
+    // readable with slim bars.
     const series = view.series.map((s, i) => ({
         name: s.name,
         type: 'bar',
-        stack: 'h',
-        barMaxWidth: 28,
+        barMaxWidth: 16,
         itemStyle: { color: colorOf(s.name, i) },
         data: s.data,
     }));
@@ -512,7 +514,10 @@ export function renderHourdayChart(chartEl) {
         grid: { left: 56, right: 20, top: 44, bottom: 32 },
         legend: { top: 4, type: 'scroll', textStyle: { color: c.legendText } },
         tooltip: {
-            trigger: 'axis',
+            // trigger: 'item' is a pinned chart rule (.claude/CLAUDE.md):
+            // hovering a bar shows only its own info, never a merged
+            // all-series tooltip.
+            trigger: 'item',
             backgroundColor: c.tooltipBg,
             borderColor: c.tooltipBorder,
             textStyle: { color: c.tooltipText },
@@ -537,8 +542,11 @@ export function renderHourdayChart(chartEl) {
 }
 
 function buildHourdayTooltip(params, view, c) {
-    if (!Array.isArray(params) || params.length === 0) return '';
-    const hour = Number(params[0].data?.raw?.hour ?? params[0].dataIndex ?? 0);
+    // trigger:'item' hands the formatter a single param object; accept both
+    // shapes but only ever render the hovered bar's own data.
+    const p = Array.isArray(params) ? params[0] : params;
+    if (!p) return '';
+    const hour = Number(p.data?.raw?.hour ?? p.dataIndex ?? 0);
     const scope = view.meta ? [view.meta.client, view.meta.model].filter(Boolean).map(escapeHtml).join(' · ') : '';
     const head = '<div style="font-weight:600;margin-bottom:4px">'
         + String(hour).padStart(2, '0') + ':00 – ' + String((hour + 1) % 24).padStart(2, '0') + ':00'
@@ -550,51 +558,36 @@ function buildHourdayTooltip(params, view, c) {
     const isReqs = state.chartMetric === 'requests';
     const fmtVal = (v) => (isCost ? '$' + Number(v).toFixed(4) : fmtNum(v));
 
-    // Series rows for this hour, biggest first, zero rows hidden. Each row
-    // carries the OTHER dimension's breakdown ("this model's bar at 13:00 =
-    // claude-code 70% · opencode 30%"), so the tooltip answers "which
-    // client's which model" without another click.
-    const subLine = (p) => {
-        if (params.length === 1) return ''; // both filters pinned: full breakdown below
-        const subs = p.data?.parts || [];
-        if (!subs.length) return '';
+    // Own-bar-only content (pinned rule: item tooltips show the hovered
+    // bar's info, never the merged hour). The bar itself is one model (or one
+    // client); its cross-dimension parts answer "which client's which model".
+    const r = p.data?.raw || hourdayEmptyCell(hour);
+    if (!(p.value > 0)) return head + row('No data', '—');
+
+    let html = head + row(p.marker + ' ' + escapeHtml(p.seriesName), '<b>' + fmtVal(p.value) + '</b>');
+
+    const subs = p.data?.parts || [];
+    if (subs.length && view.series.length > 1) {
         const total = subs.reduce((s, x) => s + x.value, 0);
         const txt = subs.slice(0, 3)
             .map((x) => escapeHtml(x.name) + ' ' + (total > 0 ? Math.round((x.value / total) * 100) : 0) + '%')
             .join(' · ');
-        return '<div style="margin:-2px 0 2px 16px;font-size:11px;color:' + c.axisLabel + '">' + txt + '</div>';
-    };
-    const parts = params
-        .filter((p) => p.value > 0)
-        .sort((a, b) => b.value - a.value)
-        .map((p) => row(p.marker + ' ' + p.seriesName, fmtVal(p.value)) + subLine(p));
-    if (!parts.length) return head + row('No data', '—');
+        html += '<div style="margin:-2px 0 2px 16px;font-size:11px;color:' + c.axisLabel + '">' + txt + '</div>';
+    }
 
-    // Hour totals of the CURRENTLY FILTERED selection: the 24-bar stack sums.
-    const hourTotals = view.series.reduce((acc, s) => {
-        const d = s.data[hour] || { value: 0, raw: hourdayEmptyCell(hour) };
-        acc.value += d.value;
-        acc.req += Number(d.raw.request_count) || 0;
-        acc.cost += Number(d.raw.cost_usd) || 0;
-        return acc;
-    }, { value: 0, req: 0, cost: 0 });
-
-    let extra = '';
-    // Both filters pinned -> one series; show its full token composition so
-    // the tooltip answers "this client, this model, this hour" completely.
-    if (params.length === 1 && !isCost && !isReqs) {
-        const r = params[0].data.raw;
-        extra = row('Uncached Input', fmtNum(r.input_tokens))
+    // Both filters pinned -> the single series IS "this client's this model",
+    // so show the full token composition (same column names as Daily Detail).
+    if (view.series.length === 1 && !isCost && !isReqs) {
+        html += row('Uncached Input', fmtNum(r.input_tokens))
             + row('Cache Read', fmtNum(r.cache_read_tokens))
             + row('Cache Create', fmtNum(r.cache_creation_tokens))
             + row('Output', fmtNum(r.output_tokens));
     }
 
-    return head + parts.join('') + extra
+    return html
         + '<div style="border-top:1px solid ' + c.tooltipBorder + ';margin:4px 0"></div>'
-        + row('<b>' + metricLabel() + ' total</b>', '<b>' + fmtVal(hourTotals.value) + '</b>')
-        + row('Requests', fmtNum(hourTotals.req))
-        + row('Cost', '$' + hourTotals.cost.toFixed(4));
+        + row('Requests', fmtNum(r.request_count))
+        + row('Cost', '$' + (Number(r.cost_usd) || 0).toFixed(4));
 }
 
 function showHourdayMessage(chartEl, msg) {

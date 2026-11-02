@@ -50,6 +50,9 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 - **Date ranges** -- Today, 7 Days, 30 Days, All Time, or custom date picker
 - **Chart switching** -- Tokens, Cost, Requests views
 - **Session tracking** -- per-session cost and token aggregation
+- **Clients panel** -- per-client (OTLP `service.name`) tokens / cost / requests / hit rate, read from the never-pruned `api_requests` ledger for full history
+- **Hour of Day pivot** -- the whole range folded into 24 hour-of-day buckets with client x model drill-down: pin a model to see who burned it, pin a client to see what it burned, pin both for a single-series detail
+- **Pagination jump** -- type a page number to land anywhere in long tables (Request Log etc.)
 - **Token rate chart (Rate)** -- per-model Out/Total tok/s over time (weighted / average, 5–60 min buckets; up to 7 days)
 - **Online database import** -- merge an uploaded `.db` into the running primary DB, no downtime, additive-only
 - **Pre-aggregation table** -- query latency < 3ms, handles millions of rows
@@ -427,6 +430,7 @@ Environment variable overrides (highest priority):
 | `CC_OTEL_OTLP_HTTP_PORT` | OTLP/HTTP receiver port (`0` disables) | `4318` |
 | `CC_OTEL_WEB_PORT` | Web UI port | `8899` |
 | `CC_OTEL_DB_PATH` | SQLite database path | `~/.cc-otel/cc-otel.db` |
+| `CC_OTEL_OPENROUTER_BASE_URL` | OpenRouter API base URL for pricing suggestions (mirror / self-hosted gateway; empty = official) | `https://openrouter.ai/api/v1` |
 
 ### Data Retention
 
@@ -456,9 +460,10 @@ Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model
 
 | Panel | Description |
 |-------|-------------|
-| **Daily Detail** | Per-day / per-hour tables; Intraday per-bucket bar chart on single-day ranges (5 / 10 / 15 / 30 / 60 min, up to 7 days) |
+| **Daily Detail** | Per-day / per-hour tables; Intraday per-bucket bar chart (5 / 10 / 15 / 30 / 60 min, up to 7 days); the **Hour of Day** subtab folds the whole range into 24 hour buckets with client / model pivot dropdowns (any span) |
 | **Sessions** | Per-session Cost / Token aggregates |
-| **Request Log** | Per-model duration and **Out tok/s (avg / weighted)** summary; per-request list with TTFT |
+| **Clients** | Per-`service.name` totals: token composition, requests, cost, hit rate, active span, share bar (hidden under the Codex source) |
+| **Request Log** | Per-model duration and **Out tok/s (avg / weighted)** summary; per-request list with TTFT; pagination bar with page-number jump |
 | **Rate** | Per-model **Token Rate over Time** line chart; Weighted / Avg, Output / Total tok/s, 5 / 15 / 30 / 60 min buckets; click legend to solo one model (**All models** to restore) |
 
 `duration_ms` is API request time only (excludes local tool execution), so tok/s reflects model output throughput. Multi-day views break lines at calendar-day boundaries; switching the date range defaults to **Today → 5 min**, **multi-day → 30 min** (overridable).
