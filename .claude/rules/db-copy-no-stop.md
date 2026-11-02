@@ -18,7 +18,7 @@ go run ./tools/snapshot_db ~/.cc-otel/cc-otel.db bin/cc-otel.db.snap
 ## 唯一允许停的进程
 
 - **dev / bin daemon**（端口 14317 / 18899，`bin/cc-otel.pid`）可以停 —— 因为 Windows 下无法替换被它打开的 `bin/cc-otel.db`。这与 `tools/merge_bin_global` 的既有行为一致（它会按 `bin/cc-otel.exe` PID 校验后自动停 bin daemon）。
-- 停 bin daemon 前后，删除残留的 `bin/cc-otel.db-wal` / `bin/cc-otel.db-shm`，避免旧 WAL 被错误地恢复到新 `.db` 上。
+- 停 bin daemon 前后，删除残留的 `bin/cc-otel.db-wal` / `bin/cc-otel.db-shm` —— **仅当接下来要替换 `.db` 文件本身**（合并/换库流程），避免旧 WAL 被错误地恢复到新 `.db` 上。若重启后**继续使用同一个 `.db`**，**绝不删除 `-wal`**：进程被终止（而非优雅关闭）时最近事务仍在 WAL 里，删掉即丢数据（2026-11-03 实测：同库重启误删 WAL 丢失最后 ~30 分钟事务）。
 
 ## 标准复制流程（全局 → bin，全局不停）
 
