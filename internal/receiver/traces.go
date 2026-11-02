@@ -154,7 +154,8 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 				}
 
 				// Debug-friendly: ttft spans are rare; log enough to diagnose join-key mismatch quickly.
-				// rawJSON already persisted to raw_otlp_events, but having it in the log helps when DB access is inconvenient.
+				// The span is NOT persisted to raw_otlp_events (that table is write-frozen);
+				// the log line is the only durable trace of unmatched spans.
 				log.Printf("trace ttft span: name=%q kind=%s ttft_ms=%d end_unix=%d join(request=%q session=%q prompt=%q model=%q) raw=%s",
 					sp.Name, spanKindString(sp.Kind), ttft, ts, requestID, sessionID, promptID, model, string(rawJSON))
 
@@ -206,8 +207,11 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 
 	// Replay converted spans through the log path so they get the same cost
 	// recompute, service_name defaulting, dedup and notification as every other
-	// client. Its own error handling logs per-row failures, so a bad record here
-	// cannot fail the whole trace export.
+	// client. The inner Export honours the delivery contract: total storage
+	// failure returns an error — that MUST propagate, otherwise an opencode
+	// trace export answers 200 while every converted api_request was dropped
+	// (R4 protocol F3). Partial failures fold into this export's own stats via
+	// the PartialSuccess response.
 	if len(aiSDKBatches) > 0 && s.logs != nil {
 		converted := 0
 		for _, rl := range aiSDKBatches {
@@ -215,8 +219,20 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 				converted += len(sl.LogRecords)
 			}
 		}
-		if _, err := s.logs.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: aiSDKBatches}); err != nil {
+		resp, err := s.logs.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: aiSDKBatches})
+		if err != nil {
 			log.Printf("ai-sdk span ingest failed: %v", err)
+			// The whole converted batch failed storage: count every converted
+			// record as failed so exportResult retries instead of 200-ACKing
+			// data that was dropped one transport hop away.
+			for i := uint32(0); i < uint32(converted); i++ {
+				stats.fail()
+			}
+		} else if resp != nil && resp.PartialSuccess != nil && resp.PartialSuccess.RejectedLogRecords > 0 {
+			for i := int64(0); i < resp.PartialSuccess.RejectedLogRecords; i++ {
+				stats.fail()
+			}
+			log.Printf("OTEL traces: %d converted AI-SDK record(s) failed storage", resp.PartialSuccess.RejectedLogRecords)
 		} else {
 			log.Printf("OTEL traces: converted %d AI-SDK usage span(s) into api_request events", converted)
 		}

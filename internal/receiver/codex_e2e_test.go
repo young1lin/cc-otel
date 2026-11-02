@@ -301,7 +301,6 @@ func TestCodexE2E_TTFTOnlyCompletionFinalizes(t *testing.T) {
 	}
 }
 
-
 // TestCodexE2E_ReplayedCompletionIsNoOp pins the at-least-once replay guard:
 // OTLP exporters retry failed batches, so the same authoritative completion
 // can land twice. The first delivery finalizes the pending row via the
@@ -345,7 +344,7 @@ func TestCodexE2E_ReplayedCompletionIsNoOp(t *testing.T) {
 		t.Helper()
 		_, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{
 			ResourceLogs: []*logspb.ResourceLogs{{
-				Resource: codexResource,
+				Resource:  codexResource,
 				ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
 			}},
 		})
@@ -399,7 +398,6 @@ func TestCodexE2E_ReplayedCompletionIsNoOp(t *testing.T) {
 	}
 }
 
-
 // TestCodexE2E_ExportSignalsStorageFailure pins the OTLP delivery contract:
 // when every record in a batch fails storage, Export must return an error
 // (gRPC Internal / HTTP 500) so the exporter retries instead of pruning the
@@ -445,7 +443,7 @@ func TestCodexE2E_ExportSignalsStorageFailure(t *testing.T) {
 		{Key: "service.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "claude-code"}}},
 	}}
 	batch := &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
-		Resource: resource,
+		Resource:  resource,
 		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{good}}},
 	}}}
 
@@ -464,6 +462,165 @@ func TestCodexE2E_ExportSignalsStorageFailure(t *testing.T) {
 	}
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("error code = %v, want Internal", status.Code(err))
+	}
+}
+
+// TestCodexE2E_HostileMagnitudesStayQueryable pins the R4 protocol finding:
+// a hostile exporter sending MaxInt64 token counts must not be able to
+// permanently 500 the dashboards. Before the ingest clamp the values
+// survived INSERT and every SUM() over daily_model_agg raised
+// "integer overflow" until retention pruned the poisoned day.
+func TestCodexE2E_HostileMagnitudesStayQueryable(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+	broker := api.NewBroker()
+	rcv := New(repo, &fakeResolver{}, broker, nil)
+
+	srv := grpc.NewServer()
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	attr := func(k, v string) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	maxStr := "9223372036854775807"
+	rec := &logspb.LogRecord{
+		// Year-2262 timestamp: must be clamped to arrival time.
+		TimeUnixNano: uint64(time.Date(2262, 4, 12, 0, 0, 0, 0, time.UTC).UnixNano()),
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.sse_event"),
+			attr("event.kind", "response.completed"),
+			attr("conversation.id", "r4hostile"),
+			attr("model", "gpt-5.1"),
+			attr("input_token_count", maxStr),
+			attr("output_token_count", maxStr),
+			attr("cached_token_count", maxStr),
+			attr("cache_write_token_count", maxStr),
+			attr("reasoning_token_count", maxStr),
+			attr("tool_token_count", maxStr),
+			attr("ttft_ms", "300"),
+		},
+	}
+	if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+		Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+			attr("service.name", "codex-cli"),
+		}},
+		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{rec}}},
+	}}}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	// The dashboard aggregate SUM must not raise integer overflow.
+	var summed int64
+	if err := repo.DB().QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(cache_read_tokens),0) FROM daily_model_agg`).Scan(&summed); err != nil {
+		t.Fatalf("agg SUM broke: %v", err)
+	}
+	if summed > 1<<41 {
+		t.Fatalf("hostile cache_read survived unclamped: %d", summed)
+	}
+	// The poisoned future timestamp must be clamped into the present.
+	var maxTS int64
+	repo.DB().QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(timestamp),0) FROM api_requests WHERE session_id='r4hostile'`).Scan(&maxTS)
+	if maxTS > time.Now().Add(10*time.Minute).Unix() {
+		t.Fatalf("future timestamp not clamped: %d", maxTS)
+	}
+}
+
+// TestExportResultPartialVsTotal pins the OTLP delivery contract's decision
+// table (R4 docs P1-3): only failed>=total is a total failure (error); any
+// smaller failure count is a PartialSuccess, never an error.
+func TestExportResultPartialVsTotal(t *testing.T) {
+	resp := &collogspb.ExportLogsServiceResponse{}
+	mk := func(r *collogspb.ExportLogsServiceResponse) *collogspb.ExportLogsServiceResponse {
+		r.PartialSuccess = &collogspb.ExportLogsPartialSuccess{RejectedLogRecords: 2}
+		return r
+	}
+
+	allOK := &ingestStats{total: 5, failed: 0}
+	if _, err := exportResult(allOK, resp, mk); err != nil {
+		t.Fatalf("all-success batch must not error: %v", err)
+	}
+
+	partial := &ingestStats{total: 5, failed: 2}
+	got, err := exportResult(partial, resp, mk)
+	if err != nil {
+		t.Fatalf("partial failure must NOT be a total error: %v", err)
+	}
+	if got.PartialSuccess == nil || got.PartialSuccess.RejectedLogRecords != 2 {
+		t.Fatalf("partial failure must surface PartialSuccess, got %+v", got.PartialSuccess)
+	}
+
+	totalFail := &ingestStats{total: 5, failed: 5}
+	if _, err := exportResult(totalFail, resp, mk); err == nil {
+		t.Fatal("total failure must return an error")
+	}
+
+	// The DSH ratio bug shape: one failed among many must NOT read as total.
+	oneOfMany := &ingestStats{total: 40, failed: 1}
+	if _, err := exportResult(oneOfMany, resp, mk); err != nil {
+		t.Fatalf("1-of-40 failure must be PartialSuccess, not Internal: %v", err)
+	}
+}
+
+// TestDSHStatsRecordPerRecord pins the R4 protocol F4 fix: stats.record() is
+// called once per DSH LogRecord (a feedback upload carries a whole session
+// prefix in ONE ResourceLogs), not once per ResourceLogs — otherwise any
+// single insert failure read as failed>=total and flipped the whole export
+// to a pointless full-500 retry.
+func TestDSHStatsRecordPerRecord(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+	s := &logsServiceServer{repo: repo}
+
+	now := uint64(time.Now().UnixNano())
+	lr := func(step int, prompt, assistant string) *logspb.LogRecord {
+		return &logspb.LogRecord{
+			TimeUnixNano: now + uint64(step)*1e9,
+			Attributes: []*commontpb.KeyValue{
+				{Key: "event.type", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "step/start"}}},
+				{Key: "session.id", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "stats-ratio"}}},
+				{Key: "step.prompt", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: prompt}}},
+				{Key: "step.assistant", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: assistant}}},
+			},
+		}
+	}
+	rl := &logspb.ResourceLogs{
+		Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+			{Key: "service.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "deepseek-harness-plugin"}}},
+		}},
+		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{
+			lr(1, "p1", "a1"), lr(2, "p2", "a2"), lr(3, "p3", "a3"),
+		}}},
+	}
+
+	stats := &ingestStats{}
+	s.handleDSHResourceLogs(context.Background(), rl, stats)
+	if stats.total != 3 {
+		t.Fatalf("stats.total = %d, want 3 (one per LogRecord, not one per ResourceLogs)", stats.total)
 	}
 }
 

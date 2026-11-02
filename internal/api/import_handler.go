@@ -205,7 +205,10 @@ func (h *Handler) ImportStart(w http.ResponseWriter, r *http.Request) {
 	}
 	request.JobID = strings.TrimSpace(request.JobID)
 	// Mutual exclusion with the codex migration: both drive the staged
-	// import pipeline against the same live DB.
+	// import pipeline against the same live DB. writerBusMu makes this check
+	// atomic vs the migration's start decision (R4 concurrency F2).
+	h.writerBusMu.Lock()
+	defer h.writerBusMu.Unlock()
 	h.codexMigrate.mu.Lock()
 	migrationRunning := h.codexMigrate.running
 	h.codexMigrate.mu.Unlock()

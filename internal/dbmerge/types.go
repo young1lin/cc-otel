@@ -76,12 +76,12 @@ type TimeWindow struct {
 }
 
 type Options struct {
-	BatchSize    int
-	SourceID     string
-	Location     *time.Location
-	TotalRows    int64
-	Progress     ProgressFunc
-	Window       *TimeWindow
+	BatchSize int
+	SourceID  string
+	Location  *time.Location
+	TotalRows int64
+	Progress  ProgressFunc
+	Window    *TimeWindow
 	// RetentionDays scopes the post-migration agg sanity check to the
 	// retention window when > 0: Cleanup prunes daily_model_agg older than
 	// this while api_requests is never pruned, so an all-time comparison

@@ -143,7 +143,7 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 				FROM codex_api_requests ORDER BY id ASC`
 			scan = func(rows *sql.Rows) (Row, error) {
 				var v struct {
-					Timestamp, Input, Output, CacheRead, CacheCreate                 int64
+					Timestamp, Input, Output, CacheRead, CacheCreate                  int64
 					Reasoning, Total, Cost, Duration, TTFT, HTTPStatus, EventSequence int64
 					SessionID, UserID, Model                                          string
 					Endpoint, ConversationID, EventName, TerminalType                 string
@@ -287,8 +287,8 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 type CodexMigrationCounts struct {
 	SourceTable string `json:"source_table"`
 	TargetTable string `json:"target_table"`
-	SourceRows  int64 `json:"source_rows"`
-	NewRows     int64 `json:"new_rows"`
+	SourceRows  int64  `json:"source_rows"`
+	NewRows     int64  `json:"new_rows"`
 	// ExistingRows counts source rows whose unified identity already exists
 	// in the target table (previously migrated, or an in-source duplicate of
 	// a row that will land first).
@@ -412,7 +412,16 @@ func MigrateCodexToAll(ctx context.Context, target *sql.DB, options Options) (Re
 		        (SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ?)`
 	args := []any{db.CodexServiceName, db.CodexServiceName}
 	if options.RetentionDays > 0 {
-		cutoff := time.Now().In(options.Location).AddDate(0, 0, -options.RetentionDays)
+		now := time.Now().In(options.Location)
+		cutoff := now.AddDate(0, 0, -options.RetentionDays)
+		// Truncate to LOCAL MIDNIGHT on BOTH sides. daily_model_agg is keyed
+		// by whole days and retention prunes it day-granular, so the agg side
+		// always keeps the entire cutoff day; an instant-precise timestamp
+		// cutoff would exclude that day's rows before the current time-of-day
+		// from the api_requests count and false-fail the check — a boundary-day
+		// row reproduced verification_failed on the very first migration
+		// (R4 regression review P1).
+		cutoff = time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, options.Location)
 		query = `SELECT (SELECT COUNT(*) FROM api_requests WHERE service_name = ? AND timestamp >= ?),
 		        (SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ? AND date >= ?)`
 		args = []any{db.CodexServiceName, cutoff.Unix(), db.CodexServiceName, cutoff.Format("2006-01-02")}

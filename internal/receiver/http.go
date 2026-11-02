@@ -104,9 +104,12 @@ func otlpEndpoint(newReq func() proto.Message, export func(context.Context, prot
 		if err != nil {
 			// 413 for size violations (retrying the same body cannot succeed;
 			// OTLP collectors conventionally answer 413/400 here), 400 for
-			// transport-level read failures.
+			// transport-level read failures. MaxBytesError covers the raw
+			// (uncompressed) over-limit path — only the inflated-over-limit path
+			// raised errOTLPBodyTooLarge before (R4 protocol F8).
 			status := http.StatusBadRequest
-			if errors.Is(err, errOTLPBodyTooLarge) {
+			var maxErr *http.MaxBytesError
+			if errors.Is(err, errOTLPBodyTooLarge) || errors.As(err, &maxErr) {
 				status = http.StatusRequestEntityTooLarge
 			}
 			log.Printf("OTLP/HTTP %s: read body: %v", r.URL.Path, err)

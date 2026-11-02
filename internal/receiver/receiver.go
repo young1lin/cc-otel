@@ -70,10 +70,15 @@ func (s *ingestStats) record() { s.total++ }
 func (s *ingestStats) fail()   { s.failed++ }
 
 // exportResult folds the stats into a response: a batch where EVERY record
-// failed storage returns a retryable error (gRPC Internal / HTTP 500) — safe
-// because nothing landed, so the exporter's retry re-inserts cleanly; a
-// partial failure returns success with PartialSuccess so the exporter keeps
-// its queue but the loss is visible to its metrics.
+// failed storage answers gRPC Internal / HTTP 500 so the batch is NOT
+// acknowledged as delivered (whether the exporter retries is exporter-
+// dependent — gRPC INTERNAL is conventionally non-retryable, OTLP/HTTP's
+// must-retry set is 429/502/503/504; nothing landed, so a retry that does
+// happen cannot duplicate rows). A partial failure returns success with
+// PartialSuccess — per OTLP semantics the rejected records are TERMINAL for
+// the exporter (dropped with diagnostics, not re-queued), which keeps
+// partially-landed rows from being duplicated; only api_requests rows with
+// a request_id are retry-idempotent, so re-queuing them would corrupt.
 func exportResult[T any](stats *ingestStats, resp T, mkPartial func(T) T) (T, error) {
 	var zero T
 	if stats.failed > 0 {
@@ -96,7 +101,6 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 		// so a collector batching several clients into one request still lands
 		// each of them in its own path.
 		if resourceLogsIsDSH(rl) {
-			stats.record()
 			if s.handleDSHResourceLogs(ctx, rl, stats) {
 				shouldNotify = true
 			}
@@ -140,7 +144,7 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 					apiReq.ActualModel = s.cfg.ResolveActualModel(apiReq.Model)
 					if inserted, err := s.repo.InsertRequest(ctx, apiReq); err != nil {
 						log.Printf("failed to insert api_request (session=%s model=%s request_id=%s): %v",
-						event.SessionID, event.Model, event.RequestID, err)
+							event.SessionID, event.Model, event.RequestID, err)
 						stats.fail()
 					} else if inserted {
 						shouldNotify = true
@@ -148,27 +152,27 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 				case "user_prompt":
 					if err := s.repo.InsertUserPrompt(ctx, event); err != nil {
 						log.Printf("failed to insert user_prompt: %v", err)
-					stats.fail()
+						stats.fail()
 					}
 				case "tool_decision":
 					if err := s.repo.InsertToolDecision(ctx, event); err != nil {
 						log.Printf("failed to insert tool_decision: %v", err)
-					stats.fail()
+						stats.fail()
 					}
 				case "tool_result":
 					if err := s.repo.InsertToolResult(ctx, event); err != nil {
 						log.Printf("failed to insert tool_result: %v", err)
-					stats.fail()
+						stats.fail()
 					}
 				case "api_error":
 					if err := s.repo.InsertAPIError(ctx, event); err != nil {
 						log.Printf("failed to insert api_error: %v", err)
-					stats.fail()
+						stats.fail()
 					}
 				default:
 					if err := s.repo.InsertEvent(ctx, event); err != nil {
 						log.Printf("failed to insert event: %v", err)
-					stats.fail()
+						stats.fail()
 					}
 				}
 			}
@@ -247,6 +251,11 @@ func parseEventFromOTLP(lr *logspb.LogRecord, resource *resourcepb.Resource) *db
 	if lr.TimeUnixNano > 0 {
 		ts = time.Unix(0, int64(lr.TimeUnixNano))
 	} else {
+		ts = time.Now()
+	}
+	// Same future-dated guard as the codex dispatcher: broken clocks must not
+	// pin rows outside retention or poison date bucketing (R4 protocol).
+	if maxTS := time.Now().Add(5 * time.Minute); ts.After(maxTS) {
 		ts = time.Now()
 	}
 
@@ -402,10 +411,25 @@ func anyValueToString(v *commontpb.AnyValue) string {
 	}
 }
 
+// attrIntMagCap bounds every integer parsed from client attributes. Token
+// counters are the load-bearing case: a hostile exporter sending MaxInt64
+// tokens survives INSERT (SQLite stores it) but detonates every SUM() over
+// daily_model_agg / api_requests with "integer overflow" — permanently 500-ing
+// the dashboards until retention prunes the poisoned day (R4 protocol live
+// repro). No legitimate counter comes within six orders of magnitude of the
+// cap; ~9M capped rows would still be needed to overflow a SUM.
+const attrIntMagCap = int64(1) << 40 // ~1.1e12
+
 func parseAttrInt(attrs map[string]string, key string) int64 {
 	v, err := strconv.ParseInt(attrs[key], 10, 64)
 	if err != nil {
 		return 0
+	}
+	if v > attrIntMagCap {
+		return attrIntMagCap
+	}
+	if v < -attrIntMagCap {
+		return -attrIntMagCap
 	}
 	return v
 }

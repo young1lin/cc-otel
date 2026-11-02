@@ -106,8 +106,8 @@ type Event struct {
 // cache parts separately — consumers must not mix the two endpoints.
 type Dashboard struct {
 	TotalCostUSD             float64 `json:"total_cost_usd"`
-	TotalInputTokens         int64   `json:"total_input_tokens"`      // folded input side on /api/dashboard; raw SUM(input) on the codex shim
-	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens"` // SUM(cache_read_tokens) — matches column "Cache Read"
+	TotalInputTokens         int64   `json:"total_input_tokens"`          // folded input side on /api/dashboard; raw SUM(input) on the codex shim
+	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens"`     // SUM(cache_read_tokens) — matches column "Cache Read"
 	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens"` // codex shim only; keeps cache_hit_rate payload-reproducible
 	TotalOutputTokens        int64   `json:"total_output_tokens"`
 	CacheHitRate             float64 `json:"cache_hit_rate"`
@@ -239,10 +239,10 @@ type IntradayModelSummary struct {
 
 // Repository provides data access methods for the SQLite database.
 type Repository struct {
-	db                  *sql.DB
-	stmtInsReq     *sql.Stmt    // prepared: INSERT OR IGNORE INTO api_requests
-	stmtUpsAgg     *sql.Stmt    // prepared: UPSERT INTO daily_model_agg
-	stmtUpsAggToks *sql.Stmt    // prepared: UPSERT INTO daily_model_agg (token deltas only)
+	db             *sql.DB
+	stmtInsReq     *sql.Stmt // prepared: INSERT OR IGNORE INTO api_requests
+	stmtUpsAgg     *sql.Stmt // prepared: UPSERT INTO daily_model_agg
+	stmtUpsAggToks *sql.Stmt // prepared: UPSERT INTO daily_model_agg (token deltas only)
 }
 
 // NewRepository returns a Repository backed by the given database connection.
@@ -253,9 +253,10 @@ func NewRepository(db *sql.DB) *Repository {
 
 	// A Prepare failure leaves a nil *sql.Stmt; every later Exec panics.
 	// There is no per-call fallback anywhere: schema drift must surface as a
-	// loud startup error (NewRepository returns the error and the caller
-	// refuses to serve), not a first-request panic (R3 error-recovery F6 —
-	// the old log line claimed a fallback that never existed).
+	// loud startup panic naming the statement, not a first-request nil deref
+	// mid-flight (R3 error-recovery F6 — the old log line claimed a fallback
+	// that never existed; R4 regression review confirmed the zombie path
+	// crashed on first write anyway).
 	prepare := func(target **sql.Stmt, label, query string) {
 		stmt, err := db.Prepare(query)
 		if err != nil {
@@ -566,8 +567,10 @@ func (r *Repository) applyPendingTTFTForRequestTx(ctx context.Context, tx *sql.T
 
 // InsertRawEvent stores the complete original OTEL event as JSON for future re-processing.
 // A future-dated client clock would otherwise pin the row outside every TTL
-// sweep and poison MIN(timestamp) statistics forever, so timestamps are
-// clamped to now (R3 review: malformed clocks must not outlive retention).
+// sweep forever (CleanupRaw only deletes timestamp < before), so timestamps
+// are clamped to now (R3 review: malformed clocks must not outlive retention;
+// rationale reworded in the R4 docs pass — raw_otlp_events has no MIN()
+// consumer, the TTL escape was the real issue).
 func (r *Repository) InsertRawEvent(ctx context.Context, eventType string, timestamp int64, rawJSON string) error {
 	if now := time.Now().Unix(); timestamp > now+60 {
 		timestamp = now
@@ -1661,12 +1664,19 @@ func (r *Repository) Cleanup(ctx context.Context, beforeUnix int64) (int64, erro
 // These tables store the full OTLP JSON and grow quickly; they are safe to prune
 // aggressively since the structured tables already hold the parsed data.
 // pending_ttft_spans rides the same sweep: processed rows are dead weight, and
-// unprocessed rows older than the window can never match a future request
+// unprocessed rows older than the window are dropped — the request_id match
+// path itself is unbounded in time, so without this purge a stale unprocessed
+// row could in principle pair with a future request reusing its request_id
 // (R3 security/observability finding: nothing else ever deleted them).
+// codex_raw_otlp_events is deliberately EXEMPT (R4 concurrency F4): it is the
+// archive the migration copies wholesale, its "archive tables are never
+// modified or deleted" invariant (dbmerge/stage.go) assumes freeze-after-write,
+// and TTL-pruning it made every migration re-run re-insert the whole archive
+// (misleading inserted_rows + WAL churn).
 func (r *Repository) CleanupRaw(ctx context.Context, beforeUnix int64) (int64, error) {
 	var total int64
 
-	for _, tbl := range []string{"raw_otlp_events", "codex_raw_otlp_events"} {
+	for _, tbl := range []string{"raw_otlp_events"} {
 		res, err := r.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE timestamp < ?`, tbl), beforeUnix)
 		if err != nil {
 			return total, fmt.Errorf("cleanup raw %s: %w", tbl, err)

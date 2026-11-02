@@ -59,6 +59,49 @@ func TestMigrateCodexToAllSurvivesRetentionPruning(t *testing.T) {
 	}
 }
 
+// TestMigrateCodexToAllBoundaryDaySanity pins the R4 regression P1: the
+// retention-scoped sanity check compares instant-precise api_requests
+// timestamps against day-granular agg dates. A row on the exact cutoff day
+// BEFORE the current time-of-day kept the false-failure alive: agg counted
+// the whole day, the row count did not, and even the FIRST migration
+// reported verification_failed. The cutoff must be local midnight on both
+// sides.
+func TestMigrateCodexToAllBoundaryDaySanity(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: filepath.Join(t.TempDir(), "boundary.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+
+	// A row early on the boundary day (-90d) — before any plausible time-of-day.
+	boundary := time.Now().AddDate(0, 0, -90)
+	earlyBoundary := time.Date(boundary.Year(), boundary.Month(), boundary.Day(), 0, 30, 0, 0, boundary.Location())
+	if _, err := repo.DB().Exec(`INSERT INTO codex_api_requests
+		(timestamp, session_id, model, input_tokens, output_tokens, total_tokens) VALUES (?, ?, ?, 8, 2, 10)`,
+		earlyBoundary.Unix(), "boundary-conv", "gpt-5.1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Migration with retention covering the boundary day must verify cleanly.
+	res, err := MigrateCodexToAll(context.Background(), repo.DB(), Options{RetentionDays: 90})
+	if err != nil {
+		t.Fatalf("boundary-day row must not false-fail verification: %v", err)
+	}
+	if res.InsertedRows != 1 {
+		t.Fatalf("inserted %d rows, want 1", res.InsertedRows)
+	}
+
+	// And re-runs stay clean.
+	res2, err := MigrateCodexToAll(context.Background(), repo.DB(), Options{RetentionDays: 90})
+	if err != nil {
+		t.Fatalf("boundary-day re-run must not fail: %v", err)
+	}
+	if res2.InsertedRows != 0 {
+		t.Fatalf("re-run inserted %d rows, want 0", res2.InsertedRows)
+	}
+}
+
 func TestMigrateCodexToAllNormalizesAndIsIdempotent(t *testing.T) {
 	target := importTarget(t)
 	ctx := context.Background()

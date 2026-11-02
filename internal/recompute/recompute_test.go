@@ -3,7 +3,9 @@ package recompute
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/young1lin/cc-otel/internal/config"
 	"github.com/young1lin/cc-otel/internal/db"
@@ -104,6 +106,7 @@ func TestRun_SkipsClaude(t *testing.T) {
 // entry's CacheRead is 0, so:
 //   - with subtraction:    1M uncached*$1 + 1M cacheRead*$0.10 = $1.10 = 110000 units
 //   - without subtraction: 2M input*$1    + 1M cacheRead*$0.10 = $2.10 = 210000 units
+//
 // Asserting 110000 proves the 1M cache_read was subtracted from input first.
 func TestRun_CodexSubtractsCacheRead(t *testing.T) {
 	db := newDB(t)
@@ -131,6 +134,43 @@ func TestRun_CodexSubtractsCacheRead(t *testing.T) {
 	mustScan(t, db, `SELECT cost_usd FROM codex_daily_model_agg WHERE model='codex-test'`, &aggCost)
 	if aggCost != 110000 {
 		t.Fatalf("codex_daily_model_agg cost_usd = %d, want 110000 (atomic rebuild)", aggCost)
+	}
+}
+
+// TestRun_ScopedRebuildDoesNotResurrectPrunedAgg pins the R4 integrity F4
+// fix: an unscoped rebuild recomputed daily_model_agg from never-pruned
+// api_requests, resurrecting agg rows older than the retention window that
+// the startup Cleanup had deleted — dashboards showed out-of-retention data
+// until the next restart re-pruned. With RetentionDays the rebuild must
+// delete+rebuild only in-window dates.
+func TestRun_ScopedRebuildDoesNotResurrectPrunedAgg(t *testing.T) {
+	db := newDB(t)
+	fresh := time.Now().Add(-1 * time.Hour)
+	old := time.Now().AddDate(0, 0, -200)
+	for i, ts := range []time.Time{fresh, old} {
+		mustExec(t, db, `INSERT INTO api_requests
+			(id, timestamp, session_id, model, input_tokens, output_tokens, service_name, cost_usd)
+			VALUES (?, ?, ?, 'gpt-5.1', 100, 10, 'codex', 0)`,
+			int64(i+1), ts.Unix(), fmt.Sprintf("sess-%d", i))
+	}
+
+	reg, err := pricing.NewRegistry(context.Background(), db, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), db, reg, Options{RetentionDays: 90}, true, nil); err != nil {
+		t.Fatalf("scoped recompute run: %v", err)
+	}
+
+	var n int
+	mustScan(t, db, `SELECT COUNT(*) FROM daily_model_agg`, &n)
+	if n != 1 {
+		t.Fatalf("scoped rebuild produced %d agg rows, want 1 (only the in-window day)", n)
+	}
+	var reqs int
+	mustScan(t, db, `SELECT request_count FROM daily_model_agg`, &reqs)
+	if reqs != 1 {
+		t.Fatalf("agg request_count = %d, want 1 (the 200-day-old row must stay pruned)", reqs)
 	}
 }
 

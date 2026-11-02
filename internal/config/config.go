@@ -291,8 +291,11 @@ func Load(path string) (*Config, error) {
 // validate rejects configs that would misbehave silently at runtime:
 // a :memory: database vanishes with the process (and defeats every
 // persistence expectation, including the migration button), and port 0
-// silently disables a listener while the daemon reports healthy
-// (R3 config review F1/F3).
+// for otel_port/web_port makes the listener bind a RANDOM OS-assigned
+// ephemeral port while /api/status keeps reporting the configured number —
+// exporters and users would chase a port nothing listens on (R3 config
+// review F1/F3, wording corrected in the R4 docs pass: only otlp_http_port
+// 0 disables by design).
 func (c *Config) validate() error {
 	if strings.TrimSpace(c.DBPath) == ":memory:" {
 		return fmt.Errorf("config: db_path ':memory:' is not supported — point db_path at a real file")
@@ -305,6 +308,13 @@ func (c *Config) validate() error {
 	}
 	if c.OTLPHTTPPort < 0 || c.OTLPHTTPPort > 65535 {
 		return fmt.Errorf("config: otlp_http_port %d out of range (0 disables, 1-65535 binds)", c.OTLPHTTPPort)
+	}
+	// Negative retention silently meant keep-everything everywhere (Cleanup,
+	// migration sanity both guard on >0) — reject so the misconfiguration is
+	// loud instead of a surprise audit gap (R4 integrity F5). 0 keeps its
+	// documented all-time semantics for tests.
+	if c.RetentionDays < 0 {
+		return fmt.Errorf("config: retention_days %d is negative (0 = keep everything)", c.RetentionDays)
 	}
 	return nil
 }

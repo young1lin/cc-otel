@@ -39,18 +39,18 @@ const (
 )
 
 type codexMigrationStatus struct {
-	Running    bool                             `json:"running"`
-	StartedAt  int64                            `json:"started_at"`
-	FinishedAt int64                            `json:"finished_at"`
-	Phase      dbmerge.Phase                    `json:"phase,omitempty"`
-	Table      string                           `json:"table,omitempty"`
-	TotalRows  int64                            `json:"total_rows,omitempty"`
-	Processed  int64                            `json:"processed_rows,omitempty"`
-	Inserted   int64                            `json:"inserted_rows,omitempty"`
-	Duplicates int64                            `json:"duplicate_rows,omitempty"`
-	Preview    []dbmerge.CodexMigrationCounts   `json:"preview,omitempty"`
-	LastResult *dbmerge.Result                  `json:"last_result,omitempty"`
-	Error      string                           `json:"error,omitempty"`
+	Running    bool                           `json:"running"`
+	StartedAt  int64                          `json:"started_at"`
+	FinishedAt int64                          `json:"finished_at"`
+	Phase      dbmerge.Phase                  `json:"phase,omitempty"`
+	Table      string                         `json:"table,omitempty"`
+	TotalRows  int64                          `json:"total_rows,omitempty"`
+	Processed  int64                          `json:"processed_rows,omitempty"`
+	Inserted   int64                          `json:"inserted_rows,omitempty"`
+	Duplicates int64                          `json:"duplicate_rows,omitempty"`
+	Preview    []dbmerge.CodexMigrationCounts `json:"preview,omitempty"`
+	LastResult *dbmerge.Result                `json:"last_result,omitempty"`
+	Error      string                         `json:"error,omitempty"`
 }
 
 func (j *codexMigrationJob) snapshot() codexMigrationStatus {
@@ -95,6 +95,11 @@ func (h *Handler) CodexMigrate(w http.ResponseWriter, r *http.Request) {
 		h.importsMu.Lock()
 		imports := h.imports
 		h.importsMu.Unlock()
+		// Serialize the two writers' start decisions (R4 concurrency F2):
+		// hold writerBusMu across BOTH the import check and the running-flag
+		// flip so a concurrent import start cannot slip between them.
+		h.writerBusMu.Lock()
+		defer h.writerBusMu.Unlock()
 		if imports != nil && imports.HasActiveJob() {
 			writeAPIError(w, http.StatusConflict, "import_in_progress", "A database import is running; start the Codex migration after it finishes", nil)
 			return
@@ -196,18 +201,26 @@ func (h *Handler) runCodexMigration() {
 	// Re-run the inspection AFTER the copy so the finished card shows the
 	// post-migration truth (all rows already merged) instead of the stale
 	// pre-run preview that promised them as new. Bounded deadline: these run
-	// AFTER the migration ctx is done, so an unbounded Background() here
-	// could stall a shutdown join for as long as the inspection takes.
-	// No-op re-runs (nothing inserted) keep the pre-run preview — it already
-	// showed new_rows=0 for every table, and skipping the staging pass saves
-	// its full-archive cost (~3s on the production archive) on repeat clicks.
-	postCtx, postCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// AFTER the migration ctx is done (a shutdown may have cancelled it), so
+	// the post-inspection and the WAL checkpoints anchor to the SHUTDOWN ctx,
+	// not Background() — Close() joins this goroutine via migrateWG and a
+	// detached 2-minute context would stall that join past cancel (R4
+	// concurrency P3). No-op re-runs (nothing inserted) keep the pre-run
+	// preview — it already showed new_rows=0 for every table, and skipping the
+	// staging pass saves its full-archive cost (~3s on the production archive).
+	postParent := h.shutdownCtx
+	if postParent == nil { // unit tests build Handlers without SetShutdownContext
+		postParent = context.Background()
+	}
+	postCtx, postCancel := context.WithTimeout(postParent, 2*time.Minute)
 	defer postCancel()
 	if result.InsertedRows > 0 {
 		if post, perr := dbmerge.InspectCodexToAll(postCtx, h.repo.DB()); perr == nil {
 			job.mu.Lock()
 			job.preview = post
 			job.mu.Unlock()
+		} else {
+			log.Printf("codex migration: post-run inspection failed (card keeps the pre-run preview): %v", perr)
 		}
 	}
 	job.mu.Lock()

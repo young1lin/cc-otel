@@ -10,14 +10,14 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ### Fixed
 
-- **OTLP delivery contract**: a batch where EVERY record fails storage now answers gRPC Internal / HTTP 500 so exporters retry instead of pruning the batch as delivered; partial failures return PartialSuccess (visible, not retried; partially-landed records cannot be duplicated by a retry).
+- **OTLP delivery contract**: a batch where EVERY record fails storage now answers gRPC Internal / HTTP 500, so the batch is no longer acknowledged as delivered (retry behaviour is exporter-dependent; since nothing landed, a retry that does happen cannot duplicate rows); partial failures return PartialSuccess (rejected records are terminal per OTLP semantics — visible, not re-sent — so partially-landed rows cannot be duplicated).
 - **Codex completion replay double-count**: the replay guard matched timestamps exactly, but tracker-finalized rows keep the api_request's earlier timestamp — genuine redelivery slipped past and inserted a duplicate. Identity is now (session, model, full token vector) with a window match; e2e pins replay as a no-op.
 - **Retention-scoped migration sanity check**: daily_model_agg is retention-pruned while api_requests is not; the all-time comparison false-failed every re-run after the first post-migration prune. New `dbmerge.Options.RetentionDays` (handler injects config) + prune→re-migrate regression test.
 - **DSN pool pragmas**: busy_timeout/cache_size/mmap_size/temp_store/journal_size_limit now reach EVERY pooled connection via the DSN (previously only the first).
 - **WAL high-water reclamation**: post-migration PASSIVE never shrinks the -wal file (measured frozen at 340MB in production); added a TRUNCATE checkpoint + journal_size_limit(64MB).
 - **recompute apply rebuilds agg on 0 changes**: the apply button is the only repair path for agg drift; skipping the rebuild left drift permanent.
 - **Repository.Prepare hard-fails**: the logged per-call fallback never existed; schema drift panicked on first request. Startup now panics naming the statement.
-- **Config guards**: db_path ':memory:' and otel_port/web_port <= 0 are rejected at Load (they silently disabled listeners while health said ok).
+- **Config guards**: db_path ':memory:', otel_port/web_port <= 0 and negative retention_days are rejected at Load (port 0 bound a random ephemeral port while /api/status kept reporting the configured number; only otlp_http_port: 0 keeps its explicit disable semantics).
 - **Same-origin guard**: mutating /api/* routes (pricing, import, codex/migrate) reject cross-origin browser requests (Origin check; curl/CLI unaffected).
 - **pricing POST body capped at 1MB** (MaxBytesReader, matching import).
 - **pending_ttft_spans purge**: processed/stale rows ride the raw TTL sweep (previously grew forever); raw archive future timestamps clamp to now.

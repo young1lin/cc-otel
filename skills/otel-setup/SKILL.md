@@ -142,7 +142,7 @@ Where the data lands:
 Since the AllClient merge every client — Codex included — is normalized into the
 Claude Code shape and shares one unified pool, distinguished by the `service_name`
 attribution label rather than by a query filter. Codex's pre-merge `codex_*`
-archive is pulled in by the one-click migration on the AllClient page; live Codex
+archive is pulled in by the one-click migration (the "Merge Codex history" button in the DB-import dialog); live Codex
 reports are normalized at ingest. The legacy `/api/codex/*` read routes still serve
 the codex-specific dashboards from the same pool.
 

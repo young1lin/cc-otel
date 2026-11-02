@@ -26,7 +26,7 @@ Location varies by OS:
 ## Verify
 
 1. Start a Codex CLI session and make a request
-2. Open `http://localhost:8899` and check the "All Clients" tab (Source column shows `codex`; legacy history needs the one-click migration on the AllClient page first)
+2. Open `http://localhost:8899` — the front page is the unified per-client view (Client column shows `codex`; legacy history needs the one-click migration on the AllClient page first)
 3. Check that token counts appear in the dashboard
 
 ## Differences from Claude Code

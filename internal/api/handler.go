@@ -3,8 +3,8 @@ package api
 import (
 	"compress/gzip"
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -132,9 +132,9 @@ type Handler struct {
 	configPath string
 	pricer     pricing.Registry // optional; nil disables /api/pricing/lookup and the pricing block in /api/status
 
-	pricingWriter pricing.Writer  // optional; nil disables /api/pricing CRUD
-	recompute     *recomputeJob   // singleton background recompute; never nil after NewHandler
-	shutdownCtx   context.Context // cancels the background recompute goroutine on shutdown
+	pricingWriter pricing.Writer     // optional; nil disables /api/pricing CRUD
+	recompute     *recomputeJob      // singleton background recompute; never nil after NewHandler
+	shutdownCtx   context.Context    // cancels the background recompute goroutine on shutdown
 	codexMigrate  *codexMigrationJob // singleton AllClient migration job; never nil after NewHandler
 	migrateWG     sync.WaitGroup     // tracks the migration goroutine so Close can join it
 
@@ -149,17 +149,24 @@ type Handler struct {
 	imports        *importManager
 	importInitErr  error
 	importsStarted bool
+
+	// writerBusMu serializes the START decisions of the two background writers
+	// that share the live DB (codex migration and file import). Each has its
+	// own running-flag check, but the two check-then-act sequences could
+	// interleave and start both jobs together; batches then fight over BEGIN
+	// IMMEDIATE (R4 concurrency F2 — bounded by BUSY retries, still wrong).
+	writerBusMu sync.Mutex
 }
 
 // NewHandler creates a Handler with the given database repository, SSE broker, config,
 // and the absolute path of the config file the daemon actually loaded.
 func NewHandler(repo *db.Repository, broker *Broker, cfg *config.Config, configPath string) *Handler {
 	return &Handler{
-		repo:        repo,
-		broker:      broker,
-		cfg:         cfg,
-		configPath:  configPath,
-		recompute:   &recomputeJob{},
+		repo:         repo,
+		broker:       broker,
+		cfg:          cfg,
+		configPath:   configPath,
+		recompute:    &recomputeJob{},
 		codexMigrate: &codexMigrationJob{},
 	}
 }
@@ -299,7 +306,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pricing/lookup", h.PricingLookup)
 	mux.Handle("/api/pricing", sameOriginGuard(http.HandlerFunc(h.PricingCollection)))          // GET list / POST upsert / DELETE
 	mux.Handle("/api/pricing/recompute", sameOriginGuard(http.HandlerFunc(h.PricingRecompute))) // GET status / POST start
-	mux.HandleFunc("/api/pricing/suggest", h.PricingSuggest)     // GET on-demand OpenRouter lookup
+	mux.HandleFunc("/api/pricing/suggest", h.PricingSuggest)                                    // GET on-demand OpenRouter lookup
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
 	mux.HandleFunc("/api/clients", h.Clients)
 	mux.HandleFunc("/api/hours", h.Hours)

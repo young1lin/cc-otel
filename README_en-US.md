@@ -195,16 +195,16 @@ An embedded gRPC server implementing the official OTLP `LogsService`, `MetricsSe
 
 - Each `claude_code.api_request` log event carries the full detail of one API call (model, tokens, cost, duration, `session.id`, `user.id`, etc. as resource + record attributes) and is written to the `api_requests` table.
 - `claude_code.token.usage`, `claude_code.cost.usage` and other metrics are intentionally **not persisted** (redundant with the `api_request` log); the gRPC call is still accepted so clients don't error out.
-- Trace spans are mined for `ttft_ms` and back-filled into the matching `api_requests` / `codex_api_requests` rows.
-- The `raw_otlp_events` / `codex_raw_otlp_events` tables remain in the schema for compatibility with existing backfill tools but **no new rows are written**.
+- Trace spans are mined for `ttft_ms` and back-filled into the matching unified-pool `api_requests` rows.
+- `raw_otlp_events` still receives un-modeled Claude Code event payloads (TTL-bounded, for debugging/backfill); `codex_raw_otlp_events` archives un-modeled codex events (`turn_ttft`, `sandbox_outcome`, ...) for future schema widening. Both keep schema compatibility with existing backfill tools.
 
 **2. Store (`internal/db/`)**
 
 A single-file SQLite database (WAL mode + `busy_timeout`):
 
 - `api_requests` / `codex_api_requests` -- one row per API call, the finest-grained fact table.
-- `daily_model_agg` / `codex_daily_model_agg` -- pre-aggregated on the insert path by (date × model); all chart / Daily Detail queries hit these tables (latency < 3 ms).
-- `raw_otlp_events` / `codex_raw_otlp_events` -- legacy raw-event tables (now write-frozen) + background sweepers: `raw_ttl_days` (default 5d) prunes raw tables hourly; the rest of the detail tables are governed by `retention_days` (default 90d).
+- `daily_model_agg` -- pre-aggregated on the insert path by (date × model × client); all chart / Daily Detail queries hit this one table (`service_name` splits clients, latency < 3 ms). `codex_daily_model_agg` is the frozen pre-merge codex archive.
+- `raw_otlp_events` -- raw-event table + background sweeper: `raw_ttl_days` (default 5d) prunes it hourly. `codex_raw_otlp_events` is a frozen archive excluded from the TTL sweep (the migration relies on its freeze semantics); the rest of the detail tables are governed by `retention_days` (default 90d).
 
 Token accounting follows Anthropic's [Prompt caching spec](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) precisely: total input side = `input_tokens` + `cache_read_tokens` + `cache_creation_tokens`, surfaced in the UI as three columns (Uncached / Cache Read / Cache Create).
 
@@ -246,7 +246,7 @@ Claude Code must export OTLP via gRPC to CC-OTEL. Add these env vars to `~/.clau
 
 ### Codex CLI Setup
 
-cc-otel also supports receiving OpenTelemetry telemetry from OpenAI Codex CLI. Codex shares the same OTLP gRPC port (`:4317`) with Claude Code. cc-otel auto-detects the source via the OTLP Resource `service.name` attribute and routes data to separate `codex_*` tables.
+cc-otel also supports receiving OpenTelemetry telemetry from OpenAI Codex CLI. Codex shares the same OTLP gRPC port (`:4317`) with Claude Code. cc-otel auto-detects the source via the OTLP Resource `service.name` attribute and writes Codex request rows into the **same unified pool** as Claude Code (`api_requests` / `daily_model_agg`, distinguished by `service_name='codex'`); the legacy `codex_*` tables are a read-only pre-merge archive merged in by the one-click migration.
 
 Add to `~/.codex/config.toml` (backup first, then append — do not overwrite existing config):
 
@@ -258,7 +258,7 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-Start Codex and use normally. Open the dashboard (`http://localhost:8899`) and check the "All Clients" tab for Codex usage (Source column shows `codex`). The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into the unified pool's `cost_usd`, so the Cost KPI matches the Claude rows.
+Start Codex and use normally. Open the dashboard (`http://localhost:8899`) — the front page is the unified per-client view and Codex usage appears alongside Claude Code (Client column shows `codex`). The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into the unified pool's `cost_usd`, so the Cost KPI matches the Claude rows.
 
 ### opencode
 
@@ -438,7 +438,7 @@ cc-otel runs two independent cleanups:
 
 ```yaml
 retention_days: 90    # cap on full-detail tables (api_requests / events / *_events / *_agg etc.) in days; 0 = keep forever
-raw_ttl_days: 5       # cap on raw_otlp_events / codex_raw_otlp_events in days (now write-frozen, this just trims old rows); 0 = keep forever
+raw_ttl_days: 5       # cap on raw_otlp_events in days; 0 = keep forever. codex_raw_otlp_events is a frozen archive excluded from this sweep
 ```
 
 - `retention_days` (default 90) is consumed by `cc-otel cleanup` and the periodic prune.

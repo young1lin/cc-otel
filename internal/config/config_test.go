@@ -283,6 +283,6 @@ func TestLoadRejectsPortZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := Load(p); err == nil {
-		t.Fatal("otel_port 0 must be rejected (listener silently disabled)")
+		t.Fatal("otel_port 0 must be rejected (binds a random ephemeral port while status reports the configured one)")
 	}
 }

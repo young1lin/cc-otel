@@ -377,6 +377,13 @@ func (s *logsServiceServer) handleDSHResourceLogs(ctx context.Context, rl *logsp
 			if sessionID == "" {
 				continue // ops records carry no ledger identity
 			}
+			// Count PER RECORD (a feedback upload carries a whole session prefix
+			// in ONE ResourceLogs): one failed insert among N must read as a
+			// partial failure, not failed>=total => full 500 + pointless retry of
+			// the idempotent batch (R4 protocol F4).
+			if stats != nil {
+				stats.record()
+			}
 			switch attrs["event.type"] {
 			case "step/start":
 				var ref dshStepRef

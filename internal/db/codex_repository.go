@@ -28,13 +28,46 @@ import (
 // Input tokens must ALREADY be normalized to Claude semantics (uncached:
 // raw input minus cache_read minus cache_creation) by the caller — the
 // receiver does this before it builds the struct.
+// InsertCodexAPIRequest wraps insertCodexAPIRequestOnce in the same BUSY
+// retry as InsertRequest (R4 concurrency F5): a migration batch holds the
+// writer under BEGIN IMMEDIATE for up to a whole batch, a live insert can
+// hit BUSY past busy_timeout, and a PartialSuccess answer is NOT retried by
+// most OTLP SDKs — that record would be silently dropped. The request_id
+// dedup inside makes the retry idempotent.
 func (r *Repository) InsertCodexAPIRequest(ctx context.Context, req *CodexAPIRequest) (int64, error) {
+	for attempt := 0; ; attempt++ {
+		id, err := r.insertCodexAPIRequestOnce(ctx, req)
+		if err == nil || attempt >= 3 || !isBusyErr(err) {
+			return id, err
+		}
+		select {
+		case <-ctx.Done():
+			return id, ctx.Err()
+		case <-time.After(time.Duration(25<<attempt) * time.Millisecond):
+		}
+	}
+}
+
+func (r *Repository) insertCodexAPIRequestOnce(ctx context.Context, req *CodexAPIRequest) (int64, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin codex insert tx: %w", err)
 	}
 	defer tx.Rollback()
 
+	id, err := r.insertCodexRowInTx(ctx, tx, req)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// insertCodexRowInTx performs the api_requests INSERT + agg upsert inside a
+// CALLER-OWNED transaction so the orphan-completion path can share one tx
+// with its duplicate check (R4 concurrency F3: check-then-insert across two
+// autocommit transactions let two concurrent orphan redeliveries both pass
+// the check and double-insert).
+func (r *Repository) insertCodexRowInTx(ctx context.Context, tx *sql.Tx, req *CodexAPIRequest) (int64, error) {
 	res, err := tx.StmtContext(ctx, r.stmtInsReq).ExecContext(ctx,
 		req.Timestamp.Unix(), req.SessionID, req.UserID, "", 0,
 		req.Model, "",
@@ -69,7 +102,7 @@ func (r *Repository) InsertCodexAPIRequest(ctx context.Context, req *CodexAPIReq
 		return 0, fmt.Errorf("upsert daily_model_agg (codex): %w", err)
 	}
 
-	return id, tx.Commit()
+	return id, nil
 }
 
 // getCodexAPIRequestByID is a test helper reading a unified Codex row.
@@ -209,9 +242,6 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 	}
 
 	if err == sql.ErrNoRows {
-		if commitErr := tx.Commit(); commitErr != nil {
-			return false, fmt.Errorf("commit empty codex update tx: %w", commitErr)
-		}
 		// Idempotent replay guard: OTLP delivery is at-least-once, and after
 		// the first completion finalizes its row (and the tracker entry is
 		// evicted), a re-delivery would otherwise arrive here and insert a full
@@ -221,9 +251,13 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 		// cannot be matched exactly because the finalized row keeps the
 		// API-REQUEST's timestamp (up to one tracker window earlier than the
 		// completion), while an orphan-path first insert keeps the completion's
-		// own. Match a window covering both shapes.
+		// own. Match a window covering both shapes. The check AND the fallback
+		// INSERT run inside the SAME tx: two concurrent orphan redeliveries
+		// both passing an autocommit check was a double-insert TOCTOU (R4
+		// concurrency F3); if the sibling commits first, this tx's COMMIT
+		// surfaces BUSY_SNAPSHOT and the caller's retry re-runs everything.
 		var dupID int64
-		dupErr := r.db.QueryRowContext(ctx, `
+		dupErr := tx.QueryRowContext(ctx, `
 			SELECT id FROM api_requests
 			WHERE session_id = ? AND model = ? AND service_name = ?
 			  AND timestamp BETWEEN ? AND ?
@@ -238,12 +272,28 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 		).Scan(&dupID)
 		if dupErr == nil {
 			// Already applied — treat like the exact-row no-op.
+			if commitErr := tx.Commit(); commitErr != nil {
+				return false, fmt.Errorf("commit duplicate-noop codex tx: %w", commitErr)
+			}
 			return true, nil
 		}
 		if dupErr != sql.ErrNoRows {
 			return false, fmt.Errorf("codex completion identity check: %w", dupErr)
 		}
-		_, insertErr := r.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
+		// ttft/duration-only orphan (no pending row, no token field): minting
+		// a zero-token api_request would bump request_count for a request that
+		// may never have existed (per-poll SSE record racing ahead of its
+		// api_request export). No-op instead (R4 protocol F5, live-confirmed
+		// phantom under session r4adv-ttftonly).
+		if u.InputTokens == 0 && u.OutputTokens == 0 &&
+			u.CacheReadTokens == 0 && u.CacheCreationTokens == 0 &&
+			u.ReasoningTokens == 0 && u.TotalTokens == 0 {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return false, fmt.Errorf("commit ttft-only-noop codex tx: %w", commitErr)
+			}
+			return true, nil
+		}
+		if _, insertErr := r.insertCodexRowInTx(ctx, tx, &CodexAPIRequest{
 			Timestamp:           u.Timestamp,
 			SessionID:           u.SessionID,
 			Model:               u.Model,
@@ -257,9 +307,11 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 			DurationMs:          u.DurationMs,
 			TTFTMs:              u.TTFTMs,
 			EventName:           "codex.sse_event:response.completed",
-		})
-		if insertErr != nil {
+		}); insertErr != nil {
 			return false, insertErr
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			return false, commitErr
 		}
 		return false, nil
 	}

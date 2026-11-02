@@ -9,11 +9,15 @@
 //  2. codex.user_prompt        (prompt sub-event)
 //  3. codex.tool_decision      (tool sub-event)
 //  4. codex.tool_result        (tool sub-event)
-//  5. codex.sse_event response.completed (tokens — input is reported
+//  5. codex.sse_event response.completed WITHOUT tokens (the per-poll
+//     SSE log record — no usage attributes; must be a no-op)
+//  6. codex.sse_event response.completed (tokens — input is reported
 //     INCLUSIVE of cached, exactly like OpenAI — plus ttft; correlated to
 //     the anchor via span id)
-//  6. the SAME sse_event again (must dedup: no second request row, no
+//  7. the SAME sse_event again (must dedup: no second request row, no
 //     double aggregate)
+//  8. another token-less response.completed AFTER the authoritative one
+//     (a late per-poll record must not resurrect or duplicate the row)
 //
 // One extra orphan completion (no preceding api_request) exercises the
 // fallback INSERT path.
@@ -109,7 +113,7 @@ func main() {
 		span := []byte{byte(i + 1), 2, 3, 4, 5, 6, 7, 8}
 		t0 := base.Add(time.Duration(i) * 5 * time.Minute)
 
-		fmt.Println("cycle", i, ":", conv, "(model", *model + ")")
+		fmt.Println("cycle", i, ":", conv, "(model", *model+")")
 
 		// 1) request anchor
 		send("codex.api_request", record(t0, span,
