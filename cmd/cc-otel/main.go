@@ -369,6 +369,10 @@ func cmdServe() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	// Repoint OpenRouter pricing lookups at a custom API root when configured
+	// (openrouter_base_url / CC_OTEL_OPENROUTER_BASE_URL). No-op on the default.
+	pricing.SetOpenRouterBaseURL(cfg.OpenRouterBaseURL)
+
 	// Set up rotating log (5 MB cap, keep one backup)
 	logPath := filepath.Join(filepath.Dir(*cfgPath), "cc-otel.log")
 	lw := logrotate.New(logPath)

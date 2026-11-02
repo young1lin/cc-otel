@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,12 +50,17 @@ type SuggestResult struct {
 	ProvidersTotal int                  `json:"providers_total"`
 }
 
+// DefaultOpenRouterBaseURL is OpenRouter's documented API root: the models
+// catalog lives at <base>/models and per-provider listings at
+// <base>/models/<id>/endpoints.
+const DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+
 // openRouterModelsURL and openRouterEndpointsURLFmt are vars (not consts) so
 // tests can redirect them to an httptest stub. The endpoints URL is a fmt
 // format whose single %s is the matched OpenRouter model id.
 var (
-	openRouterModelsURL       = "https://openrouter.ai/api/v1/models"
-	openRouterEndpointsURLFmt = "https://openrouter.ai/api/v1/models/%s/endpoints"
+	openRouterModelsURL       = DefaultOpenRouterBaseURL + "/models"
+	openRouterEndpointsURLFmt = DefaultOpenRouterBaseURL + "/models/%s/endpoints"
 
 	// urlMu guards the two URL vars above. They are effectively const in
 	// production (set once at init), but tests reassign them per-case via
@@ -76,6 +82,25 @@ func endpointsURLFmt() string {
 	urlMu.RLock()
 	defer urlMu.RUnlock()
 	return openRouterEndpointsURLFmt
+}
+
+// SetOpenRouterBaseURL repoints the catalog and endpoints fetches at a custom
+// API root (mirror, self-hosted gateway, or a future upstream move). The
+// documented default (or an empty/whitespace value) RESETS the URLs to the
+// production OpenRouter endpoints, so re-running with default config (or a
+// test cleanup) always lands back on the official catalog. Called once at
+// daemon startup from config; tests reassign the vars directly under urlMu.
+func SetOpenRouterBaseURL(base string) {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	urlMu.Lock()
+	defer urlMu.Unlock()
+	if base == "" || base == DefaultOpenRouterBaseURL {
+		openRouterModelsURL = DefaultOpenRouterBaseURL + "/models"
+		openRouterEndpointsURLFmt = DefaultOpenRouterBaseURL + "/models/%s/endpoints"
+		return
+	}
+	openRouterModelsURL = base + "/models"
+	openRouterEndpointsURLFmt = base + "/models/%s/endpoints"
 }
 
 const (
@@ -147,6 +172,11 @@ type endpointsEntry struct {
 	at   time.Time
 }
 
+// openRouterUserAgent identifies cc-otel to OpenRouter's gateway. A bare
+// Go-http-client UA (the net/http default) is filtered or misrouted by some
+// bot-protection layers on CDN edges.
+const openRouterUserAgent = "cc-otel/0.1 (+https://github.com/young1lin/cc-otel)"
+
 // fetchDecode GETs url and decodes the JSON body into a new T. Shared by the
 // catalog and endpoints fetches.
 func fetchDecode[T any](ctx context.Context, url string) (T, error) {
@@ -155,6 +185,8 @@ func fetchDecode[T any](ctx context.Context, url string) (T, error) {
 	if err != nil {
 		return zero, err
 	}
+	req.Header.Set("User-Agent", openRouterUserAgent)
+	req.Header.Set("Accept", "application/json")
 	client := &http.Client{Timeout: openRouterTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -162,13 +194,46 @@ func fetchDecode[T any](ctx context.Context, url string) (T, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return zero, fmt.Errorf("openrouter fetch: HTTP %d", resp.StatusCode)
+		return zero, fmt.Errorf("openrouter fetch: HTTP %d%s", resp.StatusCode, errorDetail(resp.Body))
 	}
 	var body T
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return zero, fmt.Errorf("parse openrouter: %w", err)
 	}
 	return body, nil
+}
+
+// errorDetail extracts a short human reason from a non-200 OpenRouter body.
+// OpenRouter reports failures as {"error":{"message":"Not Found","code":404}};
+// that message is appended as " (Not Found)" so the UI toast shows WHY the
+// lookup failed instead of a bare status code.
+func errorDetail(r io.Reader) string {
+	raw, err := io.ReadAll(io.LimitReader(r, 512))
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	var nested struct {
+		Error struct {
+			Message string "json:\"message\""
+		} "json:\"error\""
+	}
+	if json.Unmarshal(raw, &nested) == nil && strings.TrimSpace(nested.Error.Message) != "" {
+		return " (" + strings.TrimSpace(nested.Error.Message) + ")"
+	}
+	var flat map[string]any
+	if json.Unmarshal(raw, &flat) == nil {
+		if msg, ok := flat["error"].(string); ok && strings.TrimSpace(msg) != "" {
+			return " (" + strings.TrimSpace(msg) + ")"
+		}
+	}
+	s := strings.TrimSpace(string(raw))
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	if s != "" {
+		return " (" + s + ")"
+	}
+	return ""
 }
 
 // fetchCatalog returns OpenRouter's model listing, reusing a cached copy for

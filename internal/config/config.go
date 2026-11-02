@@ -21,7 +21,15 @@ type Config struct {
 	RawTTLDays    int                   `yaml:"raw_ttl_days"`
 	ModelMapping  map[string]string     `yaml:"model_mapping"`
 	Pricing       map[string]PriceEntry `yaml:"pricing"`
+
+	// OpenRouterBaseURL overrides the API root used by the pricing suggest
+	// lookup (mirror / self-hosted gateway). Empty keeps the documented default.
+	OpenRouterBaseURL string `yaml:"openrouter_base_url"`
 }
+
+// DefaultOpenRouterBaseURL mirrors pricing.DefaultOpenRouterBaseURL (kept here
+// so config defaults don't import the pricing package).
+const DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
 
 // PriceEntry is a user-supplied per-token price override for a single model.
 // Costs are USD per token; cache fields fall back to multipliers (0.1×/1.25×) when zero.
@@ -177,9 +185,9 @@ func rewriteMigratedConfig(newDir, legacyDir string) {
 	}
 	text := string(data)
 	for _, pair := range [][2]string{
-		{legacyDir, newDir},                                 // native separators (Windows backslash)
+		{legacyDir, newDir}, // native separators (Windows backslash)
 		{filepath.ToSlash(legacyDir), filepath.ToSlash(newDir)}, // forward-slash spelling
-		{"~/.claude/cc-otel", "~/.cc-otel"},                 // tilde spelling
+		{"~/.claude/cc-otel", "~/.cc-otel"},                     // tilde spelling
 	} {
 		text = strings.ReplaceAll(text, pair[0], pair[1])
 	}
@@ -217,10 +225,11 @@ func DefaultOTLPHTTPPort() int { return 4318 }
 
 // Environment variable overrides (highest priority)
 const (
-	EnvOTELPort     = "CC_OTEL_OTEL_PORT"
-	EnvWebPort      = "CC_OTEL_WEB_PORT"
-	EnvOTLPHTTPPort = "CC_OTEL_OTLP_HTTP_PORT"
-	EnvDBPath       = "CC_OTEL_DB_PATH"
+	EnvOTELPort          = "CC_OTEL_OTEL_PORT"
+	EnvWebPort           = "CC_OTEL_WEB_PORT"
+	EnvOTLPHTTPPort      = "CC_OTEL_OTLP_HTTP_PORT"
+	EnvDBPath            = "CC_OTEL_DB_PATH"
+	EnvOpenRouterBaseURL = "CC_OTEL_OPENROUTER_BASE_URL"
 )
 
 // expandTilde replaces a leading ~/ or ~\ with the user's home directory.
@@ -238,12 +247,13 @@ func expandTilde(path string) string {
 // Returns defaults if the file does not exist.
 func Load(path string) (*Config, error) {
 	cfg := &Config{
-		OTELPort:      4317,
-		WebPort:       8899,
-		OTLPHTTPPort:  DefaultOTLPHTTPPort(),
-		DBPath:        DefaultDBPath(),
-		RetentionDays: 90,
-		RawTTLDays:    5,
+		OTELPort:          4317,
+		WebPort:           8899,
+		OTLPHTTPPort:      DefaultOTLPHTTPPort(),
+		DBPath:            DefaultDBPath(),
+		RetentionDays:     90,
+		RawTTLDays:        5,
+		OpenRouterBaseURL: DefaultOpenRouterBaseURL,
 	}
 
 	if path == "" {
@@ -290,6 +300,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv(EnvDBPath)); v != "" {
 		cfg.DBPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv(EnvOpenRouterBaseURL)); v != "" {
+		cfg.OpenRouterBaseURL = v
 	}
 }
 
