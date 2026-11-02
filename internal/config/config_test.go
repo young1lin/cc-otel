@@ -276,6 +276,17 @@ func TestLoadRejectsMemoryDB(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNegativeRetention(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "negret.yaml")
+	if err := os.WriteFile(p, []byte("retention_days: -5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("negative retention_days must be rejected (silently meant keep-everything)")
+	}
+}
+
 func TestLoadRejectsPortZero(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "ports.yaml")

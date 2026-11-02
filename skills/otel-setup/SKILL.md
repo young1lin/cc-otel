@@ -136,15 +136,15 @@ Where the data lands:
 
 | Tool | Tables | Dashboard view |
 |------|--------|----------------|
-| Codex | unified pool (`api_requests`, `service_name='codex'`; legacy `codex_*` archive merges via one-click migration) | All Clients, **Source** column |
+| Codex | unified pool (`api_requests`, `service_name='codex'`; legacy `codex_*` archive merges via one-click migration) | main view, **Source** column |
 | opencode, DeepSeek Harness | shared Claude tables, tagged by `service_name` | main view, **Source** column |
 
 Since the AllClient merge every client — Codex included — is normalized into the
 Claude Code shape and shares one unified pool, distinguished by the `service_name`
 attribution label rather than by a query filter. Codex's pre-merge `codex_*`
 archive is pulled in by the one-click migration (the "Merge Codex history" button in the DB-import dialog); live Codex
-reports are normalized at ingest. The legacy `/api/codex/*` read routes still serve
-the codex-specific dashboards from the same pool.
+reports are normalized at ingest. The legacy `/api/codex/*` read routes are kept
+as backwards-compat shims over the same pool (no dashboard depends on them).
 
 Cost applies to all of them: only Claude Code on a Claude model keeps its
 upstream-reported `cost_usd`. Everything else is recomputed from the local pricing

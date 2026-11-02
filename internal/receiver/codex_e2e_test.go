@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"context"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -621,6 +622,79 @@ func TestDSHStatsRecordPerRecord(t *testing.T) {
 	s.handleDSHResourceLogs(context.Background(), rl, stats)
 	if stats.total != 3 {
 		t.Fatalf("stats.total = %d, want 3 (one per LogRecord, not one per ResourceLogs)", stats.total)
+	}
+}
+
+func TestDSHE2E_HostileLedgerClamped(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+	// Full Receiver construction: the bare server has a nil dshStepTracker
+	// and panics on the first step bookkeeping call.
+	s := New(repo, fakeResolver{}, api.NewBroker(), nil).logs
+
+	attr := func(k, v string) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	intKV := func(k string, v int64) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_IntValue{IntValue: v}}}
+	}
+	usage := &commontpb.AnyValue{Value: &commontpb.AnyValue_KvlistValue{KvlistValue: &commontpb.KeyValueList{Values: []*commontpb.KeyValue{
+		intKV("inputTokens", math.MaxInt64),
+		intKV("outputTokens", math.MaxInt64),
+		intKV("cacheReadTokens", math.MaxInt64),
+	}}}}
+	source := &commontpb.AnyValue{Value: &commontpb.AnyValue_KvlistValue{KvlistValue: &commontpb.KeyValueList{Values: []*commontpb.KeyValue{
+		attr("model", "glm-5.3"),
+	}}}}
+	message := &commontpb.AnyValue{Value: &commontpb.AnyValue_KvlistValue{KvlistValue: &commontpb.KeyValueList{Values: []*commontpb.KeyValue{
+		{Key: "source", Value: source},
+	}}}}
+	rec := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Date(2262, 4, 12, 0, 0, 0, 0, time.UTC).UnixNano()),
+		Attributes: []*commontpb.KeyValue{
+			attr("event.type", "assistant/message"),
+			attr("event.seq", "7"),
+			attr("session.id", "r5hostile"),
+		},
+		Body: &commontpb.AnyValue{Value: &commontpb.AnyValue_KvlistValue{KvlistValue: &commontpb.KeyValueList{Values: []*commontpb.KeyValue{
+			{Key: "usage", Value: usage},
+			{Key: "message", Value: message},
+		}}}},
+	}
+	rl := &logspb.ResourceLogs{
+		Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+			attr("service.name", "deepseek-harness"),
+		}},
+		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{rec}}},
+	}
+	stats := &ingestStats{}
+	s.handleDSHResourceLogs(context.Background(), rl, stats)
+	if stats.total != 1 {
+		t.Fatalf("stats.total = %d, want 1", stats.total)
+	}
+
+	var summed int64
+	if err := repo.DB().QueryRow(`SELECT COALESCE(SUM(input_tokens),0) FROM api_requests`).Scan(&summed); err != nil {
+		t.Fatalf("pool SUM broke: %v", err)
+	}
+	if summed > 1<<41 {
+		t.Fatalf("hostile input_tokens survived unclamped: %d", summed)
+	}
+	var aggSum int64
+	if err := repo.DB().QueryRow(`SELECT COALESCE(SUM(input_tokens),0) FROM daily_model_agg`).Scan(&aggSum); err != nil {
+		t.Fatalf("agg SUM broke: %v", err)
+	}
+	if aggSum > 1<<41 {
+		t.Fatalf("agg kept hostile magnitude: %d", aggSum)
+	}
+	var maxTS int64
+	repo.DB().QueryRow(`SELECT COALESCE(MAX(timestamp),0) FROM api_requests WHERE session_id='r5hostile'`).Scan(&maxTS)
+	if maxTS > time.Now().Add(10*time.Minute).Unix() {
+		t.Fatalf("future timestamp not clamped: %d", maxTS)
 	}
 }
 

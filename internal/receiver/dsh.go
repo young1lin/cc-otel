@@ -160,6 +160,18 @@ func (t *dshStepTracker) evictLocked() {
 	}
 }
 
+// clampTokenMag applies the same ±attrIntMagCap bound parseAttrInt enforces
+// on attribute-parsed ints; DSH body JSON bypasses that choke point (R5 P0).
+func clampTokenMag(v int64) int64 {
+	if v > attrIntMagCap {
+		return attrIntMagCap
+	}
+	if v < -attrIntMagCap {
+		return -attrIntMagCap
+	}
+	return v
+}
+
 // dshUsage is DSH's TokenUsage. Absent optional fields decode to zero, which is
 // the correct count for a provider that reports no cache activity.
 type dshUsage struct {
@@ -318,6 +330,15 @@ func dshAPIRequest(lr *logspb.LogRecord, attrs map[string]string, timing dshStep
 		return nil
 	}
 	nanos := dshRecordTime(lr)
+	// R5 P0: the DSH path bypasses both ingest clamps the codex/claude paths
+	// have — body JSON ints never pass through parseAttrInt, and dshRecordTime
+	// is raw. A hostile ledger record with MaxInt64 tokens or a year-2262
+	// timestamp reopens the exact permanent SUM-overflow/immortal-agg poison
+	// the R4 P0 closed. Clamp here: ±2^40 magnitude on every counter and
+	// arrival-time stamping for clocks >5min in the future.
+	if now := time.Now(); nanos > now.Add(5*time.Minute).UnixNano() {
+		nanos = now.UnixNano()
+	}
 	seqRaw := attrs["event.seq"]
 	seq, seqErr := strconv.ParseInt(seqRaw, 10, 64)
 	sessionID := attrs["session.id"]
@@ -334,10 +355,10 @@ func dshAPIRequest(lr *logspb.LogRecord, attrs map[string]string, timing dshStep
 		EventName:           "api_request",
 		EventSequence:       seq,
 		Model:               body.Message.Source.Model,
-		InputTokens:         body.Usage.InputTokens,
-		OutputTokens:        body.Usage.OutputTokens,
-		CacheReadTokens:     body.Usage.CacheReadTokens,
-		CacheCreationTokens: body.Usage.CacheWriteTokens,
+		InputTokens:         clampTokenMag(body.Usage.InputTokens),
+		OutputTokens:        clampTokenMag(body.Usage.OutputTokens),
+		CacheReadTokens:     clampTokenMag(body.Usage.CacheReadTokens),
+		CacheCreationTokens: clampTokenMag(body.Usage.CacheWriteTokens),
 		// Cost stays zero here: DSH reports none, and the caller's pricing
 		// recompute owns cost_usd for every non-Claude-Code service.
 		CostUSD:        0,

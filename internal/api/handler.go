@@ -11,7 +11,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/young1lin/cc-otel/internal/config"
 	"github.com/young1lin/cc-otel/internal/db"
+	"github.com/young1lin/cc-otel/internal/originutil"
 	"github.com/young1lin/cc-otel/internal/pricing"
 	"github.com/young1lin/cc-otel/internal/recompute"
 	"github.com/young1lin/cc-otel/internal/web"
@@ -260,43 +260,11 @@ func sameOriginGuard(next http.Handler) http.Handler {
 	})
 }
 
-// sameHost compares two Host[:port] forms. The ONLY tolerated difference
-// is a scheme-default port the browser omitted: http://host (port 80) vs
-// host:80, https://host (443) vs host:443. A bare-host Origin never matches
-// a request on a NON-default port (http://host vs host:18899 is
-// cross-origin — different port means a different site), and non-default
-// ports must match exactly (R4 frontend review: the earlier any-port strip
-// admitted same-host-different-port origins).
+// sameHost delegates to originutil.SameHost — the single port-aware
+// comparison shared with the OTLP/HTTP receiver's origin reject (see that
+// package for the settled rules and why copies must not drift).
 func sameHost(originURL, requestHost string) bool {
-	if originURL == requestHost {
-		return true
-	}
-	u, err := url.Parse(originURL)
-	if err != nil || u.Host == "" {
-		return false
-	}
-	oh, oport, oerr := net.SplitHostPort(u.Host)
-	if oerr != nil {
-		oh, oport = u.Host, "" // browser omitted the port
-	}
-	rh, rport, rerr := net.SplitHostPort(requestHost)
-	if rerr != nil {
-		rh, rport = requestHost, ""
-	}
-	oh = strings.Trim(oh, "[]")
-	rh = strings.Trim(rh, "[]")
-	if oh != rh {
-		return false
-	}
-	if oport == rport {
-		return true
-	}
-	// Tolerate exactly the default-port omission for the origin's scheme.
-	defaultPort := "80"
-	if u.Scheme == "https" {
-		defaultPort = "443"
-	}
-	return (oport == "" && rport == defaultPort) || (rport == "" && oport == defaultPort)
+	return originutil.SameHost(originURL, requestHost)
 }
 
 // Register wires all API and static-file routes onto the given ServeMux.
@@ -692,6 +660,7 @@ func (h *Handler) PricingCollection(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
@@ -756,6 +725,7 @@ func entryVariantToWire(e pricing.Entry) map[string]any {
 func (h *Handler) PricingSuggest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -809,6 +779,7 @@ func (h *Handler) PricingRecompute(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(h.recompute.snapshot())
 
 	default:
+		w.Header().Set("Allow", "GET, POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
@@ -831,7 +802,7 @@ func (h *Handler) runRecompute() {
 		h.recompute.changed = p.Changed
 		h.recompute.mu.Unlock()
 	}
-	res, err := recompute.Run(ctx, h.repo.DB(), h.pricer, recompute.Options{}, true, progress)
+	res, err := recompute.Run(ctx, h.repo.DB(), h.pricer, recompute.Options{RetentionDays: h.retentionDays()}, true, progress)
 	h.recompute.mu.Lock()
 	h.recompute.running = false
 	h.recompute.finishedAt = time.Now().Unix()

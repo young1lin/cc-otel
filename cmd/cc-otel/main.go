@@ -423,8 +423,9 @@ func cmdServe() {
 		}
 	}
 
-	// Raw event TTL: aggressive short-lived cleanup for raw_otlp_events / codex_raw_otlp_events.
-	// Runs once on startup, then every hour in the background.
+	// Raw event TTL: aggressive short-lived cleanup for raw_otlp_events ONLY —
+	// codex_raw_otlp_events is the frozen archive the migration copies and is
+	// deliberately exempt (R5 docs residue). Runs once on startup, then hourly.
 	rawTTLDays := cfg.RawTTLDays
 	if rawTTLDays <= 0 {
 		rawTTLDays = 5

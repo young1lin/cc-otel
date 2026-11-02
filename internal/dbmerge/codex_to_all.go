@@ -223,14 +223,14 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 			query = `
 				SELECT timestamp, session_id, conversation_id, tool_name, call_id,
 				       success, duration_ms, arguments_length, output_length,
-				       tool_origin, mcp_server, event_sequence, terminal_type
+				       tool_origin, mcp_server, event_sequence, terminal_type, error_message
 				FROM codex_tool_result_events ORDER BY id ASC`
 			scan = func(rows *sql.Rows) (Row, error) {
 				var timestamp, eventSequence, success, duration, argumentsLength, outputLength int64
-				var sessionID, conversationID, toolName, callID, toolOrigin, mcpServer, terminalType string
+				var sessionID, conversationID, toolName, callID, toolOrigin, mcpServer, terminalType, errorMessage string
 				if err := rows.Scan(&timestamp, &sessionID, &conversationID, &toolName, &callID,
 					&success, &duration, &argumentsLength, &outputLength,
-					&toolOrigin, &mcpServer, &eventSequence, &terminalType); err != nil {
+					&toolOrigin, &mcpServer, &eventSequence, &terminalType, &errorMessage); err != nil {
 					return Row{}, err
 				}
 				return Row{Table: plan.target, Values: map[string]any{
@@ -240,7 +240,8 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 					"decision_source": "", "decision_type": "", "terminal_type": terminalType,
 					"conversation_id": conversationID, "call_id": callID,
 					"arguments_length": argumentsLength, "mcp_server": mcpServer,
-					"tool_origin": toolOrigin, "service_name": db.CodexServiceName,
+					"tool_origin": toolOrigin, "error_message": errorMessage,
+					"service_name": db.CodexServiceName,
 				}}, nil
 			}
 		default: // codex_raw_otlp_events

@@ -1,6 +1,6 @@
 # Codex CLI Telemetry Setup
 
-OpenAI Codex CLI supports OTLP telemetry via configuration. Both Claude Code and Codex share the same OTLP gRPC port (`:4317`); cc-otel auto-detects the source via `service.name` in the OTLP Resource attributes and routes to independent `codex_*` tables.
+OpenAI Codex CLI supports OTLP telemetry via configuration. Both Claude Code and Codex share the same OTLP gRPC port (`:4317`); cc-otel auto-detects the source via `service.name` in the OTLP Resource attributes and normalizes both into the unified `api_requests` pool (`service_name='codex'` vs `'claude-code'`).
 
 ## Prerequisites
 
@@ -26,14 +26,14 @@ Location varies by OS:
 ## Verify
 
 1. Start a Codex CLI session and make a request
-2. Open `http://localhost:8899` — the front page is the unified per-client view (Client column shows `codex`; legacy history needs the one-click migration on the AllClient page first)
+2. Open `http://localhost:8899` — the front page is the unified per-client view (Client column shows `codex`; legacy history needs the one-click migration first: the "Merge Codex history" button in the DB-import dialog)
 3. Check that token counts appear in the dashboard
 
 ## Differences from Claude Code
 
 - **No cost data**: Codex does not report `cost_usd`. cc-otel recomputes cost using the local pricing table.
 - **Token data via SSE events**: Codex sends token counts in `codex.sse_event(kind=response.completed)`, not in a single `api_request` event.
-- **Unified pool**: live Codex reports are normalized into `api_requests` (`service_name='codex'`) at ingest; legacy `codex_*` archive history merges via the one-click migration on the AllClient page.
+- **Unified pool**: live Codex reports are normalized into `api_requests` (`service_name='codex'`) at ingest; legacy `codex_*` archive history merges via the one-click migration ("Merge Codex history" button in the DB-import dialog).
 
 ## How cc-otel Identifies Codex Data
 
@@ -47,13 +47,13 @@ Unlike Claude Code (single `api_request` event with all data), Codex sends data 
 |-------|---------|
 | `codex.api_request` | Request metadata (model, conversation ID); token fields are usually zero |
 | `codex.sse_event` + `response.completed` | Token counts (input, output, cache read, cache creation) |
-| `codex.websocket_event` + `response.completed` | Duration (`duration_ms`) |
+| `codex.websocket_event` + `response.completed` | Duration (`duration_ms`) — legacy wire shape; current Codex emits `websocket_event` as metrics only |
 
-cc-otel merges these into a single `codex_api_requests` row using a 5-minute span tracker keyed on `(conversation.id, model)`.
+cc-otel merges these into a single `api_requests` row (unified pool, `service_name='codex'`) using a 30-minute span tracker keyed on `(conversation_id, model)`.
 
 ## Troubleshooting
 
-### No data in Codex tab
+### No codex data on the dashboard
 
 1. Check `~/.codex/config.toml` has correct TOML syntax
 2. Confirm all three endpoint lines point to cc-otel's OTLP port (default `4317`)

@@ -14,6 +14,44 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// TestOTLPHTTP_RejectsCrossOriginExport pins the R5 origin guard: browsers
+// set Origin on cross-origin POSTs with simple content types, so any page
+// the operator visits could otherwise inject fake telemetry into the
+// all-interface-bound receiver. Real exporters never send Origin, so the
+// no-Origin and same-origin shapes must still pass through.
+func TestOTLPHTTP_RejectsCrossOriginExport(t *testing.T) {
+	rcv, _ := newDSHTestReceiver(t)
+	srv := httptest.NewServer(rcv.HTTPHandler())
+	t.Cleanup(srv.Close)
+
+	post := func(origin string) int {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/logs", bytes.NewReader([]byte("garbage")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		req.Header.Set("Content-Type", "application/x-protobuf")
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := post("http://evil.example"); code != http.StatusForbidden {
+		t.Fatalf("cross-origin export: status = %d, want 403", code)
+	}
+	if code := post(""); code == http.StatusForbidden {
+		t.Fatalf("Origin-less exporter request must not be 403 (got %d)", code)
+	}
+	if code := post(srv.URL); code == http.StatusForbidden {
+		t.Fatalf("same-origin request must not be 403 (got %d)", code)
+	}
+}
+
 // OTLP/HTTP exporters may gzip their payload, and real ones do: DeepSeek
 // Harness's shipped composition sets compression: gzip. Without transparent
 // decompression the export decodes as garbage and the batch is dropped.

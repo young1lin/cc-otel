@@ -152,6 +152,13 @@ Fired after a tool finishes execution. / 工具执行完成后触发。
 
 ## Codex CLI Log Events / Codex CLI Log 事件
 
+> **Post-AllClient-merge state**: live Codex telemetry lands in the unified
+> `api_requests` pool (`service_name='codex'`); the `codex_*` tables below are
+> the pre-merge archive, now frozen and only read by the one-click migration.
+> Un-modeled codex events are archived to `raw_otlp_events` (TTL-bound),
+> **not** `codex_raw_otlp_events` — that table has no writer and exists only
+> as the frozen archive the migration copies from.
+
 Codex is detected by OTLP Resource `service.name` containing `codex`. Current
 known values include `codex_cli_rs`, `codex_exec`, `codex-app-server`, and
 `codex_mcp_server`.
@@ -198,7 +205,7 @@ Current storage mapping:
 |--------------|-------|---------|
 | `codex.api_request` | `codex_api_requests` | Creates the request row and increments request count |
 | `codex.api_request` | `codex_daily_model_agg` | Adds request count; token deltas are added later |
-| raw OTLP log | `codex_raw_otlp_events` | Debug/audit copy |
+| raw OTLP log | `raw_otlp_events` (pre-merge: `codex_raw_otlp_events`, frozen) | Debug/audit copy (TTL-bound post-merge) |
 
 ### 2. `codex.sse_event` — Streaming Events / 流式事件
 
@@ -287,8 +294,8 @@ Timing boundaries (authoritative):
 | `codex.user_prompt` | `codex_user_prompt_events` | User prompt metadata/content when emitted |
 | `codex.tool_decision` | `codex_tool_decision_events` | Tool approval/decision |
 | `codex.tool_result` | `codex_tool_result_events` | Tool execution result |
-| other Codex logs | not persisted | Diagnostic fallback events are discarded |
-| raw OTLP logs | `codex_raw_otlp_events` | Debug/audit copy |
+| other Codex logs | `raw_otlp_events` | Diagnostic fallback events archived (TTL-bound) |
+| raw OTLP logs | `raw_otlp_events` (pre-merge: `codex_raw_otlp_events`, frozen) | Debug/audit copy |
 
 The `codex_events` table remains in the SQLite schema for compatibility, but
 live telemetry no longer writes it and database imports recognize but ignore it.

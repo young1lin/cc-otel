@@ -1428,12 +1428,17 @@ func (r *Repository) GetRecentRequests(ctx context.Context, limit, offset int, m
 	if err != nil {
 		return nil, err
 	}
+	// R5 API P1: reasoning_tokens / total_tokens / http_status / endpoint /
+	// conversation_id MUST be selected — APIRequest serializes them, and the
+	// codex twin (GetCodexRecentRequests) already does; omitting them served
+	// structural zeros that contradicted /api/codex/requests for the same row.
 	query := `SELECT id, timestamp, session_id, user_id, prompt_id, prompt_length,
 		model, actual_model, input_tokens, output_tokens,
 		cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, ttft_ms, request_id,
 		event_name, event_sequence, speed, terminal_type, tool_name, decision, source,
 		service_name, service_version, host_arch, os_type, os_version,
-		error_type, error_message, error_code, error_retryable
+		error_type, error_message, error_code, error_retryable,
+		reasoning_tokens, total_tokens, http_status, endpoint, conversation_id
 		FROM api_requests` + whereClause + ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
@@ -1454,7 +1459,8 @@ func (r *Repository) GetRecentRequests(ctx context.Context, limit, offset int, m
 			&cost, &req.DurationMs, &req.TTFTMs, &req.RequestID,
 			&req.EventName, &req.EventSequence, &req.Speed, &req.TerminalType, &req.ToolName, &req.Decision, &req.Source,
 			&req.ServiceName, &req.ServiceVersion, &req.HostArch, &req.OSType, &req.OSVersion,
-			&req.ErrorType, &req.ErrorMessage, &req.ErrorCode, &req.ErrorRetryable); err != nil {
+			&req.ErrorType, &req.ErrorMessage, &req.ErrorCode, &req.ErrorRetryable,
+			&req.ReasoningTokens, &req.TotalTokens, &req.HTTPStatus, &req.Endpoint, &req.ConversationID); err != nil {
 			return nil, err
 		}
 		req.Timestamp = time.Unix(ts, 0)
@@ -1669,8 +1675,9 @@ func (r *Repository) Cleanup(ctx context.Context, beforeUnix int64) (int64, erro
 // row could in principle pair with a future request reusing its request_id
 // (R3 security/observability finding: nothing else ever deleted them).
 // codex_raw_otlp_events is deliberately EXEMPT (R4 concurrency F4): it is the
-// archive the migration copies wholesale, its "archive tables are never
-// modified or deleted" invariant (dbmerge/stage.go) assumes freeze-after-write,
+// frozen pre-merge archive (no production writer; only the migration reads
+// it), and its "archive tables are never modified or deleted" invariant
+// (dbmerge/codex_to_all.go) assumes freeze-after-write,
 // and TTL-pruning it made every migration re-run re-insert the whole archive
 // (misleading inserted_rows + WAL churn).
 func (r *Repository) CleanupRaw(ctx context.Context, beforeUnix int64) (int64, error) {

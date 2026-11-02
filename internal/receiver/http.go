@@ -15,6 +15,8 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/young1lin/cc-otel/internal/originutil"
 )
 
 // maxOTLPBodyBytes caps a single OTLP/HTTP export. Real batches are well under
@@ -85,7 +87,26 @@ func (r *Receiver) HTTPHandler() http.Handler {
 		log.Printf("OTLP/HTTP: unknown path %s %s", req.Method, req.URL.Path)
 		http.NotFound(w, req)
 	})
-	return mux
+	// R5 API review: the receiver is a mutating surface on an all-interface
+	// bind, and browsers happily POST cross-origin with simple content types —
+	// any page the operator visits could inject fake telemetry. Real OTLP
+	// exporters never send an Origin header, so rejecting cross-host Origins
+	// costs zero interoperability while closing the drive-by door.
+	return originReject(mux)
+}
+
+// originReject answers 403 when a browser Origin header names a different
+// host:port than the one the request actually hit. Origin-bearing requests
+// from exporters do not exist; only browsers set the header.
+func originReject(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && !originutil.SameHost(origin, r.Host) {
+			log.Printf("OTLP/HTTP: rejected cross-origin export from %q", origin)
+			http.Error(w, "cross-origin exports are not allowed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // otlpEndpoint builds a handler for one OTLP service.

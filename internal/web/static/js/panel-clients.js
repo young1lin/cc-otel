@@ -1,6 +1,7 @@
 // Clients panel: per-client (service_name) token & cost accounting for the
-// selected range, backed by /api/clients (daily_model_agg GROUP BY
-// service_name). This is the "who consumed what" view the KPI row aggregates
+// selected range, backed by /api/clients (api_requests GROUP BY service_name —
+// all-time, unaffected by retention pruning of the agg). This is the
+// "who consumed what" view the KPI row aggregates
 // away. Badge rendering mirrors panel-requests.js formatSource so a client
 // looks identical in both tables.
 import { state } from './state.js';

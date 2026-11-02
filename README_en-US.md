@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm plugin (recommended): `dsh plugin --profile web add @young1lin/dsh-cc-otel`; or `DSH_TELEMETRY_*` env vars / `cordis.patch.yml` | [below](#deepseek-harness-dsh) |
 
 - Every client shares the same cc-otel instance; the request log's **Source column** labels each row.
-- Codex's legacy archive (`codex_*` tables) merges into the unified pool via the one-click migration; live reports are normalized into `api_requests` (`service_name='codex'`) at ingest, sharing the **unified client pool** ("All Clients" tab, Source column) with Claude Code, OpenCode, etc. The old `?source=codex` URL parameter was removed with the merge.
+- Codex's legacy archive (`codex_*` tables) merges into the unified pool via the one-click migration; live reports are normalized into `api_requests` (`service_name='codex'`) at ingest, sharing the **unified client pool** (single-page front view, Source column) with Claude Code, OpenCode, etc. The old `?source=codex` URL parameter was removed with the merge.
 - Debugging a new client: `go run ./tools/otlp_dump` (both transports, prints without storing; for AI SDK spans it also prints the `would_store_api_request` cc-otel would derive).
 
 ## Install
@@ -196,7 +196,7 @@ An embedded gRPC server implementing the official OTLP `LogsService`, `MetricsSe
 - Each `claude_code.api_request` log event carries the full detail of one API call (model, tokens, cost, duration, `session.id`, `user.id`, etc. as resource + record attributes) and is written to the `api_requests` table.
 - `claude_code.token.usage`, `claude_code.cost.usage` and other metrics are intentionally **not persisted** (redundant with the `api_request` log); the gRPC call is still accepted so clients don't error out.
 - Trace spans are mined for `ttft_ms` and back-filled into the matching unified-pool `api_requests` rows.
-- `raw_otlp_events` still receives un-modeled Claude Code event payloads (TTL-bounded, for debugging/backfill); `codex_raw_otlp_events` archives un-modeled codex events (`turn_ttft`, `sandbox_outcome`, ...) for future schema widening. Both keep schema compatibility with existing backfill tools.
+- `raw_otlp_events` receives **un-modeled codex event** payloads under a TTL (`turn_ttft`, `sandbox_outcome`, `startup_phase`, ... — the default archive branch); the one-click migration also copies the historical `codex_raw_otlp_events` rows into it (equally TTL-bound). `codex_raw_otlp_events` itself is the frozen pre-merge archive with **no writer** — only the migration reads it. Both keep schema compatibility with existing backfill tools.
 
 **2. Store (`internal/db/`)**
 
@@ -262,7 +262,7 @@ Start Codex and use normally. Open the dashboard (`http://localhost:8899`) — t
 
 ### opencode
 
-opencode is built on the Vercel AI SDK, which reports token usage on GenAI **spans** rather than log events. cc-otel reshapes the usage span into the standard `api_request` shape, so opencode data lands in the **All Clients** main view (no separate tab); the request log's Source column reads `opencode`.
+opencode is built on the Vercel AI SDK, which reports token usage on GenAI **spans** rather than log events. cc-otel reshapes the usage span into the standard `api_request` shape, so opencode data lands in the unified main view (no separate tab); the request log's Source column reads `opencode`.
 
 opencode speaks **OTLP/HTTP (`:4318`)** — pointing it at `:4317` will not work. Two steps:
 
@@ -437,7 +437,7 @@ Environment variable overrides (highest priority):
 cc-otel runs two independent cleanups:
 
 ```yaml
-retention_days: 90    # cap on full-detail tables (api_requests / events / *_events / *_agg etc.) in days; 0 = keep forever
+retention_days: 90    # retention cap in days; 0 = keep forever. Prunes events / *_events (raw archives exempt) and daily_model_agg-style aggregates; api_requests detail is never pruned
 raw_ttl_days: 5       # cap on raw_otlp_events in days; 0 = keep forever. codex_raw_otlp_events is a frozen archive excluded from this sweep
 ```
 

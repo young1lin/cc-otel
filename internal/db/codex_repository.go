@@ -421,12 +421,12 @@ func (r *Repository) InsertCodexToolResult(ctx context.Context, e *CodexEvent) e
 			(timestamp, session_id, user_id, prompt_id, event_sequence, tool_name,
 			 success, duration_ms, tool_result_size_bytes, decision_source, decision_type,
 			 terminal_type, conversation_id, call_id, arguments_length,
-			 mcp_server, tool_origin, service_name)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 mcp_server, tool_origin, error_message, service_name)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		e.Timestamp.Unix(), e.SessionID, "", "", e.EventSequence, e.ToolName,
 		e.Success, e.DurationMs, e.OutputLength, "", "",
 		e.TerminalType, e.ConversationID, e.CallID, e.ArgumentsLength,
-		e.MCPServer, e.ToolOrigin, CodexServiceName,
+		e.MCPServer, e.ToolOrigin, e.ErrorMessage, CodexServiceName,
 	)
 	return err
 }

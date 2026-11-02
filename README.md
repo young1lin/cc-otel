@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm 插件（推荐）：`dsh plugin --profile web add @young1lin/dsh-cc-otel`；或 `DSH_TELEMETRY_*` 环境变量 / `cordis.patch.yml` 手工接入 | [下文](#deepseek-harness-dsh-接入) |
 
 - 所有客户端共用同一个 cc-otel 实例，数据统一落到仪表盘；请求日志的 **Source 列**逐行标注来源。
-- Codex 的历史存档（`codex_*` 表）通过一键迁移并入统一池；新上报在接收侧直接归一化写入 `api_requests`（`service_name='codex'`），与 Claude Code、OpenCode 等共享 **统一客户端池**（“All Clients” 页，Source 列区分来源）。旧的 `?source=codex` URL 参数已随合并移除。
+- Codex 的历史存档（`codex_*` 表）通过一键迁移并入统一池；新上报在接收侧直接归一化写入 `api_requests`（`service_name='codex'`），与 Claude Code、OpenCode 等共享 **统一客户端池**（首页单页视图，请求日志 Source 列区分来源）。旧的 `?source=codex` URL 参数已随合并移除。
 - 新客户端接入调试：`go run ./tools/otlp_dump`（双传输、只打印不落库，AI SDK span 还会打印 cc-otel 将派生的 `would_store_api_request`）。
 
 ## 安装
@@ -195,14 +195,14 @@ Claude Code 内置 OTEL SDK，通过 **OTLP**（OpenTelemetry Protocol，标准�
 - 每个 `claude_code.api_request` 日志事件携带一次 API 调用的完整信息（model、tokens、cost、duration、session.id、user.id 等 resource + record attributes），被落库到 `api_requests` 表。
 - `claude_code.token.usage`、`claude_code.cost.usage` 等 Metrics 接收时被显式跳过持久化（与 `api_request` log 数据冗余），仅用于不让客户端报错。
 - Trace span 用于抽取 `ttft_ms` 并回填到统一池 `api_requests` 的对应列。
-- `raw_otlp_events` 仍按 TTL 写入未建模的 Claude Code 事件原文（回溯/排障用）；`codex_raw_otlp_events` 归档 codex 未建模事件（`turn_ttft`、`sandbox_outcome` 等），供未来扩展回填。两者的 schema 兼容已有 backfill 工具。
+- `raw_otlp_events` 按 TTL 写入**未建模的 codex 事件**原文（`turn_ttft`、`sandbox_outcome`、`startup_phase` 等，来自默认归档分支）；合并迁移还会把 `codex_raw_otlp_events` 的历史行复制进来（同样受 TTL 约束）。`codex_raw_otlp_events` 是合并前的冻结存档，**无任何写入者**，仅由迁移读取。两者 schema 兼容已有 backfill 工具。
 
 **2. 存储（`internal/db/`）**
 
 SQLite（WAL 模式 + `busy_timeout`）单文件数据库：
 
 - `api_requests` / `codex_api_requests` -- 每次 API 调用一行，是最小粒度的原始事实表
-- `daily_model_agg` -- 按（日期 × 模型 × 客户端）在写入路径上同步刷新的预聚合表，Web UI 的图表和 Daily Detail 都查这一张（`service_name` 区分客户端）；`codex_daily_model_agg` 是合并前的 codex 旧存档，不再更新延迟 < 3 ms
+- `daily_model_agg` -- 按（日期 × 模型 × 客户端）在写入路径上同步刷新的预聚合表（典型刷新延迟 < 3 ms），Web UI 的图表和 Daily Detail 都查这一张（`service_name` 区分客户端）；`codex_daily_model_agg` 是合并前的 codex 旧存档，不再更新
 - `raw_otlp_events` -- 原始事件回溯表 + 后台扫除：`raw_ttl_days`（默认 5 天）按小时清理；`codex_raw_otlp_events` 是归档表，**不参与** TTL 清理（迁移依赖其冻结语义）；其余明细表归 `retention_days`（默认 90 天）管。
 
 Token 统计严格按照 Anthropic 的 [Prompt caching 官方口径](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)：输入侧总和 = `input_tokens` + `cache_read_tokens` + `cache_creation_tokens`，三者在 UI 上以「Uncached / Cache Read / Cache Create」三列分项展示。
@@ -261,7 +261,7 @@ metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 
 ### opencode 接入
 
-opencode 基于 Vercel AI SDK，用量上报在 GenAI **span** 上而非日志事件。cc-otel 会把 usage span 重塑成标准 `api_request` 形态，数据直接进入 **All Clients** 主视图（无独立标签页），请求日志 Source 列显示 `opencode`。
+opencode 基于 Vercel AI SDK，用量上报在 GenAI **span** 上而非日志事件。cc-otel 会把 usage span 重塑成标准 `api_request` 形态，数据直接进入 首页主视图（无独立标签页），请求日志 Source 列显示 `opencode`。
 
 opencode 说 **OTLP/HTTP（`:4318`）**，指到 `:4317` 不通。两步配置：
 
@@ -436,7 +436,7 @@ CC-OTEL 的数据目录按以下顺序解析（详见 `internal/config/config.go
 cc-otel 有两套自动清理：
 
 ```yaml
-retention_days: 90    # 全量明细表（api_requests / events / *_events / 各 _agg 等）的留存上限，单位天；0 = 永不清理
+retention_days: 90    # 留存上限，单位天；0 = 永不清理。清理 events / *_events（raw 归档除外）与 daily_model_agg 等聚合表；api_requests 明细永不清理
 raw_ttl_days: 5       # raw_otlp_events 的留存上限，单位天；0 = 永不清理。codex_raw_otlp_events 为冻结归档，不参与此清理
 ```
 

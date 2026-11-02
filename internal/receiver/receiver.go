@@ -417,7 +417,7 @@ func anyValueToString(v *commontpb.AnyValue) string {
 // daily_model_agg / api_requests with "integer overflow" — permanently 500-ing
 // the dashboards until retention prunes the poisoned day (R4 protocol live
 // repro). No legitimate counter comes within six orders of magnitude of the
-// cap; ~9M capped rows would still be needed to overflow a SUM.
+// cap; ~8.4M capped rows (2^63 / 2^40) would still be needed to overflow a SUM.
 const attrIntMagCap = int64(1) << 40 // ~1.1e12
 
 func parseAttrInt(attrs map[string]string, key string) int64 {

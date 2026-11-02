@@ -322,6 +322,7 @@ func runMigrations(db *sql.DB) error {
 		{"tool_result_events", "arguments_length", "INTEGER DEFAULT 0"},
 		{"tool_result_events", "mcp_server", "TEXT DEFAULT ''"},
 		{"tool_result_events", "tool_origin", "TEXT DEFAULT ''"},
+		{"tool_result_events", "error_message", "TEXT DEFAULT ''"},
 		{"tool_result_events", "service_name", "TEXT DEFAULT ''"},
 	}
 	for _, c := range unifiedColumns {

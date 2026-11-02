@@ -154,8 +154,10 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 				}
 
 				// Debug-friendly: ttft spans are rare; log enough to diagnose join-key mismatch quickly.
-				// The span is NOT persisted to raw_otlp_events (that table is write-frozen);
-				// the log line is the only durable trace of unmatched spans.
+				// The span is NOT persisted to raw_otlp_events (which receives codex
+				// archive events, not trace spans); for spans carrying a join key the
+				// durable trace is pending_ttft_spans (raw_json included), so this log
+				// line matters chiefly for keyless unmatched spans.
 				log.Printf("trace ttft span: name=%q kind=%s ttft_ms=%d end_unix=%d join(request=%q session=%q prompt=%q model=%q) raw=%s",
 					sp.Name, spanKindString(sp.Kind), ttft, ts, requestID, sessionID, promptID, model, string(rawJSON))
 

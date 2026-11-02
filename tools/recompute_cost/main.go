@@ -99,7 +99,14 @@ func main() {
 		tables = append(tables, "codex_api_requests")
 	}
 
-	opts := recompute.Options{Tables: tables, From: fromUnix, To: toUnix}
+	// Scope the agg rebuild to the config's retention window when a config is
+	// supplied (R5 P1): an all-time rebuild resurrects agg rows the startup
+	// cleanup pruned, and the KPIs would flip back at the next restart.
+	retentionDays := 0
+	if cfg != nil && cfg.RetentionDays > 0 {
+		retentionDays = cfg.RetentionDays
+	}
+	opts := recompute.Options{Tables: tables, From: fromUnix, To: toUnix, RetentionDays: retentionDays}
 	res, err := recompute.Run(ctx, database, reg, opts, *apply, func(p recompute.Progress) {
 		if p.Total > 0 {
 			log.Printf("%s: %d/%d scanned, %d changed", p.Table, p.Scanned, p.Total, p.Changed)

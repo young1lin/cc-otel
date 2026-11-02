@@ -368,7 +368,7 @@ func extraAggSelects(parent string) string {
 }
 
 // groupAggService extends the GROUP BY with the service dimension for the
-// unified pool. Without it every service would collapse onto service_name=”
+// unified pool. Without it every service would collapse onto service_name=''
 // and the per-client breakdown (Claude Code / OpenCode / Codex) would be lost.
 func groupAggService(parent string) string {
 	if parent == "api_requests" {

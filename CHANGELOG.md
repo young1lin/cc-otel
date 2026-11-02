@@ -21,7 +21,13 @@
 - **同源守卫**：变更类 `/api/*`（pricing、import、codex/migrate）拒绝跨源浏览器请求（Origin 校验；curl/CLI 不受影响）。
 - **pricing POST 请求体上限 1MB**（MaxBytesReader，与 import 一致）。
 - **`pending_ttft_spans` 清理**：processed/过期行随 raw TTL 清扫删除（原只增不删）；raw 归档未来时间戳钳制到当前时间，恶意/错钟不得逃逸 TTL。
-- **Codex cache-hit 分母对齐**：分母补上 `cache_creation`，与 Claude 视图和前端 token-math 一致（Codex 大量上报 cache_creation，旧公式显著高估）。
+- **Codex cache-hit 分母对齐**：分母补上 `cache_creation`，与 Claude 视图和前端 token-math 一致（Codex 大量上报 cache_c
+- **DSH 路径补齐双重钳制**（R5 P0）：DSH 会话账本的 body JSON 整数不经 parseAttrInt，先前可原样落库 MaxInt64 计数与 2262 年时间戳，重开永久仪表盘溢出毒害；现 ±2^40 钳制 + 未来时间戳钳到到达时刻（与 codex/claude 路径一致，新增 TestDSHE2E_HostileLedgerClamped 钉住）。
+- **recompute 保留窗口接线**（R5 P1）：`POST /api/pricing/recompute` 与 `tools/recompute_cost` 现传入 `retention_days`，聚合重建按窗口范围化，不再复活启动清理已修剪的行（此前 all-time KPI 会在下次重启回落）。
+- **`/api/requests` 补齐五个统一池字段**（R5 API P1）：`reasoning_tokens`/`total_tokens`/`http_status`/`endpoint`/`conversation_id` 先前在统一端点恒为 0/空，与 `/api/codex/requests` 对同一行相互矛盾。
+- **OTLP/HTTP 接收器跨源防护**（R5）：浏览器跨源 POST（简单 content-type 也可驱动）现被 Origin 校验拒绝 403；真实导出端从不携带 Origin，零兼容性影响（originutil 单一实现，与仪表盘守卫共享端口感知比较）。
+- **405 补 `Allow` 头**（RFC 9110）：`/api/pricing`、`/api/pricing/recompute`、`/api/pricing/suggest`。
+- **文档纠偏**：raw 表写入方向纠正（`raw_otlp_events` 收 codex 未建模事件并受 TTL；`codex_raw_otlp_events` 为冻结存档、无写入者）、retention_days 注释不再误列 `api_requests`、“AllClient 页”幻影指针全部改为 DB 导入对话框中的实际按钮。reation，旧公式显著高估）。
 
 ### 变更
 
