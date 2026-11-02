@@ -52,7 +52,8 @@ export const loadDashboardData = (from, to) =>
     fetchJSON('/api/dashboard' + qs({ from, to }));
 
 // Per-client (service_name) token accounting and hour-of-day buckets — both
-// read the merged non-Codex pool, so they never mirror to /api/codex/*.
+// read the UNIFIED pool (claude + codex rows); the Codex tab has its own
+// /api/codex/* shim endpoints for backwards compatibility.
 export const loadClientsData = ({ from, to }) =>
     fetchJSON('/api/clients' + qs({ from, to }));
 

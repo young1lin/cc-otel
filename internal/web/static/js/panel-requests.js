@@ -127,7 +127,7 @@ export async function loadRequests() {
             return;
         }
         tbody.innerHTML = data.map(r => `<tr>
-            <td class="mono">${fmtDateTime(r.timestamp)}</td>
+            <td class="mono">${escapeHtml(fmtDateTime(r.timestamp))}</td>
             <td><span class="badge">${escapeHtml(r.model)}</span></td>
             <td>${formatSource(r.service_name)}</td>
             <td class="mono">${formatUserCell(r.user_id)}</td>

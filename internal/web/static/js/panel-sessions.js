@@ -23,7 +23,7 @@ export async function loadSessions() {
         tbody.innerHTML = rows.map(s => `<tr>
             <td><span class="badge">${escapeHtml(truncate(s.session_id, 16))}</span></td>
             <td class="mono">${formatUserCell(s.user_id)}</td>
-            <td class="mono">${fmtDateTime(s.start_time)}</td>
+            <td class="mono">${escapeHtml(fmtDateTime(s.start_time))}</td>
             <td class="mono">${s.request_count}</td>
             <td class="mono">${fmtNum(s.input_tokens)}</td>
             <td class="mono">${fmtNum(s.output_tokens)}</td>

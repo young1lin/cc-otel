@@ -192,6 +192,17 @@ function render(elements) {
     elements.button.classList.toggle('is-active', active);
     if (local.upload) renderUpload(elements);
     else renderJob(elements, local.job);
+
+    // Cross-disable with the Codex migration card in the same modal: both
+    // drive the staged import pipeline against the same live DB and the
+    // server 409s the second starter. Publish our busy state, then reflect
+    // it onto the migration button — but never re-enable that button while
+    // a migration is actually running (its own render owns that state).
+    elements.primary.dataset.dbiBusy = active ? '1' : '0';
+    const codexBtn = document.getElementById('codex-migrate-start');
+    if (codexBtn && codexBtn.dataset.running !== '1') {
+        codexBtn.disabled = active;
+    }
 }
 
 function resultNotificationKey(job) {

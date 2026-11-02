@@ -7,9 +7,12 @@
 // run the preview shows every row as "Already merged".
 
 import { loadCodexMigrateStatus, startCodexMigrate } from './api.js';
+import { escapeHtml } from './utils.js';
 
 let pollTimer = null;
 let lastFinishedAt = 0;
+// The most recent status payload, shared between render and the poll gate.
+let lastJob = null;
 
 export function initCodexMigrate({ onMigrated = () => {} } = {}) {
     const modal = document.getElementById('database-import-modal');
@@ -22,10 +25,20 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
     const modalOpen = () => modal.style.display !== 'none' && modal.getAttribute('aria-hidden') !== 'true';
 
     const render = (job) => {
+        const running = !!(job && job.running);
+        btn.dataset.running = running ? '1' : '0';
+        // Cross-disable with the database-import side of this modal (the
+        // server 409s concurrent starts; keep the UI from dead-ending).
+        // Only touch the import buttons when THAT side is idle — its own
+        // render owns the busy states.
+        document.querySelectorAll('#database-import-modal #dbi-primary, #database-import-modal #dbi-secondary')
+            .forEach((el) => {
+                if (el.dataset.dbiBusy !== '1') el.disabled = running;
+            });
         const preview = (job && job.preview) || [];
         tbody.innerHTML = preview.length
             ? preview.map((t) => '<tr>'
-                + '<td>' + (t.source_table || '') + '</td>'
+                + '<td>' + escapeHtml(t.source_table || '') + '</td>'
                 + '<td>' + fmt(t.source_rows) + '</td>'
                 + '<td>' + fmt(t.new_rows) + '</td>'
                 + '<td>' + fmt(t.existing_rows) + '</td>'
@@ -65,22 +78,39 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
 
     const refresh = async () => {
         try {
-            render(await loadCodexMigrateStatus());
+            const job = await loadCodexMigrateStatus();
+            lastJob = job;
+            render(job);
         } catch (error) {
             console.error('codex migrate status:', error);
             statusEl.textContent = 'Migration status unavailable: ' + (error.message || error);
         }
     };
 
-    // Poll while a migration is running or while the modal is open, so the
-    // preview stays fresh and progress advances live.
+    // Poll ONLY while a migration is running or while the modal is open:
+    // an unattended dashboard otherwise hammers /api/codex/migrate forever.
+    // Re-checking the gate AFTER each refresh stops the loop the moment the
+    // modal closes; a running migration keeps polling regardless (progress
+    // must advance to the terminal state so the button can re-enable).
+    const pollActive = () => {
+        const job = lastJob;
+        return (job && job.running) || modalOpen();
+    };
     const schedule = () => {
         clearTimeout(pollTimer);
         pollTimer = setTimeout(async () => {
             await refresh();
-            schedule();
+            if (pollActive()) schedule();
         }, 1500);
     };
+    // A hidden tab pauses the timer entirely; returning to the tab resumes
+    // only if the gate is still open.
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            clearTimeout(pollTimer);
+            if (pollActive()) schedule();
+        }
+    });
     schedule();
 
     btn.addEventListener('click', async () => {

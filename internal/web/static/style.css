@@ -1490,35 +1490,6 @@ td.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: 
     .custom-range { border-left: none; padding: 0; }
 }
 
-/* ── Source tabs (All Clients | Codex) ─────── */
-.source-tabs {
-    display: flex;
-    gap: 4px;
-    margin: 0 0 14px 0;
-}
-.source-tab {
-    background: var(--surface);
-    color: var(--text-muted);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 6px 14px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
-}
-.source-tab:hover {
-    border-color: var(--border-hover);
-    color: var(--text);
-}
-/* Active state follows the approved segmented-control pattern (range-btn /
-   gran-btn): brighter graphite surface and full text color, not accent color. */
-.source-tab.is-active {
-    background: var(--surface2);
-    color: var(--text);
-    box-shadow: var(--shadow-sm);
-}
-
 /* ── Pricing Table admin modal (panel-pricing.js) ───────────────────────── */
 /* Entry icon button — same chrome as .theme-toggle. */
 .pricing-toggle{display:flex;align-items:center;justify-content:center;background:none;border:none;color:var(--text-muted);padding:6px;border-radius:var(--radius-xs);cursor:pointer;transition:color .15s ease,background .15s ease}
