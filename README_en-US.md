@@ -258,7 +258,7 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source=codex`) to view Codex usage data. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into `codex_api_requests.cost_usd`, so the Cost KPI matches the Claude tab.
+Start Codex and use normally. Open the dashboard (`http://localhost:8899/?source=codex`) to view Codex usage data. The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into `codex_api_requests.cost_usd`, so the Cost KPI matches the Claude tab.
 
 ### opencode
 

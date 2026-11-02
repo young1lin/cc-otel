@@ -10,6 +10,10 @@
 
 ### 修复
 
+- **Codex environment 落库到 User 列**：Codex CLI 会把 `[otel] environment`（`~/.codex/config.toml`，取值 dev / company / staging / prod，默认 dev）作为 OTLP Resource 属性 `env` 上报（codex-rs `otel/src/provider.rs` 的 `ENV_ATTRIBUTE`），此前 cc-otel 直接丢弃、User 列永远显示 —。现映射到与 Claude Code `user.id` 相同的 `user_id` 列，Request Log 的 User 列即可回答「这条请求来自哪个环境」；若未来 Codex 直接上报 `user.id`，则以其为准。只影响新写入的行，历史行保持空值。
+
+### 修复
+
 - **OpenRouter 询价加固**：官方地址未变（`https://openrouter.ai/api/v1`，2026-10 的文档仍在引用），拿不到价格的真实诱因是请求被边缘节点误伤/路径错误。💡 一键询价现在带产品 `User-Agent` + `Accept: application/json`（裸 `Go-http-client` 会被部分 CDN/WAF 过滤或误路由）；非 200 时把 OpenRouter 返回的具体原因（如 `HTTP 404 (Not Found)`）带进前端 toast，不再只有裸状态码；新增 `openrouter_base_url` 配置项与 `CC_OTEL_OPENROUTER_BASE_URL` 环境变量，可指向镜像或自建网关，留空/默认值自动回落官方地址。
 
 ### 新增

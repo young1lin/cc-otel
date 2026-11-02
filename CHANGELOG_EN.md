@@ -10,6 +10,10 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ### Fixed
 
+- **Codex environment lands in the User column**: Codex CLI reports `[otel] environment` (`~/.codex/config.toml`; dev / company / staging / prod, default dev) as the OTLP Resource attribute `env` (`ENV_ATTRIBUTE` in codex-rs `otel/src/provider.rs`); cc-otel used to drop it, leaving the User column a permanent em-dash. It now maps onto the same `user_id` column as Claude Code's `user.id`, so the Request Log User column answers "which environment drove this request"; an explicit `user.id`, if a future Codex build sends one, wins. Affects newly inserted rows only — history keeps its empty value.
+
+### Fixed
+
 - **OpenRouter suggest hardened**: the official base URL is unchanged (`https://openrouter.ai/api/v1`, still referenced by Oct-2026 docs) — real failures were edge/WAF misroutes or wrong paths. The one-click lookup now sends a product `User-Agent` + `Accept: application/json` (the bare `Go-http-client` default is filtered by some CDN edges); non-200 responses surface OpenRouter's own reason (e.g. `HTTP 404 (Not Found)`) in the UI toast instead of a bare status; new `openrouter_base_url` config key + `CC_OTEL_OPENROUTER_BASE_URL` env var point at a mirror/self-hosted gateway, with empty/default resetting to the official endpoints.
 
 ### Added
