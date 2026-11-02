@@ -6,6 +6,25 @@
 
 ---
 
+## [Unreleased]
+
+### 修复
+
+- **OpenRouter 询价加固**：官方地址未变（`https://openrouter.ai/api/v1`，2026-10 的文档仍在引用），拿不到价格的真实诱因是请求被边缘节点误伤/路径错误。💡 一键询价现在带产品 `User-Agent` + `Accept: application/json`（裸 `Go-http-client` 会被部分 CDN/WAF 过滤或误路由）；非 200 时把 OpenRouter 返回的具体原因（如 `HTTP 404 (Not Found)`）带进前端 toast，不再只有裸状态码；新增 `openrouter_base_url` 配置项与 `CC_OTEL_OPENROUTER_BASE_URL` 环境变量，可指向镜像或自建网关，留空/默认值自动回落官方地址。
+
+### 新增
+
+- **Clients 面板**：按 OTLP Resource `service.name` 汇总各客户端的 tokens（未缓存输入 / 缓存读 / 缓存写 / 输出 / 合计）、请求数、成本、命中率和活跃区间，按消耗量排序并带占比条。直读**永不被 retention 清理**的 `api_requests` 台账，历史全量；数据源切到 Codex 时面板自动隐藏（Codex 是独立账本）。
+- **Hour of Day 子视图（客户端 × 模型维度）**：Daily Detail 第三个子标签，把所选时间区间折叠成 24 个「几点钟」桶，并新增两个下拉：不选时按模型堆叠（Top 8 + Other）；锁定客户端看它的模型分布；**锁定模型则轴翻转为按客户端堆叠**（「1 点钟谁在烧 Claude Opus」）；两者都锁就是单序列（「Claude Code 的 Opus 在 13:00 用了多少」），此时 tooltip 展示完整 token 构成。锁定模型后整图沿用该模型在主图表的基准色、按名次深浅分档（模型颜色身份不随维度切换漂移）；tooltip 每行下附另一维度构成（如「glm-5.3 这根柱 @01:00 = DSH Plugin 78% · Claude Code 22%」），表头同时标注当前锁定的客户端/模型。跟随顶部 Tokens/Cost/Requests 切换；下拉切换用已缓存行本地重切、不重新请求。后端 `/api/hours` 改为返回 (hour, service_name, model) 明细单元。与 Intraday 定位互补不重叠：Intraday 看短区间的 chronological 曲线，Hour of Day 看全区间的时间段 × 客户端 × 模型分布，且任意跨度可用（Intraday 限 ≤7 天）；Codex 源无对应镜像端点，该子标签自动隐藏。
+- **分页跳页**：共享分页条（Daily/Sessions/Request Log/Pricing）新增页码输入框 + Go 按钮（回车同样生效），超界自动吸附到最近合法页。修复点击 Go 的 blur 竞态（浏览器先 blur 重置输入框、click 才读到旧值导致跳页静默失效——改为读取输入事件缓存的最后键入值），并新增 `pagination.test.mjs` 7 个用例复现并钉死该场景。
+- **客户端名显示与 Request Log 完全一致**：徽章渲染收敛为共享的 `formatSourceTag`（utils.js），未知 `service_name` 一律原文显示（如 `deepseek-harness-plugin`），不再有任何面板自造别名。
+
+### 开发
+
+- 集成测试数据按铁律以在线快照 `VACUUM INTO` 从全局库导入 bin（全局 daemon 全程未停）；期间发现 bin 库 `daily_model_agg` 重建后会被 90 天 retention 裁剪，故 Clients/Hour of Day 均直读 `api_requests` 保证与明细一致。
+
+---
+
 ## [v0.1.3] - 2026-09-10
 
 ### 新增
