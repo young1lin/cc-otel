@@ -1049,6 +1049,24 @@ func TestSameOriginGuard(t *testing.T) {
 	if got := do(http.MethodPost, "http://evil.example", "local:18899"); got != 403 {
 		t.Fatalf("cross-origin POST = %d, want 403", got)
 	}
+	if got := do(http.MethodPost, "http://127.0.0.1", "127.0.0.1:18899"); got != 403 {
+		t.Fatalf("same-host DIFFERENT-port POST must be blocked = %d, want 403", got)
+	}
+	if got := do(http.MethodPost, "http://local:80", "local:80"); got != 200 {
+		t.Fatalf("explicit default port matching = %d, want 200", got)
+	}
+	if got := do(http.MethodPost, "null", "local:18899"); got != 403 {
+		t.Fatalf("Origin: null (sandboxed iframe) = %d, want 403", got)
+	}
+	if got := do(http.MethodPost, "http://[::1", "[::1]:18899"); got != 403 {
+		t.Fatalf("malformed Origin = %d, want 403", got)
+	}
+	if got := do(http.MethodPost, "http://[::1]", "[::1]:18899"); got != 403 {
+		t.Fatalf("IPv6 bare vs ported (cross-port) = %d, want 403", got)
+	}
+	if got := do(http.MethodPost, "http://[::1]:18899", "[::1]:18899"); got != 200 {
+		t.Fatalf("IPv6 exact match = %d, want 200", got)
+	}
 	if got := do(http.MethodGet, "http://evil.example", "local:18899"); got != 200 {
 		t.Fatalf("GET with foreign Origin must pass (read-only, SOP hides the response) = %d, want 200", got)
 	}

@@ -521,6 +521,7 @@ func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*D
 		WHERE service_name = ? AND date >= ? AND date <= ?`,
 		CodexServiceName, from, to,
 	).Scan(&costUnits, &d.TotalInputTokens, &d.TotalCacheReadTokens, &d.TotalOutputTokens, &d.RequestCount, &cacheCreate)
+	d.TotalCacheCreationTokens = cacheCreate
 	if err != nil {
 		return nil, err
 	}

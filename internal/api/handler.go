@@ -3,6 +3,7 @@ package api
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -240,7 +241,7 @@ func sameOriginGuard(next http.Handler) http.Handler {
 		case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				if u, err := url.Parse(origin); err != nil || u.Host == "" || !sameHost(u.Host, r.Host) {
+				if !sameHost(origin, r.Host) {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusForbidden)
 					json.NewEncoder(w).Encode(map[string]string{"error": "cross-origin mutations are not allowed"})
@@ -252,26 +253,43 @@ func sameOriginGuard(next http.Handler) http.Handler {
 	})
 }
 
-// sameHost compares two Host:port forms, tolerating default-port omission
-// (http://host:80 vs host) — both are the same site to a browser.
-func sameHost(originHost, requestHost string) bool {
-	if originHost == requestHost {
+// sameHost compares two Host[:port] forms. The ONLY tolerated difference
+// is a scheme-default port the browser omitted: http://host (port 80) vs
+// host:80, https://host (443) vs host:443. A bare-host Origin never matches
+// a request on a NON-default port (http://host vs host:18899 is
+// cross-origin — different port means a different site), and non-default
+// ports must match exactly (R4 frontend review: the earlier any-port strip
+// admitted same-host-different-port origins).
+func sameHost(originURL, requestHost string) bool {
+	if originURL == requestHost {
 		return true
 	}
-	normalize := func(s string) string {
-		if host, _, err := net.SplitHostPort(s); err == nil {
-			return host
-		}
-		return s
+	u, err := url.Parse(originURL)
+	if err != nil || u.Host == "" {
+		return false
 	}
-	oh := normalize(originHost)
-	rh := normalize(requestHost)
-	if oh == rh {
+	oh, oport, oerr := net.SplitHostPort(u.Host)
+	if oerr != nil {
+		oh, oport = u.Host, "" // browser omitted the port
+	}
+	rh, rport, rerr := net.SplitHostPort(requestHost)
+	if rerr != nil {
+		rh, rport = requestHost, ""
+	}
+	oh = strings.Trim(oh, "[]")
+	rh = strings.Trim(rh, "[]")
+	if oh != rh {
+		return false
+	}
+	if oport == rport {
 		return true
 	}
-	// Origin carries an explicit port the request host may lack (or vice
-	// versa) only when one side used the default; compare bare hosts then.
-	return oh != "" && oh == strings.Trim(rh, "[]")
+	// Tolerate exactly the default-port omission for the origin's scheme.
+	defaultPort := "80"
+	if u.Scheme == "https" {
+		defaultPort = "443"
+	}
+	return (oport == "" && rport == defaultPort) || (rport == "" && oport == defaultPort)
 }
 
 // Register wires all API and static-file routes onto the given ServeMux.
@@ -620,6 +638,14 @@ func (h *Handler) PricingCollection(w http.ResponseWriter, r *http.Request) {
 			Source      string   `json:"source"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			// Distinguish oversize (the MaxBytesReader above) from malformed
+			// JSON, matching the import handler's 413 upload_too_large.
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				json.NewEncoder(w).Encode(map[string]string{"error": "body too large"})
+				return
+			}
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "invalid json"})
 			return

@@ -100,13 +100,18 @@ type Event struct {
 }
 
 // Dashboard holds aggregated token usage and cost statistics for a date range.
+// NOTE on total_input_tokens: /api/dashboard fills it with the FOLDED input
+// side (SUM(input+cache_read+cache_creation)); the legacy codex shim
+// (GetCodexDashboard) fills it with RAW SUM(input_tokens) and exposes the
+// cache parts separately — consumers must not mix the two endpoints.
 type Dashboard struct {
-	TotalCostUSD         float64 `json:"total_cost_usd"`
-	TotalInputTokens     int64   `json:"total_input_tokens"`      // SUM(input+cache_read+cache_creation) — input-side total (matches chart KPI Input)
-	TotalCacheReadTokens int64   `json:"total_cache_read_tokens"` // SUM(cache_read_tokens) — matches column "Cache Read"
-	TotalOutputTokens    int64   `json:"total_output_tokens"`
-	CacheHitRate         float64 `json:"cache_hit_rate"`
-	RequestCount         int64   `json:"request_count"`
+	TotalCostUSD             float64 `json:"total_cost_usd"`
+	TotalInputTokens         int64   `json:"total_input_tokens"`      // folded input side on /api/dashboard; raw SUM(input) on the codex shim
+	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens"` // SUM(cache_read_tokens) — matches column "Cache Read"
+	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens"` // codex shim only; keeps cache_hit_rate payload-reproducible
+	TotalOutputTokens        int64   `json:"total_output_tokens"`
+	CacheHitRate             float64 `json:"cache_hit_rate"`
+	RequestCount             int64   `json:"request_count"`
 }
 
 // DailySummary holds per-day aggregated token and cost statistics.
