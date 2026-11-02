@@ -29,6 +29,10 @@ type exportRecord struct {
 type tableCfg struct {
 	Name      string
 	Columns   []string
+	// optional marks unified AllClient columns the source may predate;
+	// when absent from the source schema they are silently skipped
+	// instead of failing the export (selectColumns).
+	optional  map[string]bool
 	WhereSQL  string
 	Args      func(fromUnix, toUnix int64) []any
 	TsFromRow func(row map[string]any) (int64, bool)
@@ -233,6 +237,11 @@ func selectColumns(ctx context.Context, db *sql.DB, cfg tableCfg) ([]string, err
 			selectCols = append(selectCols, "'' AS request_id")
 			continue
 		}
+		if cfg.optional[col] {
+			// Optional unified column this source predates: skip it; the
+			// receiving side fills the schema default.
+			continue
+		}
 		return nil, fmt.Errorf("%s missing required column %s", cfg.Name, col)
 	}
 	return selectCols, nil
@@ -434,7 +443,21 @@ func tableConfigs() []tableCfg {
 	sort.Slice(cfgs, func(i, j int) bool { return cfgs[i].Name < cfgs[j].Name })
 	for i := range cfgs {
 		if spec, ok := dbmerge.LookupSpec(cfgs[i].Name); ok {
-			cfgs[i].Columns = spec.Columns
+			// spec.Columns alone strips every unified AllClient column
+			// (they are all Optional, and Optional is never part of
+			// Columns) — a bin->global merge would silently zero
+			// reasoning/total/http_status/endpoint/conversation_id and
+			// drop tool-event service_name attribution. Carry the full
+			// effective set; selectColumns drops Optional columns the
+			// source schema predates.
+			cols := make([]string, 0, len(spec.Columns)+len(spec.Optional))
+			cols = append(cols, spec.Columns...)
+			cfgs[i].optional = make(map[string]bool, len(spec.Optional))
+			for _, c := range spec.Optional {
+				cols = append(cols, c)
+				cfgs[i].optional[c] = true
+			}
+			cfgs[i].Columns = cols
 		}
 	}
 	return cfgs

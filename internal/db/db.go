@@ -21,22 +21,16 @@ func Init(cfg *config.Config) (*sql.DB, error) {
 	}
 
 	// WAL mode: allows concurrent reads while writing.
-	// busy_timeout: wait up to 5s instead of failing immediately on lock contention.
-	// cache_size=-65536: 64 MB page cache (negative = KB).
-	// mmap_size=256MB: memory-mapped I/O to skip syscalls on reads of hot pages.
-	// temp_store=MEMORY: keep temp tables/indexes (ORDER BY, GROUP BY) in RAM.
 	// synchronous=NORMAL: WAL-safe; OS crash can lose last txn but DB stays consistent.
 	// Skipped under CC_OTEL_TEST_NOSYNC, where the DSN already opened every
 	// connection with synchronous=OFF (see dsn.go) — re-setting it here would
 	// stomp the DSN pragma on this connection.
+	// busy_timeout/cache_size/mmap_size/temp_store ride the DSN (dsn.go) so all
+	// pooled connections agree from their first statement; not set here.
 	if !nosyncEnabled() {
 		db.Exec("PRAGMA synchronous=NORMAL")
 	}
 	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
-	db.Exec("PRAGMA cache_size=-65536")
-	db.Exec("PRAGMA mmap_size=268435456")
-	db.Exec("PRAGMA temp_store=MEMORY")
 
 	// ANALYZE: refresh query-planner stats so the new composite indexes get picked.
 	// Cheap on small DBs; skip failures silently (e.g., empty DB on first boot).

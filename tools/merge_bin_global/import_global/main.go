@@ -465,6 +465,31 @@ func ensureTargetSchema(ctx context.Context, db *sql.DB) error {
 }
 
 func ensureCodexTokenColumns(ctx context.Context, db *sql.DB) error {
+	// Unified AllClient columns: the INSERT path may reference them (see
+	// insertRecord), so the target schema must carry them even when it was
+	// created by an older build of this tool. Same definitions the daemon's
+	// db.go uses.
+	for _, c := range []struct{ table, column, definition string }{
+		{"api_requests", "reasoning_tokens", "INTEGER DEFAULT 0"},
+		{"api_requests", "total_tokens", "INTEGER DEFAULT 0"},
+		{"api_requests", "http_status", "INTEGER DEFAULT 0"},
+		{"api_requests", "endpoint", "TEXT DEFAULT ''"},
+		{"api_requests", "conversation_id", "TEXT DEFAULT ''"},
+		{"user_prompt_events", "conversation_id", "TEXT DEFAULT ''"},
+		{"tool_decision_events", "conversation_id", "TEXT DEFAULT ''"},
+		{"tool_decision_events", "call_id", "TEXT DEFAULT ''"},
+		{"tool_decision_events", "service_name", "TEXT DEFAULT ''"},
+		{"tool_result_events", "conversation_id", "TEXT DEFAULT ''"},
+		{"tool_result_events", "call_id", "TEXT DEFAULT ''"},
+		{"tool_result_events", "arguments_length", "INTEGER DEFAULT 0"},
+		{"tool_result_events", "mcp_server", "TEXT DEFAULT ''"},
+		{"tool_result_events", "tool_origin", "TEXT DEFAULT ''"},
+		{"tool_result_events", "service_name", "TEXT DEFAULT ''"},
+	} {
+		if err := ensureColumn(ctx, db, c.table, c.column, c.definition); err != nil {
+			return fmt.Errorf("allclient column %s.%s: %w", c.table, c.column, err)
+		}
+	}
 	if err := ensureColumn(ctx, db, "codex_api_requests", "total_tokens", "INTEGER DEFAULT 0"); err != nil {
 		return fmt.Errorf("codex_api_requests.total_tokens: %w", err)
 	}
@@ -557,7 +582,14 @@ func insertRecord(ctx context.Context, tx *sql.Tx, rec exportRecord) (bool, erro
 		return false, fmt.Errorf("unknown table %q", rec.Table)
 	}
 
+	// Effective column set: the required base plus whichever unified
+	// Optional columns this exported row actually carries (pre-AllClient
+	// exports predate them; the daemon's AllClient exports include them).
+	// Using cfg.Columns alone would silently strip them on insert.
 	cols := cfg.Columns
+	if spec, specOK := dbmerge.LookupSpec(rec.Table); specOK && len(spec.Optional) > 0 {
+		cols = dbmerge.RowColumns(spec, rec.Row)
+	}
 	vals := make([]any, 0, len(cols))
 	for _, c := range cols {
 		vals = append(vals, normalizeForSQLite(rec.Row[c]))

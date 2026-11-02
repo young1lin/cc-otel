@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DSN builds the go-sqlite3 driver DSN for a database path.
@@ -15,15 +16,33 @@ import (
 // The pragma must ride the DSN so it is in effect during Init's migrations,
 // which run before Init's own PRAGMA statements.
 //
-// Production never sets the env, so its DSN is the plain path unchanged.
+// Production also carries its per-connection pragmas on the DSN: the pool
+// opens up to 4 connections and a PRAGMA issued on one pooled conn never
+// reaches the others, so settings had to be re-run per conn (the ncruces
+// driver defaults busy_timeout to 60s on bare-path DSNs, and Init's one-shot
+// "PRAGMA busy_timeout=5000" actually LOWERED it on whichever conn ran it).
+// Riding the DSN makes every conn identical from its first statement —
+// including during Init's migrations, which run before any Init PRAGMA.
+// journal_mode and synchronous(NORMAL) are set once in Init: the first is a
+// database-level property, and NORMAL must not stomp the test DSN's OFF.
 // :memory: always passes through untouched — its lifetime is the connection,
 // not the disk, and URI-form DSNs would break the single-shared-db assumption
 // of in-memory tests.
 func DSN(path string) string {
-	if path == ":memory:" || !nosyncEnabled() {
+	if path == ":memory:" {
 		return path
 	}
-	return "file:" + filepath.ToSlash(filepath.Clean(path)) + "?_pragma=synchronous(0)"
+	u := "file:" + filepath.ToSlash(filepath.Clean(path))
+	pragmas := []string{
+		"busy_timeout(5000)",
+		"cache_size(-65536)",
+		"mmap_size(268435456)",
+		"temp_store(MEMORY)",
+	}
+	if nosyncEnabled() {
+		pragmas = append(pragmas, "synchronous(0)")
+	}
+	return u + "?_pragma=" + strings.Join(pragmas, "&_pragma=")
 }
 
 // nosyncEnabled is the single switch DSN and Init consult, so the DSN pragma
