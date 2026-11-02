@@ -283,14 +283,15 @@ func rebuildAgg(ctx context.Context, db *sql.DB, parent string) error {
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (
-			date, model, input_tokens, output_tokens,
+			date, model, %s
+			input_tokens, output_tokens,
 			cache_read_tokens, cache_creation_tokens,
-			%s
 			cost_usd, request_count
 		)
 		SELECT
 			date(timestamp, 'unixepoch', 'localtime'),
 			model,
+			%s
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
@@ -299,8 +300,8 @@ func rebuildAgg(ctx context.Context, db *sql.DB, parent string) error {
 			COALESCE(SUM(cost_usd), 0),
 			COUNT(*)
 		FROM %s
-		GROUP BY date(timestamp, 'unixepoch', 'localtime'), model`,
-		aggTable, extraAggColumns(parent), extraAggSelects(parent), parent,
+		GROUP BY date(timestamp, 'unixepoch', 'localtime'), model%s`,
+		aggTable, middleAggColumns(parent), middleAggSelects(parent), extraAggSelects(parent), parent, groupAggService(parent),
 	)); err != nil {
 		return fmt.Errorf("rebuild %s: %w", aggTable, err)
 	}
@@ -308,17 +309,38 @@ func rebuildAgg(ctx context.Context, db *sql.DB, parent string) error {
 	return tx.Commit()
 }
 
-// extraAggColumns/Selects exist because codex_daily_model_agg carries
-// reasoning_tokens and total_tokens that the Claude agg does not.
-func extraAggColumns(parent string) string {
-	if parent == "codex_api_requests" {
-		return "reasoning_tokens, total_tokens,"
+// middleAggColumns/Selects emit the per-parent column fragment that sits
+// between the grouping keys and the shared token sums: the unified pool's
+// aggregate carries service_name, the archive codex_daily_model_agg instead
+// carries reasoning_tokens/total_tokens.
+func middleAggColumns(parent string) string {
+	if parent == "api_requests" {
+		return "service_name,"
+	}
+	return "reasoning_tokens, total_tokens,"
+}
+func middleAggSelects(parent string) string {
+	if parent == "api_requests" {
+		return "COALESCE(NULLIF(service_name, ''), 'claude-code'),"
 	}
 	return ""
 }
+
+// extraAggSelects: the archive codex_daily_model_agg additionally carries
+// reasoning_tokens/total_tokens sums that the unified aggregate does not.
 func extraAggSelects(parent string) string {
 	if parent == "codex_api_requests" {
 		return "COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(total_tokens), 0),"
+	}
+	return ""
+}
+
+// groupAggService extends the GROUP BY with the service dimension for the
+// unified pool. Without it every service would collapse onto service_name=''
+// and the per-client breakdown (Claude Code / OpenCode / Codex) would be lost.
+func groupAggService(parent string) string {
+	if parent == "api_requests" {
+		return ", COALESCE(NULLIF(service_name, ''), 'claude-code')"
 	}
 	return ""
 }

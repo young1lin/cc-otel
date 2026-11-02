@@ -48,6 +48,14 @@ type APIRequest struct {
 	ErrorMessage        string    `json:"error_message"`
 	ErrorCode           int64     `json:"error_code"`
 	ErrorRetryable      int       `json:"error_retryable"`
+
+	// Unified-client (AllClient) columns. Claude rows leave these zero/empty;
+	// Codex rows (service_name='codex') carry them since the two pools merged.
+	ReasoningTokens int64  `json:"reasoning_tokens"`
+	TotalTokens     int64  `json:"total_tokens"`
+	HTTPStatus      int64  `json:"http_status"`
+	Endpoint        string `json:"endpoint"`
+	ConversationID  string `json:"conversation_id"`
 }
 
 // Event represents any OTEL event (user_prompt, api_request, tool_decision, tool_result).
@@ -227,10 +235,9 @@ type IntradayModelSummary struct {
 // Repository provides data access methods for the SQLite database.
 type Repository struct {
 	db                  *sql.DB
-	stmtInsReq          *sql.Stmt // prepared: INSERT OR IGNORE INTO api_requests
-	stmtUpsAgg          *sql.Stmt // prepared: UPSERT INTO daily_model_agg
-	stmtUpsCodexAgg     *sql.Stmt // prepared: UPSERT INTO codex_daily_model_agg (request_count + 1)
-	stmtUpsCodexAggToks *sql.Stmt // prepared: UPSERT INTO codex_daily_model_agg (token deltas only)
+	stmtInsReq     *sql.Stmt    // prepared: INSERT OR IGNORE INTO api_requests
+	stmtUpsAgg     *sql.Stmt    // prepared: UPSERT INTO daily_model_agg
+	stmtUpsAggToks *sql.Stmt    // prepared: UPSERT INTO daily_model_agg (token deltas only)
 }
 
 // NewRepository returns a Repository backed by the given database connection.
@@ -246,8 +253,9 @@ func NewRepository(db *sql.DB) *Repository {
 			 cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, ttft_ms, request_id,
 			 event_name, event_sequence, speed, terminal_type, tool_name, decision, source,
 			 service_name, service_version, host_arch, os_type, os_version,
-			 error_type, error_message, error_code, error_retryable)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 error_type, error_message, error_code, error_retryable,
+			 reasoning_tokens, total_tokens, http_status, endpoint, conversation_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
 	r.stmtUpsAgg, _ = db.Prepare(`
 		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens,
@@ -261,35 +269,20 @@ func NewRepository(db *sql.DB) *Repository {
 			cost_usd              = cost_usd + excluded.cost_usd,
 			request_count         = request_count + 1`)
 
-	// codex_api_requests is written twice per logical request: once for codex.api_request
-	// (zero tokens, request_count++), once for codex.sse_event(response.completed)
-	// (token deltas, request_count unchanged). Two prepared UPSERTs keep the two paths
-	// from accidentally double-counting.
-	r.stmtUpsCodexAgg, _ = db.Prepare(`
-		INSERT INTO codex_daily_model_agg (date, model, input_tokens, output_tokens,
-			cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens, cost_usd, request_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-		ON CONFLICT(date, model) DO UPDATE SET
+	// Unified Codex completion upsert: one logical request is written twice —
+	// once for codex.api_request (INSERT OR IGNORE + request_count++ via
+	// stmtInsReq/stmtUpsAgg), once for codex.sse_event(response.completed)
+	// (token/cost/duration deltas, request_count unchanged). Keeping the two
+	// paths on separate UPSERTs is what stops a request from double-counting.
+	r.stmtUpsAggToks, _ = db.Prepare(`
+		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens,
+			cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+		ON CONFLICT(date, model, service_name) DO UPDATE SET
 			input_tokens          = input_tokens + excluded.input_tokens,
 			output_tokens         = output_tokens + excluded.output_tokens,
 			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
 			cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
-			reasoning_tokens      = reasoning_tokens + excluded.reasoning_tokens,
-			total_tokens          = total_tokens + excluded.total_tokens,
-			cost_usd              = cost_usd + excluded.cost_usd,
-			request_count         = request_count + 1`)
-
-	r.stmtUpsCodexAggToks, _ = db.Prepare(`
-		INSERT INTO codex_daily_model_agg (date, model, input_tokens, output_tokens,
-			cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens, cost_usd, request_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-		ON CONFLICT(date, model) DO UPDATE SET
-			input_tokens          = input_tokens + excluded.input_tokens,
-			output_tokens         = output_tokens + excluded.output_tokens,
-			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
-			cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
-			reasoning_tokens      = reasoning_tokens + excluded.reasoning_tokens,
-			total_tokens          = total_tokens + excluded.total_tokens,
 			cost_usd              = cost_usd + excluded.cost_usd`)
 
 	return r
@@ -303,11 +296,8 @@ func (r *Repository) Close() {
 	if r.stmtUpsAgg != nil {
 		r.stmtUpsAgg.Close()
 	}
-	if r.stmtUpsCodexAgg != nil {
-		r.stmtUpsCodexAgg.Close()
-	}
-	if r.stmtUpsCodexAggToks != nil {
-		r.stmtUpsCodexAggToks.Close()
+	if r.stmtUpsAggToks != nil {
+		r.stmtUpsAggToks.Close()
 	}
 }
 
@@ -451,6 +441,7 @@ func (r *Repository) insertRequestOnce(ctx context.Context, req *APIRequest) (bo
 		req.EventName, req.EventSequence, req.Speed, req.TerminalType, req.ToolName, req.Decision, req.Source,
 		req.ServiceName, req.ServiceVersion, req.HostArch, req.OSType, req.OSVersion,
 		req.ErrorType, req.ErrorMessage, req.ErrorCode, req.ErrorRetryable,
+		req.ReasoningTokens, req.TotalTokens, req.HTTPStatus, req.Endpoint, req.ConversationID,
 	)
 	if err != nil {
 		return false, err

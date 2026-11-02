@@ -24,6 +24,11 @@ type stagedBatch struct {
 	metrics  batchMetrics
 	once     sync.Once
 	closeErr error
+	// columns is the effective insert column list: spec.Columns plus the
+	// Optional unified-table columns this batch actually carries. Identity
+	// predicates keep using spec.Columns only, so ledger digests and EXISTS
+	// checks stay stable across the AllClient schema upgrade.
+	columns []string
 }
 
 func variableLimit(conn *sql.Conn) (int, error) {
@@ -67,6 +72,14 @@ func newStagedBatch(
 			LogicalRows: batch.SourceRows,
 		},
 	}
+	stage.columns = append([]string(nil), spec.Columns...)
+	if len(batch.Candidates) > 0 {
+		for _, column := range spec.Optional {
+			if _, ok := batch.Candidates[0].Row.Values[column]; ok {
+				stage.columns = append(stage.columns, column)
+			}
+		}
+	}
 	fail := func(err error) (*stagedBatch, error) {
 		_ = stage.Close(context.Background())
 		return nil, err
@@ -86,7 +99,7 @@ func newStagedBatch(
 		`_merge_new INTEGER NOT NULL DEFAULT 0`,
 		`_merge_key_kind INTEGER NOT NULL`,
 	}
-	for _, column := range spec.Columns {
+	for _, column := range stage.columns {
 		definitions = append(definitions, quoteIdent(column))
 	}
 	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS temp.`+stageTable); err != nil {
@@ -99,13 +112,13 @@ func newStagedBatch(
 		return stage, nil
 	}
 
-	columnsPerRow := len(spec.Columns) + 4
+	columnsPerRow := len(stage.columns) + 4
 	rowsPerStatement := limit / columnsPerRow
 	if rowsPerStatement < 1 {
 		return fail(fmt.Errorf("SQLite variable limit %d is below the %d values required for %s", limit, columnsPerRow, spec.Name))
 	}
 	insertColumns := []string{`_merge_digest`, `_merge_ordinal`, `_merge_occurrences`, `_merge_key_kind`}
-	for _, column := range spec.Columns {
+	for _, column := range stage.columns {
 		insertColumns = append(insertColumns, quoteIdent(column))
 	}
 	rowPlaceholder := "(" + strings.TrimSuffix(strings.Repeat("?,", columnsPerRow), ",") + ")"
@@ -121,7 +134,7 @@ func newStagedBatch(
 				candidate.Occurrences,
 				identityKeyKind(candidate.Identity),
 			)
-			for _, column := range spec.Columns {
+			for _, column := range stage.columns {
 				args = append(args, candidate.Row.Values[column])
 			}
 		}
@@ -229,9 +242,9 @@ func (s *stagedBatch) insertNew(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	columns := make([]string, len(s.spec.Columns))
-	selected := make([]string, len(s.spec.Columns))
-	for i, column := range s.spec.Columns {
+	columns := make([]string, len(s.columns))
+	selected := make([]string, len(s.columns))
+	for i, column := range s.columns {
 		columns[i] = quoteIdent(column)
 		selected[i] = "s." + quoteIdent(column)
 	}
@@ -254,8 +267,8 @@ func (s *stagedBatch) insertNew(ctx context.Context) (int64, error) {
 }
 
 func (s *stagedBatch) newRows(ctx context.Context) ([]Row, error) {
-	selected := make([]string, len(s.spec.Columns))
-	for i, column := range s.spec.Columns {
+	selected := make([]string, len(s.columns))
+	for i, column := range s.columns {
 		selected[i] = quoteIdent(column)
 	}
 	rows, err := s.conn.QueryContext(ctx,
@@ -267,7 +280,7 @@ func (s *stagedBatch) newRows(ctx context.Context) ([]Row, error) {
 	defer rows.Close()
 	var out []Row
 	for rows.Next() {
-		values := make([]any, len(s.spec.Columns))
+		values := make([]any, len(s.columns))
 		dest := make([]any, len(values))
 		for i := range values {
 			dest[i] = &values[i]
@@ -276,7 +289,7 @@ func (s *stagedBatch) newRows(ctx context.Context) ([]Row, error) {
 			return nil, err
 		}
 		row := Row{Table: s.spec.Name, Values: make(map[string]any, len(values))}
-		for i, column := range s.spec.Columns {
+		for i, column := range s.columns {
 			row.Values[column] = normalizeScannedValue(values[i])
 		}
 		out = append(out, row)

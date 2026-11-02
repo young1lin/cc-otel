@@ -70,11 +70,6 @@
 
 <div class="layout">
 
-    <nav class="source-tabs" aria-label="Telemetry source">
-        <button type="button" class="source-tab is-active" data-source="claude">All Clients</button>
-        <button type="button" class="source-tab" data-source="codex">Codex</button>
-    </nav>
-
     <div class="kpi-row">
         <div class="hero-stats">
             <button type="button" class="hero-stat kpi-btn" id="kpi-total-cost" title="Breakdown by model">
@@ -425,6 +420,28 @@
                 <div class="dbi-result-icon" id="dbi-result-icon" aria-hidden="true"></div>
                 <strong class="dbi-result-title" id="dbi-result-title"></strong>
                 <p class="dbi-result-message" id="dbi-result-message" aria-live="polite"></p>
+            </section>
+
+            <!-- AllClient: one-click Codex history migration. Always visible:
+                 it reads the legacy codex_* archive inside THIS database and
+                 merges it into the unified All Clients pool. -->
+            <section class="dbi-migrate">
+                <div class="dbi-migrate-head">
+                    <strong>Codex history migration</strong>
+                    <span>Merge the legacy Codex archive (<code>codex_*</code> tables) into the
+                    All&nbsp;Clients pool as <code>service_name "codex"</code>. One click, with
+                    identity dedup — re-running only adds rows that are missing.</span>
+                </div>
+                <div class="dbi-migrate-status" id="codex-migrate-status" aria-live="polite"></div>
+                <div class="dbi-table-wrap">
+                    <table class="dbi-table">
+                        <thead><tr><th>Archive table</th><th>Rows</th><th>New</th><th>Already merged</th></tr></thead>
+                        <tbody id="codex-migrate-table-body"></tbody>
+                    </table>
+                </div>
+                <div class="dbi-migrate-actions">
+                    <button type="button" class="dbi-primary" id="codex-migrate-start">Merge Codex history</button>
+                </div>
             </section>
         </div>
         <div class="dbi-footer">

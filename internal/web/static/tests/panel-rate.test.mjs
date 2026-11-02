@@ -1,30 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { state } from '../js/state.js';
-import { loadRate } from '../js/panel-rate.js';
 
-test('Codex Rate is rejected without fetching non-Codex data', async () => {
-    const oldDocument = global.document;
-    const oldFetch = global.fetch;
-    try {
-        const chart = { innerHTML: '' };
-        global.document = {
-            getElementById(id) { return id === 'rate-chart' ? chart : null; },
-        };
-        let fetches = 0;
-        global.fetch = async () => {
-            fetches += 1;
-            throw new Error('Rate must not fetch while Codex is selected');
-        };
-        state.source = 'codex';
+// Since the AllClient merge there is a single Rate view over the unified
+// api_requests pool (Claude Code, OpenCode, Codex, …). The old "Rate is
+// rejected for the Codex source" guard was removed together with the Codex
+// tab; rendering itself is covered by the bucket/legend hover tests, so this
+// file only pins the module's import surface now.
+import * as rate from '../js/panel-rate.js';
 
-        await loadRate();
-
-        assert.equal(fetches, 0);
-        assert.match(chart.innerHTML, /unavailable for Codex/);
-    } finally {
-        global.document = oldDocument;
-        global.fetch = oldFetch;
-        state.source = 'claude';
-    }
+test('panel-rate exports its loaders for the unified pool', () => {
+    assert.equal(typeof rate.loadRate, 'function');
+    assert.equal(typeof rate.initPanelRate, 'function');
 });

@@ -16,11 +16,11 @@ const codexRow = {
     cost_usd: 0.0123,
 };
 
-test('Codex daily row renders uncached and Cache Create separately', () => {
-    state.source = 'codex';
+test('Codex-shaped daily row renders the four disjoint token categories', () => {
+    // Since AllClient every row — Codex included — arrives normalized:
+    // input_tokens IS the uncached portion; cache read/create render apart.
     const html = renderDailyRow(codexRow);
-    assert.match(html, />40<\/td>/);
-    assert.match(html, />20<\/td>/);
-    assert.doesNotMatch(html, />100<\/td>/);
-    state.source = 'claude';
+    assert.match(html, />100<\/td>/); // uncached input
+    assert.match(html, />40<\/td>/);  // cache read
+    assert.match(html, />20<\/td>/);  // cache create
 });

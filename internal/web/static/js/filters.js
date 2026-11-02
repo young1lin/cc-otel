@@ -188,13 +188,10 @@ export function syncRangeNavUIFromState() {
     }
 }
 
-// Default = pushState so range/day/source clicks create back-able history entries.
+// Default = pushState so range/day clicks create back-able history entries.
 // Pass { replace: true } when canonicalizing the URL after a popstate or on boot.
 export function syncURLFromState({ replace = false } = {}) {
     const p = new URLSearchParams();
-    if (state.source && state.source !== 'claude') {
-        p.set('source', state.source);
-    }
     if (state.currentRange === 'custom' && state.customFrom && state.customTo) {
         p.set('from', state.customFrom);
         p.set('to', state.customTo);

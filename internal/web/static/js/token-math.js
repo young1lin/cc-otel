@@ -1,4 +1,7 @@
-import { state } from './state.js';
+// Since the AllClient merge every row — Claude Code, OpenCode, Codex, … —
+// comes from the unified api_requests pool with the same token semantics:
+// input_tokens is UNCACHED input, cache_read/cache_creation are disjoint
+// categories, and total_tokens (when > 0) is the client-reported raw total.
 
 export function tokenParts(row) {
     const input = Number(row?.input_tokens || 0);
@@ -7,18 +10,6 @@ export function tokenParts(row) {
     const cacheCreate = Number(row?.cache_creation_tokens || 0);
     const reportedTotal = Number(row?.total_tokens || 0);
 
-    if (state.source === 'codex') {
-        const uncachedInput = Math.max(input - cacheRead - cacheCreate, 0);
-        return {
-            inputSide: input,
-            uncachedInput,
-            cacheRead,
-            cacheCreate,
-            output,
-            total: reportedTotal > 0 ? reportedTotal : input + output,
-        };
-    }
-
     const inputSide = input + cacheRead + cacheCreate;
     return {
         inputSide,
@@ -26,19 +17,16 @@ export function tokenParts(row) {
         cacheRead,
         cacheCreate,
         output,
-        total: inputSide + output,
+        total: reportedTotal > 0 ? reportedTotal : inputSide + output,
     };
 }
 
 export function cacheHitParts(row) {
     const cacheRead = Number(row?.cache_read_tokens || 0);
-    if (state.source === 'codex') {
-        // Codex input_tokens already includes the cached portion.
-        return { numerator: cacheRead, denominator: Number(row?.input_tokens || 0) };
-    }
-    // Claude path: denominator is the full input side (uncached + cache read + cache
-    // create). Using cache_read + cache_create alone would collapse to a constant 100%
-    // for reverse-proxied providers (GLM, mimo) that never report cache_creation.
+    // Denominator is the full input side (uncached + cache read + cache
+    // create). Using cache_read + cache_create alone would collapse to a
+    // constant 100% for reverse-proxied providers (GLM, mimo) that never
+    // report cache_creation.
     return {
         numerator: cacheRead,
         denominator: Number(row?.input_tokens || 0) + cacheRead + Number(row?.cache_creation_tokens || 0),

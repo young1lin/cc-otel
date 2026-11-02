@@ -7,14 +7,27 @@ import (
 	"time"
 )
 
-// InsertCodexAPIRequest inserts a single codex_api_requests row and upserts the
-// matching codex_daily_model_agg row in the same transaction. Returns the new
-// row's id.
+// This file implements the AllClient unified Codex paths. Since the two pools
+// merged, every function here reads and writes the SHARED tables
+// (api_requests, daily_model_agg, user_prompt_events, tool_decision_events,
+// tool_result_events, raw_otlp_events) with service_name='codex'. The legacy
+// codex_* tables remain in the schema as a read-only archive of pre-merge
+// history; the one-click migration (internal/dbmerge codex_to_all) copies
+// them into the shared pool and never deletes them.
+
+// InsertCodexAPIRequest inserts a single Codex row into api_requests and
+// upserts the matching daily_model_agg row in the same transaction. Returns
+// the new row's id, or 0 when the insert was ignored as a duplicate
+// (request_id already present).
 //
 // Token columns may be zero (when called for codex.api_request) or non-zero
-// (fallback path from UpdateCodexAPIRequestTokens). Either way request_count is
-// incremented by 1 — the SSE-completed update path uses a separate token-only
-// UPSERT so a logical request is counted exactly once.
+// (fallback path from UpdateCodexAPIRequestTokens). Either way request_count
+// is incremented by 1 — the SSE-completed update path uses a separate
+// token-only UPSERT so a logical request is counted exactly once.
+//
+// Input tokens must ALREADY be normalized to Claude semantics (uncached:
+// raw input minus cache_read minus cache_creation) by the caller — the
+// receiver does this before it builds the struct.
 func (r *Repository) InsertCodexAPIRequest(ctx context.Context, req *CodexAPIRequest) (int64, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -22,26 +35,24 @@ func (r *Repository) InsertCodexAPIRequest(ctx context.Context, req *CodexAPIReq
 	}
 	defer tx.Rollback()
 
-	res, err := tx.ExecContext(ctx, `
-		INSERT INTO codex_api_requests (
-			timestamp, session_id, user_id, model,
-			input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-			reasoning_tokens, total_tokens, cost_usd, duration_ms, ttft_ms,
-			http_status, endpoint, conversation_id,
-			event_name, event_sequence, terminal_type,
-			service_name, service_version, host_arch, os_type, os_version,
-			error_message
-		) VALUES (?,?,?,?,  ?,?,?,?,  ?,?,?,?,?,  ?,?,?,  ?,?,?,  ?,?,?,?,?,  ?)`,
-		req.Timestamp.Unix(), req.SessionID, req.UserID, req.Model,
+	res, err := tx.StmtContext(ctx, r.stmtInsReq).ExecContext(ctx,
+		req.Timestamp.Unix(), req.SessionID, req.UserID, "", 0,
+		req.Model, "",
 		req.InputTokens, req.OutputTokens, req.CacheReadTokens, req.CacheCreationTokens,
-		req.ReasoningTokens, req.TotalTokens, costToInt64(req.CostUSD), req.DurationMs, req.TTFTMs,
-		req.HTTPStatus, req.Endpoint, req.ConversationID,
-		req.EventName, req.EventSequence, req.TerminalType,
-		req.ServiceName, req.ServiceVersion, req.HostArch, req.OSType, req.OSVersion,
-		req.ErrorMessage,
+		costToInt64(req.CostUSD), req.DurationMs, req.TTFTMs, req.RequestID,
+		req.EventName, req.EventSequence, "", req.TerminalType, "", "", "",
+		CodexServiceName, req.ServiceVersion, req.HostArch, req.OSType, req.OSVersion,
+		"", req.ErrorMessage, 0, 0,
+		req.ReasoningTokens, req.TotalTokens, req.HTTPStatus, req.Endpoint, req.ConversationID,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("insert codex_api_requests: %w", err)
+		return 0, fmt.Errorf("insert codex api_requests: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// Duplicate request_id: the row is already stored; do not touch the
+		// aggregate either, or the dashboard would count it twice.
+		return 0, tx.Commit()
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
@@ -49,20 +60,19 @@ func (r *Repository) InsertCodexAPIRequest(ctx context.Context, req *CodexAPIReq
 	}
 
 	dateKey := req.Timestamp.Local().Format("2006-01-02")
-	if _, err := tx.StmtContext(ctx, r.stmtUpsCodexAgg).ExecContext(ctx,
-		dateKey, req.Model,
+	if _, err := tx.StmtContext(ctx, r.stmtUpsAgg).ExecContext(ctx,
+		dateKey, req.Model, CodexServiceName,
 		req.InputTokens, req.OutputTokens,
 		req.CacheReadTokens, req.CacheCreationTokens,
-		req.ReasoningTokens, req.TotalTokens,
 		costToInt64(req.CostUSD),
 	); err != nil {
-		return 0, fmt.Errorf("upsert codex_daily_model_agg: %w", err)
+		return 0, fmt.Errorf("upsert daily_model_agg (codex): %w", err)
 	}
 
 	return id, tx.Commit()
 }
 
-// getCodexAPIRequestByID is a test helper. Not exported.
+// getCodexAPIRequestByID is a test helper reading a unified Codex row.
 func (r *Repository) getCodexAPIRequestByID(ctx context.Context, id int64) (*CodexAPIRequest, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, timestamp, session_id, user_id, model,
@@ -72,7 +82,7 @@ func (r *Repository) getCodexAPIRequestByID(ctx context.Context, id int64) (*Cod
 		       event_name, event_sequence, terminal_type,
 		       service_name, service_version, host_arch, os_type, os_version,
 		       error_message
-		FROM codex_api_requests WHERE id = ?`, id)
+		FROM api_requests WHERE id = ? AND service_name = ?`, id, CodexServiceName)
 
 	out := &CodexAPIRequest{}
 	var tsUnix int64
@@ -95,18 +105,20 @@ func (r *Repository) getCodexAPIRequestByID(ctx context.Context, id int64) (*Cod
 	return out, nil
 }
 
-// UpdateCodexAPIRequestTokens finalizes a Codex request row with completion
-// accounting. When u.RequestRowID > 0 it targets that exact row first (and
-// only that row), otherwise it falls back to the newest zero-token row matching
-// (session_id, model) within the last 5 minutes. The matched row is updated with
-// token columns, cost, full duration, and direct TTFT, and the same deltas are
-// added to codex_daily_model_agg (date keyed off the *row's* timestamp so
-// midnight drift lands on the correct day, request count unchanged).
+// UpdateCodexAPIRequestTokens finalizes a unified Codex request row with
+// completion accounting. When u.RequestRowID > 0 it targets that exact row
+// first (and only that row), otherwise it falls back to the newest zero-token
+// Codex row matching (session_id, model) within the last 5 minutes. The
+// matched row is updated with token columns, cost, full duration, and direct
+// TTFT, and the same deltas are added to daily_model_agg under
+// service_name='codex' (date keyed off the *row's* timestamp so midnight
+// drift lands on the correct day, request count unchanged).
 //
-// An exact row that already carries token data is treated as already-finalized:
-// the transaction commits as a no-op and returns true without re-applying deltas.
-// If no pending row exists at all, a token-only fallback row is inserted via
-// InsertCodexAPIRequest (which bumps request_count) and the method returns false.
+// An exact row that already carries token data is treated as
+// already-finalized: the transaction commits as a no-op and returns true
+// without re-applying deltas. If no pending row exists at all, a token-only
+// fallback row is inserted via InsertCodexAPIRequest (which bumps
+// request_count) and the method returns false.
 //
 // Returns true for an exact/fallback UPDATE or an idempotent exact-row no-op,
 // and false for the fallback INSERT. Either value lets the receiver drop the
@@ -126,9 +138,9 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 		err = tx.QueryRowContext(ctx, `
 			SELECT id, timestamp, input_tokens, output_tokens, cache_read_tokens,
 			       cache_creation_tokens, reasoning_tokens, total_tokens
-			FROM codex_api_requests
-			WHERE id = ? AND session_id = ? AND model = ?`,
-			u.RequestRowID, u.SessionID, u.Model,
+			FROM api_requests
+			WHERE id = ? AND session_id = ? AND model = ? AND service_name = ?`,
+			u.RequestRowID, u.SessionID, u.Model, CodexServiceName,
 		).Scan(&rowID, &rowTs, &input, &output, &cacheRead, &cacheCreate, &reasoning, &total)
 		if err == nil && (input != 0 || output != 0 || cacheRead != 0 ||
 			cacheCreate != 0 || reasoning != 0 || total != 0) {
@@ -148,12 +160,12 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 
 	if rowID == 0 {
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, timestamp FROM codex_api_requests
-			WHERE session_id = ? AND model = ?
+			SELECT id, timestamp FROM api_requests
+			WHERE session_id = ? AND model = ? AND service_name = ?
 			  AND input_tokens = 0 AND output_tokens = 0
 			  AND timestamp >= ?
 			ORDER BY id DESC LIMIT 1`,
-			u.SessionID, u.Model, cutoff,
+			u.SessionID, u.Model, CodexServiceName, cutoff,
 		).Scan(&rowID, &rowTs)
 	}
 
@@ -186,7 +198,7 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE codex_api_requests
+		UPDATE api_requests
 		SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
 		    cache_creation_tokens = ?, reasoning_tokens = ?, total_tokens = ?,
 		    cost_usd = ?,
@@ -204,66 +216,77 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	}
 
 	dateKey := time.Unix(rowTs, 0).Local().Format("2006-01-02")
-	if _, err := tx.StmtContext(ctx, r.stmtUpsCodexAggToks).ExecContext(ctx,
-		dateKey, u.Model,
+	if _, err := tx.StmtContext(ctx, r.stmtUpsAggToks).ExecContext(ctx,
+		dateKey, u.Model, CodexServiceName,
 		u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens,
-		u.ReasoningTokens, u.TotalTokens, costToInt64(u.CostUSD),
+		costToInt64(u.CostUSD),
 	); err != nil {
-		return false, fmt.Errorf("upsert codex agg tokens: %w", err)
+		return false, fmt.Errorf("upsert daily_model_agg tokens (codex): %w", err)
 	}
 
 	return true, tx.Commit()
 }
 
-// InsertCodexUserPrompt inserts a row into codex_user_prompt_events.
+// InsertCodexUserPrompt inserts a Codex prompt into the shared
+// user_prompt_events table.
 func (r *Repository) InsertCodexUserPrompt(ctx context.Context, e *CodexEvent) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO codex_user_prompt_events
-			(timestamp, session_id, conversation_id, prompt_text, prompt_length,
-			 event_sequence, terminal_type, service_name, service_version)
-		VALUES (?,?,?,?,?, ?,?,?,?)`,
-		e.Timestamp.Unix(), e.SessionID, e.ConversationID, e.PromptText, e.PromptLength,
-		e.EventSequence, e.TerminalType, e.ServiceName, e.ServiceVersion,
+		INSERT INTO user_prompt_events
+			(timestamp, session_id, user_id, prompt_id, prompt_text, prompt_length,
+			 event_sequence, terminal_type, service_name, service_version,
+			 host_arch, os_type, os_version, conversation_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		e.Timestamp.Unix(), e.SessionID, "", "", e.PromptText, e.PromptLength,
+		e.EventSequence, e.TerminalType, CodexServiceName, e.ServiceVersion,
+		"", "", "", e.ConversationID,
 	)
 	return err
 }
 
-// InsertCodexToolDecision inserts a row into codex_tool_decision_events.
+// InsertCodexToolDecision inserts a Codex approval into the shared
+// tool_decision_events table.
 func (r *Repository) InsertCodexToolDecision(ctx context.Context, e *CodexEvent) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO codex_tool_decision_events
-			(timestamp, session_id, conversation_id, tool_name, call_id,
-			 decision, source, event_sequence, terminal_type)
-		VALUES (?,?,?,?,?, ?,?,?,?)`,
-		e.Timestamp.Unix(), e.SessionID, e.ConversationID, e.ToolName, e.CallID,
-		e.Decision, e.Source, e.EventSequence, e.TerminalType,
+		INSERT INTO tool_decision_events
+			(timestamp, session_id, user_id, prompt_id, event_sequence, tool_name,
+			 decision, source, terminal_type, conversation_id, call_id, service_name)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		e.Timestamp.Unix(), e.SessionID, "", "", e.EventSequence, e.ToolName,
+		e.Decision, e.Source, e.TerminalType, e.ConversationID, e.CallID,
+		CodexServiceName,
 	)
 	return err
 }
 
-// InsertCodexToolResult inserts a row into codex_tool_result_events.
+// InsertCodexToolResult inserts a Codex tool outcome into the shared
+// tool_result_events table. output_length maps onto the shared
+// tool_result_size_bytes column; Codex-only detail (arguments_length,
+// mcp_server, tool_origin) rides in the dedicated columns.
 func (r *Repository) InsertCodexToolResult(ctx context.Context, e *CodexEvent) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO codex_tool_result_events
-			(timestamp, session_id, conversation_id, tool_name, call_id,
-			 success, duration_ms, arguments_length, output_length,
-			 tool_origin, mcp_server, error_message, event_sequence, terminal_type)
-		VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?,?)`,
-		e.Timestamp.Unix(), e.SessionID, e.ConversationID, e.ToolName, e.CallID,
-		e.Success, e.DurationMs, e.ArgumentsLength, e.OutputLength,
-		e.ToolOrigin, e.MCPServer, e.ErrorMessage, e.EventSequence, e.TerminalType,
+		INSERT INTO tool_result_events
+			(timestamp, session_id, user_id, prompt_id, event_sequence, tool_name,
+			 success, duration_ms, tool_result_size_bytes, decision_source, decision_type,
+			 terminal_type, conversation_id, call_id, arguments_length,
+			 mcp_server, tool_origin, service_name)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		e.Timestamp.Unix(), e.SessionID, "", "", e.EventSequence, e.ToolName,
+		e.Success, e.DurationMs, e.OutputLength, "", "",
+		e.TerminalType, e.ConversationID, e.CallID, e.ArgumentsLength,
+		e.MCPServer, e.ToolOrigin, CodexServiceName,
 	)
 	return err
 }
 
-// UpdateCodexRequestDuration sets duration_ms for a Codex request row. When
-// requestRowID > 0 it targets that exact (id, session_id, model) row first,
-// replacing duration only when it is still zero; a positive existing duration
-// is treated as authoritative and left untouched. If no exact row matches it
-// falls back to the newest zero-duration row for (session_id, model) within 10
-// minutes of ts. Returns true when an exact identity was handled (updated or
-// already authoritative) or a fallback row was updated; false only for a genuine
-// no-match, which lets the caller decide to insert a duration-only row.
+// UpdateCodexRequestDuration sets duration_ms for a unified Codex request
+// row. When requestRowID > 0 it targets that exact (id, session_id, model)
+// row first, replacing duration only when it is still zero; a positive
+// existing duration is treated as authoritative and left untouched. If no
+// exact row matches it falls back to the newest zero-duration Codex row for
+// (session_id, model) within 10 minutes of ts. Returns true when an exact
+// identity was handled (updated or already authoritative) or a fallback row
+// was updated; false only for a genuine no-match, which lets the caller
+// decide to insert a duration-only row.
 func (r *Repository) UpdateCodexRequestDuration(
 	ctx context.Context,
 	requestRowID int64,
@@ -276,10 +299,11 @@ func (r *Repository) UpdateCodexRequestDuration(
 	}
 	if requestRowID > 0 {
 		res, err := r.db.ExecContext(ctx, `
-			UPDATE codex_api_requests
+			UPDATE api_requests
 			SET duration_ms = ?
-			WHERE id = ? AND session_id = ? AND model = ? AND duration_ms = 0`,
-			durationMs, requestRowID, sessionID, model,
+			WHERE id = ? AND session_id = ? AND model = ? AND service_name = ?
+			  AND duration_ms = 0`,
+			durationMs, requestRowID, sessionID, model, CodexServiceName,
 		)
 		if err != nil {
 			return false, err
@@ -290,9 +314,9 @@ func (r *Repository) UpdateCodexRequestDuration(
 		var exists int
 		if err := r.db.QueryRowContext(ctx, `
 			SELECT EXISTS(
-				SELECT 1 FROM codex_api_requests
-				WHERE id = ? AND session_id = ? AND model = ?
-			)`, requestRowID, sessionID, model).Scan(&exists); err != nil {
+				SELECT 1 FROM api_requests
+				WHERE id = ? AND session_id = ? AND model = ? AND service_name = ?
+			)`, requestRowID, sessionID, model, CodexServiceName).Scan(&exists); err != nil {
 			return false, err
 		}
 		if exists == 1 {
@@ -302,16 +326,16 @@ func (r *Repository) UpdateCodexRequestDuration(
 
 	cutoff := ts.Unix() - 600
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE codex_api_requests
+		UPDATE api_requests
 		SET duration_ms = ?
 		WHERE id = (
-			SELECT id FROM codex_api_requests
-			WHERE session_id = ? AND model = ?
+			SELECT id FROM api_requests
+			WHERE session_id = ? AND model = ? AND service_name = ?
 			  AND duration_ms = 0
 			  AND timestamp >= ?
 			ORDER BY id DESC LIMIT 1
 		)`,
-		durationMs, sessionID, model, cutoff,
+		durationMs, sessionID, model, CodexServiceName, cutoff,
 	)
 	if err != nil {
 		return false, err
@@ -320,11 +344,11 @@ func (r *Repository) UpdateCodexRequestDuration(
 	return n > 0, nil
 }
 
-// UpdateCodexRequestTTFT sets ttft_ms for a Codex request row. When
+// UpdateCodexRequestTTFT sets ttft_ms for a unified Codex request row. When
 // requestRowID > 0 it targets that exact (id, session_id, model) row first,
 // filling TTFT only when it is zero/null; a positive existing TTFT is
 // authoritative and left untouched. Otherwise it falls back to the newest
-// zero/null-TTFT row for (session_id, model) within 10 minutes of ts.
+// zero/null-TTFT Codex row for (session_id, model) within 10 minutes of ts.
 func (r *Repository) UpdateCodexRequestTTFT(
 	ctx context.Context,
 	requestRowID int64,
@@ -337,11 +361,11 @@ func (r *Repository) UpdateCodexRequestTTFT(
 	}
 	if requestRowID > 0 {
 		res, err := r.db.ExecContext(ctx, `
-			UPDATE codex_api_requests
+			UPDATE api_requests
 			SET ttft_ms = ?
-			WHERE id = ? AND session_id = ? AND model = ?
+			WHERE id = ? AND session_id = ? AND model = ? AND service_name = ?
 			  AND (ttft_ms = 0 OR ttft_ms IS NULL)`,
-			ttftMs, requestRowID, sessionID, model,
+			ttftMs, requestRowID, sessionID, model, CodexServiceName,
 		)
 		if err != nil {
 			return err
@@ -352,9 +376,9 @@ func (r *Repository) UpdateCodexRequestTTFT(
 		var exists int
 		if err := r.db.QueryRowContext(ctx, `
 			SELECT EXISTS(
-				SELECT 1 FROM codex_api_requests
-				WHERE id = ? AND session_id = ? AND model = ?
-			)`, requestRowID, sessionID, model).Scan(&exists); err != nil {
+				SELECT 1 FROM api_requests
+				WHERE id = ? AND session_id = ? AND model = ? AND service_name = ?
+			)`, requestRowID, sessionID, model, CodexServiceName).Scan(&exists); err != nil {
 			return err
 		}
 		if exists == 1 {
@@ -364,31 +388,34 @@ func (r *Repository) UpdateCodexRequestTTFT(
 
 	cutoff := ts.Unix() - 600
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE codex_api_requests
+		UPDATE api_requests
 		SET ttft_ms = ?
 		WHERE id = (
-			SELECT id FROM codex_api_requests
-			WHERE session_id = ? AND model = ?
+			SELECT id FROM api_requests
+			WHERE session_id = ? AND model = ? AND service_name = ?
 			  AND (ttft_ms = 0 OR ttft_ms IS NULL)
 			  AND timestamp >= ?
 			ORDER BY id DESC LIMIT 1
 		)`,
-		ttftMs, sessionID, model, cutoff,
+		ttftMs, sessionID, model, CodexServiceName, cutoff,
 	)
 	return err
 }
 
-// InsertCodexRawEvent inserts the raw OTLP payload into codex_raw_otlp_events.
+// InsertCodexRawEvent inserts the raw OTLP payload into the shared
+// raw_otlp_events table (identical schema to the legacy codex one).
 func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, timestampUnix int64, rawJSON string) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO codex_raw_otlp_events (timestamp, event_type, raw_json) VALUES (?, ?, ?)`,
+		INSERT INTO raw_otlp_events (timestamp, event_type, raw_json) VALUES (?, ?, ?)`,
 		timestampUnix, eventType, rawJSON,
 	)
 	return err
 }
 
-// GetCodexDashboard mirrors GetDashboardForRange but reads from codex_api_requests.
-// Codex input_tokens already includes cached input; cache_read_tokens is a subset.
+// GetCodexDashboard mirrors GetDashboardForRange but reads the unified
+// api_requests pool filtered to Codex rows. Since the merge, input_tokens is
+// stored normalized (uncached), so the cache-hit denominator matches the
+// Claude-side formula input+cache_read.
 func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*Dashboard, error) {
 	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
 	if err != nil {
@@ -404,24 +431,22 @@ func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*D
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			COUNT(*)
-		FROM codex_api_requests
-		WHERE timestamp >= ? AND timestamp < ?`,
-		fromUnix, toUnix,
+		FROM api_requests
+		WHERE service_name = ? AND timestamp >= ? AND timestamp < ?`,
+		CodexServiceName, fromUnix, toUnix,
 	).Scan(&costUnits, &d.TotalInputTokens, &d.TotalCacheReadTokens, &d.TotalOutputTokens, &d.RequestCount)
 	if err != nil {
 		return nil, err
 	}
 	d.TotalCostUSD = costToFloat64(costUnits)
-	if d.TotalInputTokens > 0 {
-		d.CacheHitRate = float64(d.TotalCacheReadTokens) / float64(d.TotalInputTokens)
+	if d.TotalInputTokens+d.TotalCacheReadTokens > 0 {
+		d.CacheHitRate = float64(d.TotalCacheReadTokens) / float64(d.TotalInputTokens+d.TotalCacheReadTokens)
 	}
 	return d, nil
 }
 
-// GetCodexDailyStatsByModel returns per-(date, model) rollup rows with total count.
-// Reads codex_api_requests directly. codex_daily_model_agg is now kept in sync by
-// the write paths but the read side hasn't switched to it yet — doing so would
-// require a startup rebuild step like RebuildDailyAggregates.
+// GetCodexDailyStatsByModel returns per-(date, model) rollup rows with total
+// count, reading the unified pool filtered to Codex rows.
 func (r *Repository) GetCodexDailyStatsByModel(ctx context.Context, from, to string, limit, offset int, granularity string) ([]DailyModelSummary, int64, error) {
 	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
 	if err != nil {
@@ -430,29 +455,29 @@ func (r *Repository) GetCodexDailyStatsByModel(ctx context.Context, from, to str
 	dateExpr := dateExprForGranularity(granularity)
 
 	var total int64
-	if err := r.db.QueryRowContext(ctx, `
+	if err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM (
-			SELECT 1 FROM codex_api_requests
-			WHERE timestamp >= ? AND timestamp < ?
-			GROUP BY `+dateExpr+`, model
-		)`, fromUnix, toUnix).Scan(&total); err != nil {
+			SELECT 1 FROM api_requests
+			WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
+			GROUP BY %s, model
+		)`, dateExpr), CodexServiceName, fromUnix, toUnix).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT `+dateExpr+` AS d, model,
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s AS d, model,
 		       COALESCE(SUM(cost_usd), 0),
 		       COALESCE(SUM(input_tokens), 0),
 		       COALESCE(SUM(output_tokens), 0),
 		       COALESCE(SUM(cache_read_tokens), 0),
 		       COALESCE(SUM(cache_creation_tokens), 0),
 		       COUNT(*)
-		FROM codex_api_requests
-		WHERE timestamp >= ? AND timestamp < ?
+		FROM api_requests
+		WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
 		GROUP BY d, model
 		ORDER BY d DESC, model
-		LIMIT ? OFFSET ?`,
-		fromUnix, toUnix, limit, offset,
+		LIMIT ? OFFSET ?`, dateExpr),
+		CodexServiceName, fromUnix, toUnix, limit, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -475,7 +500,10 @@ func (r *Repository) GetCodexDailyStatsByModel(ctx context.Context, from, to str
 	return out, total, rows.Err()
 }
 
-// GetCodexCalendarDays returns compact per-day aggregates for the Codex usage calendar.
+// GetCodexCalendarDays returns compact per-day aggregates for the Codex usage
+// calendar, read from the shared daily_model_agg under service_name='codex'.
+// Totals use Claude semantics (input+output+cache are disjoint columns since
+// the merge normalization) and now match the Claude-side calendar.
 func (r *Repository) GetCodexCalendarDays(ctx context.Context, from, to string) ([]CalendarDay, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT
@@ -485,13 +513,12 @@ func (r *Repository) GetCodexCalendarDays(ctx context.Context, from, to string) 
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_creation_tokens), 0),
-			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(cost_usd), 0),
 			COALESCE(SUM(request_count), 0)
-		FROM codex_daily_model_agg
-		WHERE date >= ? AND date <= ?
+		FROM daily_model_agg
+		WHERE service_name = ? AND date >= ? AND date <= ?
 		GROUP BY date, model
-		ORDER BY date ASC, model ASC`, from, to)
+		ORDER BY date ASC, model ASC`, CodexServiceName, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("codex calendar days query: %w", err)
 	}
@@ -502,8 +529,8 @@ func (r *Repository) GetCodexCalendarDays(ctx context.Context, from, to string) 
 	topTokens := make(map[string]int64)
 	for rows.Next() {
 		var date, model string
-		var input, output, cacheRead, cacheCreate, reportedTotal, costUnits, reqs int64
-		if err := rows.Scan(&date, &model, &input, &output, &cacheRead, &cacheCreate, &reportedTotal, &costUnits, &reqs); err != nil {
+		var input, output, cacheRead, cacheCreate, costUnits, reqs int64
+		if err := rows.Scan(&date, &model, &input, &output, &cacheRead, &cacheCreate, &costUnits, &reqs); err != nil {
 			return nil, err
 		}
 
@@ -514,14 +541,7 @@ func (r *Repository) GetCodexCalendarDays(ctx context.Context, from, to string) 
 			dates = append(dates, date)
 			topTokens[date] = -1
 		}
-		// Codex `input_tokens` already includes cached input (cache_read is a subset),
-		// so summing input+cache_read would double-count. Prefer the reported
-		// total_tokens when present, fall back to input+output otherwise.
-		// This diverges intentionally from the Claude side (Repository.GetCalendarDays).
-		modelTokens := reportedTotal
-		if modelTokens <= 0 {
-			modelTokens = input + output
-		}
+		modelTokens := input + output + cacheRead + cacheCreate
 		day.TotalTokens += modelTokens
 		day.InputTokens += input
 		day.OutputTokens += output
@@ -545,8 +565,8 @@ func (r *Repository) GetCodexCalendarDays(ctx context.Context, from, to string) 
 	return out, nil
 }
 
-// GetCodexIntradayStatsByModel returns per-(bucket, model) Codex stats. Codex
-// input_tokens already includes cached input; cache_read_tokens is a subset.
+// GetCodexIntradayStatsByModel returns per-(bucket, model) Codex stats from
+// the unified pool.
 func (r *Repository) GetCodexIntradayStatsByModel(ctx context.Context, fromYMD, toYMD string, bucketMinutes int, model string) ([]IntradayModelSummary, error) {
 	if !ValidRateBucketMinutes(bucketMinutes) {
 		return nil, fmt.Errorf("bucket_minutes must be 5, 10, 15, 30, or 60 (got %d)", bucketMinutes)
@@ -567,10 +587,10 @@ func (r *Repository) GetCodexIntradayStatsByModel(ctx context.Context, fromYMD, 
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_creation_tokens), 0),
 			COALESCE(COUNT(*), 0)
-		FROM codex_api_requests
-		WHERE timestamp >= ? AND timestamp < ?
+		FROM api_requests
+		WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
 	`
-	args := []any{bucketSec, fromUnix, toExclusiveUnix}
+	args := []any{bucketSec, CodexServiceName, fromUnix, toExclusiveUnix}
 	if model != "" {
 		query += ` AND model = ?`
 		args = append(args, model)
@@ -603,16 +623,17 @@ func (r *Repository) GetCodexIntradayStatsByModel(ctx context.Context, fromYMD, 
 	return result, rows.Err()
 }
 
-// GetCodexRecentRequests returns paginated CodexAPIRequest rows in the date range,
-// optionally filtered by model.
+// GetCodexRecentRequests returns paginated unified Codex rows in the date
+// range, optionally filtered by model. conversation_id is carried through as
+// the legacy codex tab expects it.
 func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset int, model, from, to string) ([]CodexAPIRequest, int64, error) {
 	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	args := []interface{}{fromUnix, toUnix}
-	where := "timestamp >= ? AND timestamp < ?"
+	args := []interface{}{CodexServiceName, fromUnix, toUnix}
+	where := "service_name = ? AND timestamp >= ? AND timestamp < ?"
 	if model != "" {
 		where += " AND model = ?"
 		args = append(args, model)
@@ -620,7 +641,7 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 
 	var total int64
 	if err := r.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM codex_api_requests WHERE "+where, args...,
+		"SELECT COUNT(*) FROM api_requests WHERE "+where, args...,
 	).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -630,9 +651,9 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 		SELECT id, timestamp, session_id, user_id, model,
 		       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		       reasoning_tokens, total_tokens, cost_usd, duration_ms, ttft_ms,
-		       http_status, endpoint,
-		       COALESCE(NULLIF(service_name, ''), 'codex') AS service_name
-		FROM codex_api_requests
+		       http_status, endpoint, conversation_id,
+		       service_name
+		FROM api_requests
 		WHERE `+where+`
 		ORDER BY timestamp DESC
 		LIMIT ? OFFSET ?`, args...,
@@ -649,7 +670,8 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 		if err := rows.Scan(&rec.ID, &tsUnix, &rec.SessionID, &rec.UserID, &rec.Model,
 			&rec.InputTokens, &rec.OutputTokens, &rec.CacheReadTokens, &rec.CacheCreationTokens,
 			&rec.ReasoningTokens, &rec.TotalTokens, &costUnits, &rec.DurationMs, &rec.TTFTMs,
-			&rec.HTTPStatus, &rec.Endpoint, &rec.ServiceName,
+			&rec.HTTPStatus, &rec.Endpoint, &rec.ConversationID,
+			&rec.ServiceName,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -660,8 +682,9 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 	return out, total, rows.Err()
 }
 
-// GetCodexSessionStats reuses the existing SessionStat type. StartTime maps to
-// MIN(timestamp); InputTokens / OutputTokens / CostUSD aggregate per session.
+// GetCodexSessionStats reuses the existing SessionStat type against the
+// unified pool. StartTime maps to MIN(timestamp); InputTokens / OutputTokens
+// / CostUSD aggregate per session.
 func (r *Repository) GetCodexSessionStats(ctx context.Context, from, to string, limit, offset int) ([]SessionStat, int64, error) {
 	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
 	if err != nil {
@@ -671,11 +694,11 @@ func (r *Repository) GetCodexSessionStats(ctx context.Context, from, to string, 
 	var total int64
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM (
-			SELECT 1 FROM codex_api_requests
-			WHERE timestamp >= ? AND timestamp < ?
+			SELECT 1 FROM api_requests
+			WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
 			  AND session_id != ''
 			GROUP BY session_id
-		)`, fromUnix, toUnix).Scan(&total); err != nil {
+		)`, CodexServiceName, fromUnix, toUnix).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -686,12 +709,12 @@ func (r *Repository) GetCodexSessionStats(ctx context.Context, from, to string, 
 		       COALESCE(SUM(input_tokens), 0),
 		       COALESCE(SUM(output_tokens), 0),
 		       COALESCE(SUM(cost_usd), 0)
-		FROM codex_api_requests
-		WHERE timestamp >= ? AND timestamp < ?
+		FROM api_requests
+		WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
 		  AND session_id != ''
 		GROUP BY session_id
 		ORDER BY MAX(timestamp) DESC
-		LIMIT ? OFFSET ?`, fromUnix, toUnix, limit, offset)
+		LIMIT ? OFFSET ?`, CodexServiceName, fromUnix, toUnix, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -713,16 +736,17 @@ func (r *Repository) GetCodexSessionStats(ctx context.Context, from, to string, 
 	return out, total, rows.Err()
 }
 
-// GetCodexDurationStatsByModel returns per-model latency stats. Codex does not
-// emit token-throughput, so AvgOutTokensPS/AvgTotTokensPS stay at 0.
+// GetCodexDurationStatsByModel returns per-model latency stats from the
+// unified pool. Codex does not emit token-throughput, so AvgOutTokensPS /
+// AvgTotTokensPS stay at 0.
 func (r *Repository) GetCodexDurationStatsByModel(ctx context.Context, model, from, to string) ([]DurationStat, error) {
 	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
 	if err != nil {
 		return nil, err
 	}
 
-	args := []interface{}{fromUnix, toUnix}
-	where := "timestamp >= ? AND timestamp < ? AND duration_ms > 0"
+	args := []interface{}{CodexServiceName, fromUnix, toUnix}
+	where := "service_name = ? AND timestamp >= ? AND timestamp < ? AND duration_ms > 0"
 	if model != "" {
 		where += " AND model = ?"
 		args = append(args, model)
@@ -734,7 +758,7 @@ func (r *Repository) GetCodexDurationStatsByModel(ctx context.Context, model, fr
 		       AVG(duration_ms), AVG(ttft_ms),
 		       0.0, 0.0,
 		       MAX(duration_ms), MIN(duration_ms)
-		FROM codex_api_requests
+		FROM api_requests
 		WHERE `+where+`
 		GROUP BY model
 		ORDER BY COUNT(*) DESC`, args...)

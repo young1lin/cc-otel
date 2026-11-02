@@ -25,16 +25,14 @@ test('claude cache hit does NOT collapse to 100% when cache_creation is 0 (GLM/m
     assert.ok(Math.abs(ratio(row) - 0.9) < 1e-9, `expected 0.9, got ${ratio(row)}`);
 });
 
-test('codex cache hit unchanged: cache_read / input_tokens (input already includes cache)', () => {
-    state.source = 'codex';
-    // For codex, input_tokens already includes cached portion.
-    const row = { input_tokens: 1000, cache_read_tokens: 400, cache_creation_tokens: 0 };
+test('codex-shaped row uses the unified denominator (input pre-normalized to uncached)', () => {
+    // Since the AllClient merge, Codex rows arrive NORMALIZED: input_tokens is
+    // the uncached portion, cache read/create are disjoint categories.
+    const row = { input_tokens: 600, cache_read_tokens: 400, cache_creation_tokens: 0 };
     assert.ok(Math.abs(ratio(row) - 0.4) < 1e-9);
-    state.source = 'claude';
 });
 
-test('codex token parts subtract cache read and cache write once', () => {
-    state.source = 'codex';
+test('codex token parts keep disjoint categories and prefer the reported total', () => {
     const parts = tokenParts({
         input_tokens: 100,
         cache_read_tokens: 40,
@@ -43,12 +41,11 @@ test('codex token parts subtract cache read and cache write once', () => {
         total_tokens: 110,
     });
     assert.deepEqual(parts, {
-        inputSide: 100,
-        uncachedInput: 40,
+        inputSide: 160,
+        uncachedInput: 100,
         cacheRead: 40,
         cacheCreate: 20,
         output: 10,
         total: 110,
     });
-    state.source = 'claude';
 });

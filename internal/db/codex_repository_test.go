@@ -172,7 +172,7 @@ func TestUpdateCodexAPIRequestTokens_UpdatesNewestZeroTokenRow(t *testing.T) {
 
 	var n int
 	if err := repo.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM codex_api_requests WHERE session_id='sess-A' AND model='gpt-5.1' AND input_tokens > 0`,
+		`SELECT COUNT(*) FROM api_requests WHERE service_name = 'codex' AND session_id='sess-A' AND model='gpt-5.1' AND input_tokens > 0`,
 	).Scan(&n); err != nil {
 		t.Fatalf("count tokenised: %v", err)
 	}
@@ -181,8 +181,8 @@ func TestUpdateCodexAPIRequestTokens_UpdatesNewestZeroTokenRow(t *testing.T) {
 	}
 
 	var maxID, tokenisedID int64
-	repo.db.QueryRowContext(ctx, `SELECT MAX(id) FROM codex_api_requests WHERE session_id='sess-A'`).Scan(&maxID)
-	repo.db.QueryRowContext(ctx, `SELECT id   FROM codex_api_requests WHERE session_id='sess-A' AND input_tokens > 0`).Scan(&tokenisedID)
+	repo.db.QueryRowContext(ctx, `SELECT MAX(id) FROM api_requests WHERE service_name = 'codex' AND session_id='sess-A'`).Scan(&maxID)
+	repo.db.QueryRowContext(ctx, `SELECT id   FROM api_requests WHERE service_name = 'codex' AND session_id='sess-A' AND input_tokens > 0`).Scan(&tokenisedID)
 	if maxID != tokenisedID {
 		t.Fatalf("expected newest row %d to be tokenised, but row %d was tokenised", maxID, tokenisedID)
 	}
@@ -193,7 +193,7 @@ func TestUpdateCodexAPIRequestTokens_UpdatesNewestZeroTokenRow(t *testing.T) {
 		SELECT input_tokens, output_tokens, cache_read_tokens,
 		       cache_creation_tokens, reasoning_tokens, total_tokens,
 		       cost_usd, duration_ms, ttft_ms
-		FROM codex_api_requests WHERE id = ?`, tokenisedID,
+		FROM api_requests WHERE service_name = 'codex' AND id = ?`, tokenisedID,
 	).Scan(&input, &output, &cacheRead, &cacheCreate, &reasoning, &total, &costUnits, &duration, &ttft)
 	if err != nil {
 		t.Fatalf("read tokenised row: %v", err)
@@ -224,7 +224,7 @@ func TestUpdateCodexAPIRequestTokens_InsertsWhenNoMatch(t *testing.T) {
 	}
 
 	var n int64
-	repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_api_requests`).Scan(&n)
+	repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE service_name = 'codex'`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("expected exactly 1 row inserted, got %d", n)
 	}
@@ -259,10 +259,10 @@ func TestCodexSubEvent_Inserts(t *testing.T) {
 	}
 
 	for _, table := range []string{
-		"codex_user_prompt_events",
-		"codex_tool_decision_events",
-		"codex_tool_result_events",
-		"codex_raw_otlp_events",
+		"user_prompt_events",
+		"tool_decision_events",
+		"tool_result_events",
+		"raw_otlp_events",
 	} {
 		var n int
 		repo.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&n)
@@ -272,22 +272,24 @@ func TestCodexSubEvent_Inserts(t *testing.T) {
 	}
 }
 
-// readCodexAgg fetches the agg row for (date, model). Returns false if missing.
+// readCodexAgg fetches the unified agg row for (date, model, 'codex').
+// reasoning/total tokens live per-row in api_requests since the AllClient
+// merge, so they are not part of daily_model_agg. Returns false if missing.
 func readCodexAgg(t *testing.T, repo *Repository, date, model string) (
-	input, output, cacheRead, cacheCreate, reasoning, totalTokens, count int64,
+	input, output, cacheRead, cacheCreate, count int64,
 	ok bool,
 ) {
 	t.Helper()
 	row := repo.db.QueryRow(`
 		SELECT input_tokens, output_tokens, cache_read_tokens,
-		       cache_creation_tokens, reasoning_tokens, total_tokens, request_count
-		FROM codex_daily_model_agg WHERE date = ? AND model = ?`, date, model)
+		       cache_creation_tokens, request_count
+		FROM daily_model_agg WHERE date = ? AND model = ? AND service_name = 'codex'`, date, model)
 	if err := row.Scan(
-		&input, &output, &cacheRead, &cacheCreate, &reasoning, &totalTokens, &count,
+		&input, &output, &cacheRead, &cacheCreate, &count,
 	); err != nil {
-		return 0, 0, 0, 0, 0, 0, 0, false
+		return 0, 0, 0, 0, 0, false
 	}
-	return input, output, cacheRead, cacheCreate, reasoning, totalTokens, count, true
+	return input, output, cacheRead, cacheCreate, count, true
 }
 
 func TestCodexAgg_InsertAndUpdate_PopulatesAggExactlyOnce(t *testing.T) {
@@ -308,13 +310,13 @@ func TestCodexAgg_InsertAndUpdate_PopulatesAggExactlyOnce(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	in, out, cache, cacheCreate, reason, totalTokens, count, ok := readCodexAgg(t, repo, dateKey, "gpt-5.1")
+	in, out, cache, cacheCreate, count, ok := readCodexAgg(t, repo, dateKey, "gpt-5.1")
 	if !ok {
 		t.Fatalf("expected agg row after insert")
 	}
-	if in != 0 || out != 0 || cache != 0 || cacheCreate != 0 || reason != 0 || totalTokens != 0 || count != 1 {
-		t.Fatalf("after insert: tokens should be 0 and count=1, got in=%d out=%d cache=%d create=%d reasoning=%d total=%d count=%d",
-			in, out, cache, cacheCreate, reason, totalTokens, count)
+	if in != 0 || out != 0 || cache != 0 || cacheCreate != 0 || count != 1 {
+		t.Fatalf("after insert: tokens should be 0 and count=1, got in=%d out=%d cache=%d create=%d count=%d",
+			in, out, cache, cacheCreate, count)
 	}
 
 	// Step 2: codex.sse_event(response.completed) → UPDATE the row, add tokens to agg, count unchanged.
@@ -336,10 +338,10 @@ func TestCodexAgg_InsertAndUpdate_PopulatesAggExactlyOnce(t *testing.T) {
 		t.Fatal("expected UPDATE branch (matching pending row exists)")
 	}
 
-	in, out, cache, cacheCreate, reason, totalTokens, count, _ = readCodexAgg(t, repo, dateKey, "gpt-5.1")
-	if in != 1000 || out != 200 || cache != 50 || cacheCreate != 25 || reason != 20 || totalTokens != 1200 || count != 1 {
-		t.Fatalf("after update: expected tokens=(1000,200,50,25,20,1200) count=1; got in=%d out=%d cache=%d create=%d reasoning=%d total=%d count=%d",
-			in, out, cache, cacheCreate, reason, totalTokens, count)
+	in, out, cache, cacheCreate, count, _ = readCodexAgg(t, repo, dateKey, "gpt-5.1")
+	if in != 1000 || out != 200 || cache != 50 || cacheCreate != 25 || count != 1 {
+		t.Fatalf("after update: expected tokens=(1000,200,50,25) count=1; got in=%d out=%d cache=%d create=%d count=%d",
+			in, out, cache, cacheCreate, count)
 	}
 }
 
@@ -380,13 +382,13 @@ func TestUpdateCodexAPIRequestTokens_ExactRowIsIdempotent(t *testing.T) {
 
 	var olderInput, olderCreate, newerInput int64
 	if err := repo.db.QueryRowContext(ctx,
-		`SELECT input_tokens, cache_creation_tokens FROM codex_api_requests WHERE id = ?`,
+		`SELECT input_tokens, cache_creation_tokens FROM api_requests WHERE service_name = 'codex' AND id = ?`,
 		olderID,
 	).Scan(&olderInput, &olderCreate); err != nil {
 		t.Fatalf("read older: %v", err)
 	}
 	if err := repo.db.QueryRowContext(ctx,
-		`SELECT input_tokens FROM codex_api_requests WHERE id = ?`, newerID,
+		`SELECT input_tokens FROM api_requests WHERE service_name = 'codex' AND id = ?`, newerID,
 	).Scan(&newerInput); err != nil {
 		t.Fatalf("read newer: %v", err)
 	}
@@ -397,7 +399,7 @@ func TestUpdateCodexAPIRequestTokens_ExactRowIsIdempotent(t *testing.T) {
 
 	var rows int64
 	if err := repo.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM codex_api_requests WHERE session_id = 'same-session'`,
+		`SELECT COUNT(*) FROM api_requests WHERE service_name = 'codex' AND session_id = 'same-session'`,
 	).Scan(&rows); err != nil {
 		t.Fatalf("count rows: %v", err)
 	}
@@ -405,7 +407,7 @@ func TestUpdateCodexAPIRequestTokens_ExactRowIsIdempotent(t *testing.T) {
 		t.Fatalf("duplicate fallback row inserted: rows=%d", rows)
 	}
 
-	_, _, _, cacheCreate, _, _, count, ok := readCodexAgg(
+	_, _, _, cacheCreate, count, ok := readCodexAgg(
 		t, repo, day.Format("2006-01-02"), "gpt-5.1",
 	)
 	if !ok || cacheCreate != 20 || count != 2 {
@@ -435,7 +437,7 @@ func TestCodexAgg_FallbackInsert_CountsOnce(t *testing.T) {
 		t.Fatalf("update fallback: %v", err)
 	}
 
-	in, out, cacheRead, cacheCreate, _, _, count, ok := readCodexAgg(
+	in, out, cacheRead, cacheCreate, count, ok := readCodexAgg(
 		t, repo, dateKey, "gpt-5.1",
 	)
 	if !ok || in != 500 || out != 100 || cacheRead != 40 ||
@@ -446,7 +448,7 @@ func TestCodexAgg_FallbackInsert_CountsOnce(t *testing.T) {
 	var rowCreate, rowTTFT int64
 	if err := repo.db.QueryRowContext(ctx, `
 		SELECT cache_creation_tokens, ttft_ms
-		FROM codex_api_requests WHERE session_id = 'sess-fallback'`,
+		FROM api_requests WHERE service_name = 'codex' AND session_id = 'sess-fallback'`,
 	).Scan(&rowCreate, &rowTTFT); err != nil {
 		t.Fatalf("read fallback request: %v", err)
 	}
@@ -488,12 +490,12 @@ func TestCodexTimingHelpers_TargetExactRow(t *testing.T) {
 
 	var olderDuration, olderTTFT, newerDuration, newerTTFT int64
 	if err := repo.db.QueryRowContext(ctx,
-		`SELECT duration_ms, ttft_ms FROM codex_api_requests WHERE id = ?`, olderID,
+		`SELECT duration_ms, ttft_ms FROM api_requests WHERE service_name = 'codex' AND id = ?`, olderID,
 	).Scan(&olderDuration, &olderTTFT); err != nil {
 		t.Fatalf("read older: %v", err)
 	}
 	if err := repo.db.QueryRowContext(ctx,
-		`SELECT duration_ms, ttft_ms FROM codex_api_requests WHERE id = ?`, newerID,
+		`SELECT duration_ms, ttft_ms FROM api_requests WHERE service_name = 'codex' AND id = ?`, newerID,
 	).Scan(&newerDuration, &newerTTFT); err != nil {
 		t.Fatalf("read newer: %v", err)
 	}
@@ -515,7 +517,7 @@ func TestCodexTimingHelpers_TargetExactRow(t *testing.T) {
 		t.Fatalf("positive exact ttft should be handled: %v", err)
 	}
 	if err := repo.db.QueryRowContext(ctx,
-		`SELECT duration_ms, ttft_ms FROM codex_api_requests WHERE id = ?`, olderID,
+		`SELECT duration_ms, ttft_ms FROM api_requests WHERE service_name = 'codex' AND id = ?`, olderID,
 	).Scan(&olderDuration, &olderTTFT); err != nil {
 		t.Fatalf("reread older: %v", err)
 	}
@@ -552,7 +554,7 @@ func TestCodexAgg_TwoRequestsSameDay_AccumulateCorrectly(t *testing.T) {
 		}
 	}
 
-	in, out, _, _, _, _, count, _ := readCodexAgg(t, repo, dateKey, "gpt-5.1")
+	in, out, _, _, count, _ := readCodexAgg(t, repo, dateKey, "gpt-5.1")
 	if in != 200 || out != 60 || count != 2 {
 		t.Fatalf("expected (200,60,count=2); got (%d,%d,count=%d)", in, out, count)
 	}
@@ -568,7 +570,7 @@ func TestCodexQueries_RoundTrip(t *testing.T) {
 			Timestamp:       now.Add(time.Duration(i) * time.Minute),
 			SessionID:       "s1",
 			Model:           "gpt-5.1",
-			InputTokens:     1000,
+			InputTokens:     800, // uncached: normalized semantics since AllClient
 			OutputTokens:    100,
 			CacheReadTokens: 200,
 			DurationMs:      200,
@@ -582,7 +584,7 @@ func TestCodexQueries_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dashboard: %v", err)
 	}
-	if dash.RequestCount != 2 || dash.TotalInputTokens != 2000 {
+	if dash.RequestCount != 2 || dash.TotalInputTokens != 1600 {
 		t.Fatalf("dashboard wrong: %+v", dash)
 	}
 	if dash.TotalCacheReadTokens != 400 || dash.CacheHitRate != 0.2 {

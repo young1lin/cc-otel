@@ -237,7 +237,7 @@ func TestReceiver_CodexRecomputedOnSSECompleted(t *testing.T) {
 	})
 	var preCost int64
 	repo.DB().QueryRowContext(context.Background(),
-		`SELECT cost_usd FROM codex_api_requests`).Scan(&preCost)
+		`SELECT cost_usd FROM api_requests WHERE service_name = 'codex'`).Scan(&preCost)
 	if preCost != 0 {
 		t.Errorf("after codex.api_request only, cost should still be 0, got %d", preCost)
 	}
@@ -265,9 +265,11 @@ func TestReceiver_CodexRecomputedOnSSECompleted(t *testing.T) {
 
 	var costAfter, inputAfter int64
 	repo.DB().QueryRowContext(context.Background(),
-		`SELECT cost_usd, input_tokens FROM codex_api_requests`).Scan(&costAfter, &inputAfter)
-	if inputAfter != 10000 {
-		t.Errorf("expected tokens to land on the existing row, got input=%d", inputAfter)
+		`SELECT cost_usd, input_tokens FROM api_requests WHERE service_name = 'codex'`).Scan(&costAfter, &inputAfter)
+	// input_token_count=10000 was reported inclusive of cached 500;
+	// storage is normalized to uncached 9500 since the AllClient merge.
+	if inputAfter != 9500 {
+		t.Errorf("expected normalized tokens on the existing row, got input=%d", inputAfter)
 	}
 	// 0.077 USD * 1e5 = 7700 units
 	if costAfter != 7700 {
@@ -277,9 +279,9 @@ func TestReceiver_CodexRecomputedOnSSECompleted(t *testing.T) {
 	// And the daily aggregate should also carry the recomputed cost.
 	var aggCost int64
 	repo.DB().QueryRowContext(context.Background(),
-		`SELECT cost_usd FROM codex_daily_model_agg WHERE model = 'gpt-5-codex'`).Scan(&aggCost)
+		`SELECT cost_usd FROM daily_model_agg WHERE model = 'gpt-5-codex' AND service_name = 'codex'`).Scan(&aggCost)
 	if aggCost != 7700 {
-		t.Errorf("codex_daily_model_agg cost should also be 7700 units, got %d", aggCost)
+		t.Errorf("daily_model_agg (codex) cost should also be 7700 units, got %d", aggCost)
 	}
 }
 
@@ -308,14 +310,14 @@ func TestReceiver_CodexFallbackInsertCarriesCost(t *testing.T) {
 
 	var rowCount int
 	repo.DB().QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM codex_api_requests`).Scan(&rowCount)
+		`SELECT COUNT(*) FROM api_requests WHERE service_name = 'codex'`).Scan(&rowCount)
 	if rowCount != 1 {
 		t.Fatalf("expected fallback INSERT to create exactly 1 row, got %d", rowCount)
 	}
 
 	var cost int64
 	repo.DB().QueryRowContext(context.Background(),
-		`SELECT cost_usd FROM codex_api_requests`).Scan(&cost)
+		`SELECT cost_usd FROM api_requests WHERE service_name = 'codex'`).Scan(&cost)
 	// 0.0125 USD * 1e5 = 1250 units
 	if cost != 1250 {
 		t.Errorf("fallback row cost should be 1250 units, got %d", cost)
@@ -419,7 +421,7 @@ func TestReceiver_RealRegistry_HitsSeed(t *testing.T) {
 
 	var cost int64
 	repo.DB().QueryRowContext(context.Background(),
-		`SELECT cost_usd FROM codex_api_requests`).Scan(&cost)
+		`SELECT cost_usd FROM api_requests WHERE service_name = 'codex'`).Scan(&cost)
 	if cost <= 0 {
 		t.Errorf("expected positive cost from real seed for gpt-5-codex, got %d micro-USD", cost)
 	}

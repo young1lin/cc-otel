@@ -304,6 +304,33 @@ func runMigrations(db *sql.DB) error {
 		return fmt.Errorf("pending ttft request_id index: %w", err)
 	}
 
+	// 2b) AllClient unified columns. Codex used to live in its own codex_*
+	// table family; it now merges into the shared tables with
+	// service_name='codex'. The new columns are additive (idempotent
+	// ensureColumn) so Claude rows just keep their zero/'' defaults.
+	unifiedColumns := []struct{ table, column, definition string }{
+		{"api_requests", "reasoning_tokens", "INTEGER DEFAULT 0"},
+		{"api_requests", "total_tokens", "INTEGER DEFAULT 0"},
+		{"api_requests", "http_status", "INTEGER DEFAULT 0"},
+		{"api_requests", "endpoint", "TEXT DEFAULT ''"},
+		{"api_requests", "conversation_id", "TEXT DEFAULT ''"},
+		{"user_prompt_events", "conversation_id", "TEXT DEFAULT ''"},
+		{"tool_decision_events", "conversation_id", "TEXT DEFAULT ''"},
+		{"tool_decision_events", "call_id", "TEXT DEFAULT ''"},
+		{"tool_decision_events", "service_name", "TEXT DEFAULT ''"},
+		{"tool_result_events", "conversation_id", "TEXT DEFAULT ''"},
+		{"tool_result_events", "call_id", "TEXT DEFAULT ''"},
+		{"tool_result_events", "arguments_length", "INTEGER DEFAULT 0"},
+		{"tool_result_events", "mcp_server", "TEXT DEFAULT ''"},
+		{"tool_result_events", "tool_origin", "TEXT DEFAULT ''"},
+		{"tool_result_events", "service_name", "TEXT DEFAULT ''"},
+	}
+	for _, c := range unifiedColumns {
+		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {
+			return fmt.Errorf("allclient column %s.%s: %w", c.table, c.column, err)
+		}
+	}
+
 	// 3) Codex tables — completely independent from Claude Code tables.
 	// Mirrors api_requests / daily_model_agg structure with codex-specific extras.
 	_, err = db.Exec(`

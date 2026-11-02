@@ -85,19 +85,19 @@ func TestCodexE2E_APIRequestThenSSECompletion(t *testing.T) {
 	})
 
 	var rows int
-	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_api_requests`).Scan(&rows)
+	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE service_name = 'codex'`).Scan(&rows)
 	if rows != 1 {
-		t.Fatalf("expected 1 codex_api_requests row after correlation, got %d", rows)
+		t.Fatalf("expected 1 unified codex row after correlation, got %d", rows)
 	}
 
 	var input int64
-	repo.DB().QueryRowContext(ctx, `SELECT input_tokens FROM codex_api_requests`).Scan(&input)
+	repo.DB().QueryRowContext(ctx, `SELECT input_tokens FROM api_requests WHERE service_name = 'codex'`).Scan(&input)
 	if input != 1500 {
 		t.Fatalf("expected 1500 input tokens, got %d", input)
 	}
 
 	var output int64
-	repo.DB().QueryRowContext(ctx, `SELECT output_tokens FROM codex_api_requests`).Scan(&output)
+	repo.DB().QueryRowContext(ctx, `SELECT output_tokens FROM api_requests WHERE service_name = 'codex'`).Scan(&output)
 	if output != 250 {
 		t.Fatalf("expected 250 output tokens, got %d", output)
 	}

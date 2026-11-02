@@ -2,6 +2,13 @@ package db
 
 import "time"
 
+// CodexServiceName is the service_name every Codex row carries in the unified
+// api_requests pool. Any OTLP resource service.name containing "codex"
+// (codex-cli, codex-dev, ...) normalizes onto this single value so dashboard
+// grouping, the Clients panel, and WHERE service_name = 'codex' reads all
+// agree on one identity.
+const CodexServiceName = "codex"
+
 // CodexAPIRequest mirrors APIRequest but is sourced from Codex CLI telemetry.
 // Token data arrives via codex.sse_event(kind=response.completed); network
 // data arrives via codex.api_request. The two are correlated post-hoc by the
@@ -11,6 +18,7 @@ type CodexAPIRequest struct {
 	Timestamp           time.Time `json:"timestamp"`
 	SessionID           string    `json:"session_id"`
 	UserID              string    `json:"user_id"`
+	RequestID           string    `json:"request_id"`
 	ConversationID      string    `json:"conversation_id"`
 	Model               string    `json:"model"`
 	InputTokens         int64     `json:"input_tokens"`

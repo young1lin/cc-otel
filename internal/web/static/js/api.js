@@ -1,7 +1,7 @@
 // Thin wrappers around every /api/* endpoint. The only place fetch() is called.
-// When state.source === 'codex', routed endpoints hit /api/codex/* instead.
-
-import { state } from './state.js';
+// Since the AllClient merge every client shares one dashboard and one pool
+// (api_requests + service_name), so no per-source routing happens here.
+// /api/codex/migrate remains for the one-click history migration UI.
 
 async function responseError(res) {
     let body = null;
@@ -44,24 +44,12 @@ function qs(params) {
     return s ? '?' + s : '';
 }
 
-// Routes that have a Codex mirror at /api/codex/<name>.
-const CODEX_ROUTES = new Set([
-    'dashboard', 'calendar', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
-]);
-
-function apiPath(name) {
-    if (state.source === 'codex' && CODEX_ROUTES.has(name)) {
-        return '/api/codex/' + name;
-    }
-    return '/api/' + name;
-}
-
 export { fetchJSON, sendJSON };
 
 export const loadStatusData = () => fetchJSON('/api/status');
 
 export const loadDashboardData = (from, to) =>
-    fetchJSON(apiPath('dashboard') + qs({ from, to }));
+    fetchJSON('/api/dashboard' + qs({ from, to }));
 
 // Per-client (service_name) token accounting and hour-of-day buckets — both
 // read the merged non-Codex pool, so they never mirror to /api/codex/*.
@@ -72,16 +60,16 @@ export const loadHoursData = ({ from, to }) =>
     fetchJSON('/api/hours' + qs({ from, to }));
 
 export const loadDailyData = ({ from, to, page = 1, pageSize = 20, granularity = 'day' } = {}) =>
-    fetchJSON(apiPath('daily') + qs({ from, to, page, page_size: pageSize, granularity }));
+    fetchJSON('/api/daily' + qs({ from, to, page, page_size: pageSize, granularity }));
 
 export const loadCalendarData = ({ from, to }) =>
-    fetchJSON(apiPath('calendar') + qs({ from, to }));
+    fetchJSON('/api/calendar' + qs({ from, to }));
 
 export const loadHourlyData = (date) =>
     fetchJSON('/api/hourly' + qs({ date }));
 
 export const loadIntradayData = ({ from, to, bucket = 30, model = '' } = {}) =>
-    fetchJSON(apiPath('intraday') + qs({ from, to, bucket, model }));
+    fetchJSON('/api/intraday' + qs({ from, to, bucket, model }));
 
 // Rate-over-time is Claude-only (no Codex mirror), so it always hits /api/rate.
 export const loadRateData = ({ from, to, bucket = 30, model = '' } = {}) =>
@@ -92,15 +80,20 @@ export const loadSessionRateData = (sessionId) =>
     fetchJSON('/api/session/rate' + qs({ session_id: sessionId }));
 
 export const loadSessionsData = ({ from, to, page = 1, pageSize = 20 }) =>
-    fetchJSON(apiPath('sessions') + qs({ from, to, page, page_size: pageSize }));
+    fetchJSON('/api/sessions' + qs({ from, to, page, page_size: pageSize }));
 
 export const loadRequestsData = ({ from, to, page = 1, pageSize = 20, model = '' }) =>
-    fetchJSON(apiPath('requests') + qs({ from, to, page, page_size: pageSize, model }));
+    fetchJSON('/api/requests' + qs({ from, to, page, page_size: pageSize, model }));
 
 export const loadDurationsData = ({ from, to, model = '' }) =>
-    fetchJSON(apiPath('durations') + qs({ from, to, model }));
+    fetchJSON('/api/durations' + qs({ from, to, model }));
 
-export const loadModelsData = () => fetchJSON(apiPath('models'));
+export const loadModelsData = () => fetchJSON('/api/models');
+
+// AllClient migration: GET polls the job snapshot (per-table preview and
+// progress); POST starts the idempotent one-click Codex history migration.
+export const loadCodexMigrateStatus = () => fetchJSON('/api/codex/migrate');
+export const startCodexMigrate = () => sendJSON('/api/codex/migrate', 'POST', {});
 
 // Pricing Table admin (manual entry CRUD + OpenRouter suggest + recompute).
 // The wire unit is USD/Mtok; the backend converts to/from USD/token.

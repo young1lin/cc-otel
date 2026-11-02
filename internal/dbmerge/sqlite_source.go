@@ -173,7 +173,15 @@ func validateSchema(tables map[string][]string) (SchemaInfo, error) {
 		}
 		if spec, ok := known[name]; ok {
 			allowed := append([]string{"id"}, spec.Columns...)
+			allowed = append(allowed, spec.Optional...)
 			if err := validateColumns(name, actual, allowed); err != nil {
+				// A source DB written before the AllClient unification legitimately
+				// lacks the unified Codex columns. Retry requiring only the core
+				// columns; missing optionals default on insert.
+				if len(spec.Optional) > 0 && validateCoreColumns(name, actual, spec.Columns, allowed) == nil {
+					info.Present[name] = columnSet(actual)
+					continue
+				}
 				if name == "pending_ttft_spans" {
 					withoutRequestID := removeString(allowed, "request_id")
 					if legacyErr := validateColumns(name, actual, withoutRequestID); legacyErr == nil {
@@ -272,6 +280,28 @@ func validateColumns(table string, actual, expected []string) error {
 	return nil
 }
 
+// validateCoreColumns rejects unknown columns (against allowed) but only
+// requires the spec's core Columns to be present — Optional columns may be
+// absent in pre-unification source databases and default on insert.
+func validateCoreColumns(table string, actual, required, allowed []string) error {
+	want := make(map[string]bool, len(allowed))
+	for _, column := range allowed {
+		want[column] = true
+	}
+	got := columnSet(actual)
+	for _, column := range actual {
+		if !want[column] {
+			return unsupported(table+"."+column, "unknown column")
+		}
+	}
+	for _, column := range required {
+		if !got[column] {
+			return unsupported(table+"."+column, "missing column")
+		}
+	}
+	return nil
+}
+
 // validateIgnoredColumns is validateColumns without the missing-column check:
 // unknown columns are still rejected, but the source may lack columns the
 // current schema has. Only daily_model_agg uses it — see the call site.
@@ -346,6 +376,26 @@ func selectExpressions(spec TableSpec, columns map[string]bool) []string {
 			out = append(out, quoteIdent(column))
 		}
 	}
+	// Unified-table optionals ride along only when the source carries them,
+	// matching the column list scanColumns builds for the row scan.
+	for _, column := range spec.Optional {
+		if columns[column] {
+			out = append(out, quoteIdent(column))
+		}
+	}
+	return out
+}
+
+// scanColumns returns spec.Columns plus the Optional columns present in the
+// source, in the same order selectExpressions emits them.
+func scanColumns(spec TableSpec, present map[string]bool) []string {
+	out := make([]string, 0, len(spec.Columns)+len(spec.Optional))
+	out = append(out, spec.Columns...)
+	for _, column := range spec.Optional {
+		if present[column] {
+			out = append(out, column)
+		}
+	}
 	return out
 }
 
@@ -366,7 +416,7 @@ func (s *SQLiteSource) Scan(ctx context.Context, yield func(Row) error) error {
 		if err != nil {
 			return &MergeError{Code: ErrInspection, Table: spec.Name, Err: err}
 		}
-		err = scanRows(rows, spec, yield)
+		err = scanRows(rows, spec, scanColumns(spec, columns), yield)
 		closeErr := rows.Close()
 		if err != nil {
 			return err
@@ -424,9 +474,9 @@ func windowClause(spec TableSpec, window *TimeWindow) (string, []any) {
 	return " WHERE timestamp BETWEEN ? AND ?", []any{window.FromUnix, window.ToUnix}
 }
 
-func scanRows(rows *sql.Rows, spec TableSpec, yield func(Row) error) error {
+func scanRows(rows *sql.Rows, spec TableSpec, columns []string, yield func(Row) error) error {
 	for rows.Next() {
-		values := make([]any, len(spec.Columns))
+		values := make([]any, len(columns))
 		dest := make([]any, len(values))
 		for i := range values {
 			dest[i] = &values[i]
@@ -435,7 +485,7 @@ func scanRows(rows *sql.Rows, spec TableSpec, yield func(Row) error) error {
 			return &MergeError{Code: ErrInspection, Table: spec.Name, Err: err}
 		}
 		row := Row{Table: spec.Name, Values: make(map[string]any, len(values))}
-		for i, column := range spec.Columns {
+		for i, column := range columns {
 			row.Values[column] = normalizeScannedValue(values[i])
 		}
 		if err := yield(row); err != nil {

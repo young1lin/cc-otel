@@ -184,10 +184,6 @@ export async function loadRate() {
     const isCurrent = beginLatestRequest('rate-chart');
     const chartEl = document.getElementById('rate-chart');
     if (!chartEl) return;
-    if (state.source === 'codex') {
-        showMessage(chartEl, 'Rate view is unavailable for Codex data.');
-        return;
-    }
 
     const { from, to } = rangeToFromTo(state.currentRange);
     const span = spanDaysInclusive(from, to);
@@ -206,7 +202,6 @@ export async function loadRate() {
     syncBucketSelect(useBucket);
     state.rateBucket = useBucket;
 
-    const sourceAtStart = state.source;
     let json;
     try {
         json = await loadRateData({ from, to, bucket: useBucket });
@@ -217,7 +212,7 @@ export async function loadRate() {
         }
         return;
     }
-    if (!isCurrent() || sourceAtStart !== state.source) return;
+    if (!isCurrent()) return;
 
     const rows = (json && json.data) || [];
     if (rows.length === 0) { showMessage(chartEl, 'No data in this range.'); return; }

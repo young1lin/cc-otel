@@ -15,11 +15,10 @@ function scheduleRefresh() {
 }
 
 export function shouldRefreshForSSE(incomingSource, currentSource) {
-    if (incomingSource === 'all') return true;
-    // The broker tags ANY non-codex row as "claude" (claude-code / opencode / pi
-    // / ... all share the api_requests table), and state.source is only ever
-    // 'claude' or 'codex', so the equality check below is the complete answer.
-    return incomingSource === currentSource;
+    // Since the AllClient merge there is a single dashboard page: every
+    // source tag ("claude" — which now also covers Codex rows — or "all")
+    // refreshes it. Parameters stay for signature compatibility.
+    return incomingSource === 'all' || incomingSource === 'claude' || incomingSource === currentSource;
 }
 
 function connectSSE() {

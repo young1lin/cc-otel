@@ -246,9 +246,12 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 	if lr == nil || repo == nil {
 		return false
 	}
+	// Since the AllClient merge, Codex rows live in the shared pool that the
+	// "All Clients" tab renders, so refreshes broadcast the same tag the
+	// Claude path uses.
 	notify := func() {
 		if notifier != nil {
-			notifier.NotifySource("codex")
+			notifier.NotifySource("claude")
 		}
 	}
 
@@ -300,6 +303,7 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			Timestamp:      ts,
 			SessionID:      attrs["conversation.id"],
 			UserID:         userID,
+			RequestID:      attrs["auth.request_id"],
 			ConversationID: attrs["conversation.id"],
 			Model:          attrs["model"],
 			DurationMs:     storedDurationMs,
@@ -344,25 +348,39 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				CacheReadTokens:     parseAttrInt(attrs, "cached_token_count"),
 				CacheCreationTokens: parseAttrInt(attrs, "cache_write_token_count"),
 				ReasoningTokens:     parseAttrInt(attrs, "reasoning_token_count"),
-				TotalTokens:         parseAttrInt(attrs, "tool_token_count"),
+				TotalTokens:         parseAttrInt(attrs, "total_token_count"),
 				TTFTMs:              parseAttrInt(attrs, "ttft_ms"),
 			}
-			// Compute cost from the local pricing table — Codex never reports
-			// cost_usd. OpenAI's Responses API reports input_token_count as the
-			// TOTAL input side, which already includes both cached_token_count
-			// (cache read) and cache_write_token_count (cache write). pricing.Calc
-			// prices four independent categories, so subtract both cache
-			// categories to get uncached input — otherwise cached tokens get
-			// charged twice (full input rate + cache rate).
-			// This path is Codex by construction, so it is never the authoritative
-			// Claude Code + Claude combination — every model is recomputed here.
-			if pricer != nil && !pricing.IsUpstreamAuthoritative(serviceNameFromResource(res), upd.Model) {
+			// total_tokens keeps the CLIENT-REPORTED raw total (input side
+			// inclusive of cache + output), matching the migrated archive where
+			// total_tokens = input_tokens + output_tokens on every row. Derive it
+			// from the raw counters when the client omits the explicit attribute.
+			if upd.TotalTokens == 0 {
+				upd.TotalTokens = parseAttrInt(attrs, "input_token_count") + upd.OutputTokens
+			}
+			// Normalize to Claude semantics BEFORE storing: OpenAI's Responses API
+			// reports input_token_count as the TOTAL input side, which already
+			// includes both cached_token_count (cache read) and
+			// cache_write_token_count (cache write). The unified api_requests table
+			// stores the four categories disjointly (Claude semantics), so subtract
+			// both cache categories here — one place, once, and every downstream
+			// SUM / dashboard / calendar becomes directly comparable across
+			// clients. The raw reported value stays recoverable as
+			// input + cache_read + cache_creation.
+			if upd.InputTokens > 0 {
 				uncachedInput := upd.InputTokens - upd.CacheReadTokens - upd.CacheCreationTokens
 				if uncachedInput < 0 {
 					uncachedInput = 0
 				}
+				upd.InputTokens = uncachedInput
+			}
+			// Compute cost from the local pricing table — Codex never reports
+			// cost_usd, and this path is never the authoritative Claude Code +
+			// Claude combination, so every model is recomputed here. Input is
+			// already uncached after the normalization above.
+			if pricer != nil && !pricing.IsUpstreamAuthoritative(serviceNameFromResource(res), upd.Model) {
 				upd.CostUSD = pricer.Calc(
-					ctx, upd.Model, uncachedInput, upd.OutputTokens,
+					ctx, upd.Model, upd.InputTokens, upd.OutputTokens,
 					upd.CacheReadTokens, upd.CacheCreationTokens,
 				)
 			}

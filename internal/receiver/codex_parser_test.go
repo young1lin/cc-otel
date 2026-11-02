@@ -173,7 +173,7 @@ func TestDispatchCodexLog_APIRequestAnchorsSuccessfulStream(t *testing.T) {
 
 	var rowID, duration int64
 	if err := repo.DB().QueryRowContext(ctx,
-		`SELECT id, duration_ms FROM codex_api_requests WHERE session_id = 'anchor-session'`,
+		`SELECT id, duration_ms FROM api_requests WHERE service_name = 'codex' AND session_id = 'anchor-session'`,
 	).Scan(&rowID, &duration); err != nil {
 		t.Fatalf("read request: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestDispatchCodexLog_EnvironmentMapsToUserID(t *testing.T) {
 	}
 	var userID string
 	if err := repo.DB().QueryRowContext(ctx,
-		`SELECT user_id FROM codex_api_requests WHERE session_id = 'env-session'`,
+		`SELECT user_id FROM api_requests WHERE service_name = 'codex' AND session_id = 'env-session'`,
 	).Scan(&userID); err != nil {
 		t.Fatalf("read user_id: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestDispatchCodexLog_EnvironmentMapsToUserID(t *testing.T) {
 		t.Fatal("second request was not inserted")
 	}
 	if err := repo.DB().QueryRowContext(ctx,
-		`SELECT user_id FROM codex_api_requests WHERE session_id = 'uid-session'`,
+		`SELECT user_id FROM api_requests WHERE service_name = 'codex' AND session_id = 'uid-session'`,
 	).Scan(&userID); err != nil {
 		t.Fatalf("read user_id: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestDispatchCodexLog_APIRequestFailureKeepsReportedDuration(t *testing.T) {
 	}
 	var duration int64
 	if err := repo.DB().QueryRowContext(ctx,
-		`SELECT duration_ms FROM codex_api_requests WHERE session_id = 'failed-session'`,
+		`SELECT duration_ms FROM api_requests WHERE service_name = 'codex' AND session_id = 'failed-session'`,
 	).Scan(&duration); err != nil {
 		t.Fatalf("read failed request: %v", err)
 	}
@@ -333,11 +333,13 @@ func TestDispatchCodexLog_SSECompletedPersistsAccountingAndFullDuration(t *testi
 		SELECT input_tokens, output_tokens, cache_read_tokens,
 		       cache_creation_tokens, reasoning_tokens, total_tokens,
 		       duration_ms, ttft_ms
-		FROM codex_api_requests WHERE session_id = 'completion-session'`,
+		FROM api_requests WHERE service_name = 'codex' AND session_id = 'completion-session'`,
 	).Scan(&input, &output, &cacheRead, &cacheCreate, &reasoning, &total, &duration, &ttft); err != nil {
 		t.Fatalf("read request: %v", err)
 	}
-	if input != 100 || output != 10 || cacheRead != 40 || cacheCreate != 20 ||
+	// input_token_count=100 was reported INCLUSIVE of cached 40 + written 20;
+	// storage is normalized to uncached 40 since the AllClient merge.
+	if input != 40 || output != 10 || cacheRead != 40 || cacheCreate != 20 ||
 		reasoning != 5 || total != 110 || duration != 2300 || ttft != 250 {
 		t.Fatalf("wrong completion row: in=%d out=%d read=%d create=%d reasoning=%d total=%d duration=%d ttft=%d",
 			input, output, cacheRead, cacheCreate, reasoning, total, duration, ttft)
@@ -349,8 +351,8 @@ func TestDispatchCodexLog_SSECompletedPersistsAccountingAndFullDuration(t *testi
 	}
 	var aggregateCreate int64
 	if err := repo.DB().QueryRowContext(ctx, `
-		SELECT cache_creation_tokens FROM codex_daily_model_agg
-		WHERE date = ? AND model = 'gpt-5.1'`,
+		SELECT cache_creation_tokens FROM daily_model_agg
+		WHERE date = ? AND model = 'gpt-5.1' AND service_name = 'codex'`,
 		base.Format("2006-01-02"),
 	).Scan(&aggregateCreate); err != nil {
 		t.Fatalf("read aggregate: %v", err)
@@ -451,7 +453,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 	}
 
 	var rows, duration int64
-	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM codex_api_requests`).Scan(&rows, &duration); err != nil {
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM api_requests WHERE service_name = 'codex'`).Scan(&rows, &duration); err != nil {
 		t.Fatalf("duration row query: %v", err)
 	}
 	if rows != 1 || duration != 2408 {
@@ -471,7 +473,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 	}, res, nil, tracker, nil)
 
 	var input, output int64
-	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM codex_api_requests`).Scan(&rows, &input, &output, &duration); err != nil {
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM api_requests WHERE service_name = 'codex'`).Scan(&rows, &input, &output, &duration); err != nil {
 		t.Fatalf("merged row query: %v", err)
 	}
 	if rows != 1 || input != 1234 || output != 567 || duration != 2500 {
@@ -517,7 +519,7 @@ func TestDispatchCodexLog_WebsocketEventNameCanComeFromBody(t *testing.T) {
 	}, res, nil, tracker, nil)
 
 	var rows, duration int64
-	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM codex_api_requests`).Scan(&rows, &duration); err != nil {
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM api_requests WHERE service_name = 'codex'`).Scan(&rows, &duration); err != nil {
 		t.Fatalf("duration row query: %v", err)
 	}
 	if rows != 1 || duration != 4200 {
@@ -563,7 +565,7 @@ func TestDispatchCodexLog_SSECompletedUsesTrackedWebsocketRequestDuration(t *tes
 	}, res, nil, tracker, nil)
 
 	var rows, input, output, duration int64
-	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM codex_api_requests`).Scan(&rows, &input, &output, &duration); err != nil {
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM api_requests WHERE service_name = 'codex'`).Scan(&rows, &input, &output, &duration); err != nil {
 		t.Fatalf("merged row query: %v", err)
 	}
 	if rows != 1 || input != 1000 || output != 50 || duration != 3900 {
@@ -628,7 +630,7 @@ func TestDispatchCodexLog_OtherEvents(t *testing.T) {
 				attr("prompt", "hello"),
 				attrInt("prompt_length", 5),
 			},
-			`SELECT COUNT(*) FROM codex_user_prompt_events`,
+			`SELECT COUNT(*) FROM user_prompt_events`,
 		},
 		{
 			"tool_decision",
@@ -640,7 +642,7 @@ func TestDispatchCodexLog_OtherEvents(t *testing.T) {
 				attr("decision", "accept"),
 				attr("source", "user"),
 			},
-			`SELECT COUNT(*) FROM codex_tool_decision_events`,
+			`SELECT COUNT(*) FROM tool_decision_events`,
 		},
 		{
 			"tool_result",
@@ -652,7 +654,7 @@ func TestDispatchCodexLog_OtherEvents(t *testing.T) {
 				attrInt("duration_ms", 50),
 				attr("success", "true"),
 			},
-			`SELECT COUNT(*) FROM codex_tool_result_events`,
+			`SELECT COUNT(*) FROM tool_result_events`,
 		},
 	}
 	for _, c := range cases {

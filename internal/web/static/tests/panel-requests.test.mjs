@@ -74,7 +74,7 @@ test('Codex request log keeps duration summary when duration rows exist', async 
 
         global.fetch = async (url) => {
             const u = String(url);
-            if (u.startsWith('/api/codex/durations')) {
+            if (u.startsWith('/api/durations')) {
                 return jsonResponse([{
                     model: 'gpt-5.5',
                     request_count: 1,
@@ -85,7 +85,7 @@ test('Codex request log keeps duration summary when duration rows exist', async 
                     min_duration_ms: 4200,
                 }]);
             }
-            if (u.startsWith('/api/codex/requests')) {
+            if (u.startsWith('/api/requests')) {
                 return jsonResponse({
                     data: [{
                         timestamp: '2026-05-12T10:09:39+08:00',
@@ -134,7 +134,7 @@ test('model filter can reset stale source selection before loading Codex models'
         dom.modelFilter.value = 'claude-opus-4-7';
 
         global.fetch = async (url) => {
-            assert.equal(String(url), '/api/codex/models');
+            assert.equal(String(url), '/api/models');
             return jsonResponse(['gpt-5.5']);
         };
 

@@ -28,7 +28,8 @@ type ModelResolver interface {
 // Notifier is implemented by api.Broker to decouple packages.
 //
 // Notify() is kept for backward compatibility — it implicitly tags the event
-// as "claude". The Codex path uses NotifySource("codex") so the frontend SSE
+// as "claude". The Codex path also broadcasts "claude" since the AllClient
+// merge put every client on one dashboard page.
 // listener can route updates to the active tab.
 type Notifier interface {
 	Notify()

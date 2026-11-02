@@ -122,6 +122,7 @@ type Handler struct {
 	pricingWriter pricing.Writer  // optional; nil disables /api/pricing CRUD
 	recompute     *recomputeJob   // singleton background recompute; never nil after NewHandler
 	shutdownCtx   context.Context // cancels the background recompute goroutine on shutdown
+	codexMigrate  *codexMigrationJob // singleton AllClient migration job; never nil after NewHandler
 
 	// otlpHTTPBound reports whether THIS process owns the OTLP/HTTP listener.
 	// A TCP probe cannot tell that apart from some other program squatting on
@@ -138,11 +139,12 @@ type Handler struct {
 // and the absolute path of the config file the daemon actually loaded.
 func NewHandler(repo *db.Repository, broker *Broker, cfg *config.Config, configPath string) *Handler {
 	return &Handler{
-		repo:       repo,
-		broker:     broker,
-		cfg:        cfg,
-		configPath: configPath,
-		recompute:  &recomputeJob{},
+		repo:        repo,
+		broker:      broker,
+		cfg:         cfg,
+		configPath:  configPath,
+		recompute:   &recomputeJob{},
+		codexMigrate: &codexMigrationJob{},
 	}
 }
 
@@ -232,6 +234,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/codex/durations", h.CodexDurations)
 	mux.HandleFunc("/api/codex/models", h.CodexModels)
 	mux.HandleFunc("/api/codex/intraday", h.CodexIntraday)
+
+	// AllClient one-click Codex migration (GET status / POST start).
+	mux.HandleFunc("/api/codex/migrate", h.CodexMigrate)
 
 	// Embedded static files reflect the tree at compile time. For local UI edits without
 	// rebuilding, set CC_OTEL_STATIC_DIR to the static folder (e.g. internal/web/static).
