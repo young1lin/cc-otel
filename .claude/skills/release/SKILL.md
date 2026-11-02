@@ -65,7 +65,7 @@
 2. **CI 侧剥掉 setup-node 注入的 token**:setup-node 会往 runner `.npmrc` 写 `_authToken=${NODE_AUTH_TOKEN}`,有 token 在 npm 就不做 OIDC 交换 → 404。发布步骤里已内置 `unset NODE_AUTH_TOKEN` + `sed -i '/_authToken/d'`,别删。
 3. **`npm publish --provenance`**:provenance 生成会取 OIDC token(信任发布搭同一趟车)。工作流已带,别删。
 
-诊断顺序:Actions 里 npm job 挂 → 看错误码:404 PUT = 条件2被破坏;ENEEDAUTH = 交换失败(多半条件1);goreleaser 挂 asset 已存在 = 旧 release 未删,先 DELETE release 再重跑。重跑注意 rerun 用 tag 所指 commit 的工作流,改完 workflow 要 `git tag -f` + 删 release 重触发。
+诊断顺序:Actions 里 npm job 挂 → 看错误码:404 PUT = 条件2被破坏;ENEEDAUTH = 交换失败(多半条件1或 workflow 文件名不一致);`E409 Cannot publish over previously staged version` = **瞬态**,前一次 PUT 的版本还在 registry 侧落位中,等 10-30 分钟 rerun 即可,工作流的幂等跳过保证收敛,不要改版本号;goreleaser 挂 asset 已存在 = 旧 release 未删,先 DELETE release 再重跑。重跑注意 rerun 用 tag 所指 commit 的工作流,改完 workflow 要 `git tag -f` + 删 release 重触发;若 goreleaser 已绿、只 rerun npm,则**不能**先删 release(npm job 第一步要从 release 下载资产)。
 
 ## 2. 发布步骤
 
