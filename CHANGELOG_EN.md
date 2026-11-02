@@ -6,7 +6,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
-## [v0.2.0] - 2026-11-02
+## [v0.1.4] - 2026-11-02
 
 ### Fixed
 
