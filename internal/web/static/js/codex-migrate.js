@@ -35,6 +35,11 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
             .forEach((el) => {
                 if (el.dataset.dbiBusy !== '1') el.disabled = running;
             });
+        // Mirror guard for the reverse direction: our own non-running
+        // branches below must not re-enable this button while an IMPORT is
+        // busy (that flicker left a clickable button that could only earn
+        // the 409). Import's render clears the flag when it goes idle.
+        const importBusy = document.querySelector('#dbi-primary')?.dataset.dbiBusy === '1';
         const preview = (job && job.preview) || [];
         tbody.innerHTML = preview.length
             ? preview.map((t) => '<tr>'
@@ -56,7 +61,7 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
         }
         if (job && job.error) {
             statusEl.textContent = 'Migration failed: ' + job.error;
-            btn.disabled = false;
+            btn.disabled = importBusy;
             btn.textContent = 'Retry migration';
             return;
         }
@@ -72,7 +77,7 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
         } else {
             statusEl.textContent = '';
         }
-        btn.disabled = false;
+        btn.disabled = importBusy;
         btn.textContent = 'Merge Codex history';
     };
 
@@ -103,8 +108,9 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
             if (pollActive()) schedule();
         }, 1500);
     };
-    // A hidden tab pauses the timer entirely; returning to the tab resumes
-    // only if the gate is still open.
+    // Returning to a visible tab re-evaluates the gate (a closed modal
+    // while hidden stops the loop on the next tick; browser throttling of
+    // hidden tabs already slows the cadence).
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
             clearTimeout(pollTimer);
