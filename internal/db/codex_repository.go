@@ -55,9 +55,14 @@ func (r *Repository) insertCodexAPIRequestOnce(ctx context.Context, req *CodexAP
 	}
 	defer tx.Rollback()
 
-	id, err := r.insertCodexRowInTx(ctx, tx, req)
+	id, stored, err := r.insertCodexRowInTx(ctx, tx, req)
 	if err != nil {
 		return 0, err
+	}
+	if !stored {
+		// Duplicate redelivery: discard the no-op tx. Committing here as well
+		// would double-commit (ErrTxDone) — the R5 rollback P1 regression.
+		return 0, tx.Rollback()
 	}
 	return id, tx.Commit()
 }
@@ -67,7 +72,13 @@ func (r *Repository) insertCodexAPIRequestOnce(ctx context.Context, req *CodexAP
 // with its duplicate check (R4 concurrency F3: check-then-insert across two
 // autocommit transactions let two concurrent orphan redeliveries both pass
 // the check and double-insert).
-func (r *Repository) insertCodexRowInTx(ctx context.Context, tx *sql.Tx, req *CodexAPIRequest) (int64, error) {
+//
+// The helper NEVER commits — including on the duplicate-request_id path,
+// which returns stored=false with the tx still open (R5 rollback P1: the
+// previous shape committed inside the dup branch, and both callers' own
+// Commit then failed with sql.ErrTxDone, turning a routine at-least-once
+// redelivery into HTTP 500 / PartialSuccess).
+func (r *Repository) insertCodexRowInTx(ctx context.Context, tx *sql.Tx, req *CodexAPIRequest) (id int64, stored bool, err error) {
 	res, err := tx.StmtContext(ctx, r.stmtInsReq).ExecContext(ctx,
 		req.Timestamp.Unix(), req.SessionID, req.UserID, "", 0,
 		req.Model, "",
@@ -79,17 +90,18 @@ func (r *Repository) insertCodexRowInTx(ctx context.Context, tx *sql.Tx, req *Co
 		req.ReasoningTokens, req.TotalTokens, req.HTTPStatus, req.Endpoint, req.ConversationID,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("insert codex api_requests: %w", err)
+		return 0, false, fmt.Errorf("insert codex api_requests: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		// Duplicate request_id: the row is already stored; do not touch the
-		// aggregate either, or the dashboard would count it twice.
-		return 0, tx.Commit()
+		// aggregate either, or the dashboard would count it twice. The tx is
+		// left OPEN for the caller to roll back / commit as it sees fit.
+		return 0, false, nil
 	}
-	id, err := res.LastInsertId()
+	id, err = res.LastInsertId()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	dateKey := req.Timestamp.Local().Format("2006-01-02")
@@ -99,10 +111,10 @@ func (r *Repository) insertCodexRowInTx(ctx context.Context, tx *sql.Tx, req *Co
 		req.CacheReadTokens, req.CacheCreationTokens,
 		costToInt64(req.CostUSD),
 	); err != nil {
-		return 0, fmt.Errorf("upsert daily_model_agg (codex): %w", err)
+		return 0, false, fmt.Errorf("upsert daily_model_agg (codex): %w", err)
 	}
 
-	return id, nil
+	return id, true, nil
 }
 
 // getCodexAPIRequestByID is a test helper reading a unified Codex row.
@@ -308,7 +320,7 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 			}
 			return true, nil
 		}
-		if _, insertErr := r.insertCodexRowInTx(ctx, tx, &CodexAPIRequest{
+		if _, _, insertErr := r.insertCodexRowInTx(ctx, tx, &CodexAPIRequest{
 			Timestamp:           u.Timestamp,
 			SessionID:           u.SessionID,
 			Model:               u.Model,
@@ -325,6 +337,8 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 		}); insertErr != nil {
 			return false, insertErr
 		}
+		// stored=false (duplicate identity) falls through to the same commit:
+		// the tx is still open — only this caller commits it.
 		if commitErr := tx.Commit(); commitErr != nil {
 			return false, commitErr
 		}

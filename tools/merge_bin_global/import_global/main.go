@@ -76,6 +76,14 @@ func main() {
 	defer db.Close()
 
 	ctx := context.Background()
+	// Bring a pre-AllClient global up to the unified schema BEFORE importing:
+	// an AllClient bin export references api_requests.reasoning_tokens & co.,
+	// and the insert would fail mid-merge (R5 rollback P1 — the helper existed
+	// but was never called; the production global is still pre-AllClient).
+	if err := ensureTargetSchema(ctx, db); err != nil {
+		fmt.Fprintf(os.Stderr, "ensure target schema: %v\n", err)
+		os.Exit(1)
+	}
 	source := dbmerge.NewJSONLSource(inPath)
 	result, err := dbmerge.Import(ctx, db, source, dbmerge.Options{
 		BatchSize: batchSize,

@@ -698,6 +698,67 @@ func TestDSHE2E_HostileLedgerClamped(t *testing.T) {
 	}
 }
 
+
+// TestCodexE2E_DuplicateAnchorRedeliveryStaysOK pins the R5 rollback P1 fix:
+// insertCodexRowInTx used to COMMIT inside the duplicate-request_id branch,
+// so the caller's own tx.Commit failed with sql.ErrTxDone and a routine
+// at-least-once anchor redelivery answered gRPC Internal / HTTP 500.
+// Three identical anchors must all export cleanly and leave exactly one row.
+func TestCodexE2E_DuplicateAnchorRedeliveryStaysOK(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+	rcv := New(repo, fakeResolver{}, api.NewBroker(), nil)
+
+	srv := grpc.NewServer()
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	attr := func(k, v string) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	anchor := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().Add(-2 * time.Second).UnixNano()),
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", "conv-dupanchor"),
+			attr("model", "gpt-5.1"),
+			attr("auth.request_id", "req-dup-anchor-1"),
+		},
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+			Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
+			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{anchor}}},
+		}}}); err != nil {
+			t.Fatalf("redelivery %d must not fail (ErrTxDone regression): %v", i+1, err)
+		}
+	}
+
+	var rows int
+	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE conversation_id='conv-dupanchor'`).Scan(&rows)
+	if rows != 1 {
+		t.Fatalf("duplicate anchors must dedupe to 1 row, got %d", rows)
+	}
+}
+
 type fakeResolver struct{}
 
 func (fakeResolver) ResolveActualModel(s string) string { return s }
