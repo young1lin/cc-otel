@@ -87,7 +87,11 @@ func newCodexToAllSource(ctx context.Context, target *sql.DB) (*codexToAllSource
 	if file == "" {
 		return &codexToAllSource{db: target}, nil
 	}
-	dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000", filepath.ToSlash(filepath.Clean(file)))
+	// ncruces/go-sqlite3 parses only _pragma/_txlock/_timefmt DSN params —
+	// _busy_timeout is a mattn-style no-op here. Once any _pragma is present
+	// the driver stops applying its 60s default, so busy_timeout must be
+	// stated explicitly.
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)", filepath.ToSlash(filepath.Clean(file)))
 	ro, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
@@ -339,18 +343,21 @@ func InspectCodexToAll(ctx context.Context, target *sql.DB) ([]CodexMigrationCou
 // request_id column) does NOT already exist in api_requests. Input is
 // compared in normalized form: input - cache_read - cache_creation (>= 0).
 func countCodexNewRows(ctx context.Context, target *sql.DB, plan codexTablePlan) (int64, error) {
+	// NULL-safe IS comparisons mirror the staged identity predicate
+	// (stage.go identityColumnsPredicate) so the preview cannot overstate
+	// NewRows when either side holds NULL columns.
 	query := `
 		SELECT COUNT(*) FROM codex_api_requests AS c
 		WHERE NOT EXISTS (
 			SELECT 1 FROM api_requests AS t
-			WHERE t.timestamp = c.timestamp
-			  AND t.session_id = c.session_id
-			  AND t.prompt_id = ''
-			  AND t.event_sequence = c.event_sequence
-			  AND t.model = c.model
-			  AND t.input_tokens = MAX(c.input_tokens - c.cache_read_tokens - c.cache_creation_tokens, 0)
-			  AND t.output_tokens = c.output_tokens
-			  AND t.duration_ms = c.duration_ms
+			WHERE t.timestamp IS c.timestamp
+			  AND t.session_id IS c.session_id
+			  AND t.prompt_id IS ''
+			  AND t.event_sequence IS c.event_sequence
+			  AND t.model IS c.model
+			  AND t.input_tokens IS MAX(c.input_tokens - c.cache_read_tokens - c.cache_creation_tokens, 0)
+			  AND t.output_tokens IS c.output_tokens
+			  AND t.duration_ms IS c.duration_ms
 		)`
 	var count int64
 	if err := target.QueryRowContext(ctx, query).Scan(&count); err != nil {
@@ -388,15 +395,18 @@ func MigrateCodexToAll(ctx context.Context, target *sql.DB, options Options) (Re
 	}
 
 	// Keep the Codex shim calendar (daily_model_agg WHERE service_name =
-	// 'codex') aligned with the archive-derived totals. The incremental
-	// deltas already applied cover this; the sanity check below is cheap.
+	// 'codex') aligned with the unified pool. The incremental deltas already
+	// applied cover this; the sanity check below is a cheap backstop. Both
+	// counts run in ONE statement: two separate autocommit reads race against
+	// the live receiver (a commit between them fails every migration by 1).
+	// Caveat: daily_model_agg is retention-pruned by Cleanup while
+	// api_requests is not; if retention pruning ever runs against codex rows
+	// this comparison must be scoped to the retention window.
 	var unifiedCount, aggCount int64
 	if err := target.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM api_requests WHERE service_name = ?", db.CodexServiceName).Scan(&unifiedCount); err != nil {
-		return result, err
-	}
-	if err := target.QueryRowContext(ctx,
-		"SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ?", db.CodexServiceName).Scan(&aggCount); err != nil {
+		`SELECT (SELECT COUNT(*) FROM api_requests WHERE service_name = ?),
+		        (SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ?)`,
+		db.CodexServiceName, db.CodexServiceName).Scan(&unifiedCount, &aggCount); err != nil {
 		return result, err
 	}
 	if unifiedCount != aggCount {

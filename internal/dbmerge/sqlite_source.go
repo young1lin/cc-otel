@@ -38,8 +38,11 @@ func (s *SQLiteSource) scratchDir() string {
 }
 
 func openImmutable(path string) (*sql.DB, error) {
+	// _pragma=busy_timeout — the ncruces driver only parses _pragma-style
+	// params; mattn's _busy_timeout is a silent no-op here (harmless with
+	// immutable=1, but keep it correct in case immutability is ever lifted).
 	dsn := fmt.Sprintf(
-		"file:%s?mode=ro&immutable=1&_busy_timeout=5000",
+		"file:%s?mode=ro&immutable=1&_pragma=busy_timeout(5000)",
 		filepath.ToSlash(filepath.Clean(path)),
 	)
 	d, err := sql.Open("sqlite3", dsn)

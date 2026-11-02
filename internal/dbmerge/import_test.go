@@ -151,10 +151,14 @@ func TestImportCountsWithinBatchDuplicateOnceForVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ScannedRows != 2 || result.InsertedRows != 1 || result.DuplicateRows != 1 || result.VerifiedIdentities != 1 {
+	// Occurrence-aware containment: two identical source rows are two
+	// DISTINCT records (e.g. error-storm retries sharing second/tokens/
+	// duration) — both must land. The digest still dedups the ledger and
+	// verification counts one identity.
+	if result.ScannedRows != 2 || result.InsertedRows != 2 || result.DuplicateRows != 0 || result.VerifiedIdentities != 1 {
 		t.Fatalf("result=%+v", result)
 	}
-	assertCounts(t, target, "events", 1)
+	assertCounts(t, target, "events", 2)
 	assertCounts(t, target, "import_ledger", 1)
 }
 

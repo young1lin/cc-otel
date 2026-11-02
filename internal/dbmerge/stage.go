@@ -98,6 +98,7 @@ func newStagedBatch(
 		`_merge_occurrences INTEGER NOT NULL`,
 		`_merge_new INTEGER NOT NULL DEFAULT 0`,
 		`_merge_key_kind INTEGER NOT NULL`,
+		`_merge_to_insert INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, column := range stage.columns {
 		definitions = append(definitions, quoteIdent(column))
@@ -203,6 +204,46 @@ func identityExistsExpression(spec TableSpec, targetAlias, stageAlias string) st
 	}
 }
 
+// identityContainedExpression is the occurrence-aware form of
+// identityExistsExpression: a staged row (digest) is "contained" when the
+// target already holds at least as many rows matching its identity tuple as
+// the digest's occurrence count. Without this, N distinct-but-identical
+// source rows (error-storm retries in the same second with equal tokens and
+// duration, zero-token pending rows, ...) collapse to one migrated row and
+// the rest silently report as duplicates — permanent row loss. request_id
+// identities stay binary: the same request_id IS the same request no matter
+// how often the source repeats it.
+func identityContainedExpression(spec TableSpec, targetAlias, stageAlias string) string {
+	table := `main.` + quoteIdent(spec.Name)
+	from := func(index string) string {
+		f := table + ` AS ` + targetAlias
+		if index != "" {
+			f += ` INDEXED BY "` + index + `"`
+		}
+		return f
+	}
+	countGE := func(predicate, index string) string {
+		return `(SELECT COUNT(*) FROM ` + from(index) + ` WHERE ` + predicate + `) >= ` + stageAlias + `._merge_occurrences`
+	}
+	exists := func(predicate, index string) string {
+		return `EXISTS (SELECT 1 FROM ` + from(index) + ` WHERE ` + predicate + `)`
+	}
+	switch spec.Kind {
+	case KindClaudeRequest:
+		request := identityColumnsPredicate([]string{"request_id"}, targetAlias, stageAlias) + ` AND ` + targetAlias + `.` + quoteIdent("request_id") + ` != ''`
+		fallback := identityColumnsPredicate(cols("timestamp session_id prompt_id event_sequence model input_tokens output_tokens duration_ms"), targetAlias, stageAlias)
+		return `CASE WHEN ` + stageAlias + `._merge_key_kind = 1 THEN ` + exists(request, "idx_requests_request_id") + ` ELSE ` + countGE(fallback, "idx_requests_timestamp") + ` END`
+	case KindPendingTTFT:
+		request := identityColumnsPredicate([]string{"request_id"}, targetAlias, stageAlias)
+		fallback := identityColumnsPredicate(cols("session_id model span_end_unix ttft_ms"), targetAlias, stageAlias)
+		return `CASE WHEN ` + stageAlias + `._merge_key_kind = 1 THEN ` + exists(request, "") + ` ELSE ` + countGE(fallback, "") + ` END`
+	case KindCodexRequest:
+		return countGE(identityColumnsPredicate(cols("timestamp session_id model input_tokens output_tokens duration_ms"), targetAlias, stageAlias), identityLookupIndex(spec.Name))
+	default:
+		return countGE(identityColumnsPredicate(spec.Columns, targetAlias, stageAlias), identityLookupIndex(spec.Name))
+	}
+}
+
 var identityLookupIndexes = map[string]string{
 	"user_prompt_events":         "idx_user_prompt_time",
 	"tool_decision_events":       "idx_tool_decision_time",
@@ -222,24 +263,93 @@ func identityLookupIndex(table string) string { return identityLookupIndexes[tab
 
 func (s *stagedBatch) markNewStatement() string {
 	return `UPDATE temp.` + stageTable + ` AS s
-		SET _merge_new = CASE WHEN ` + identityExistsExpression(s.spec, "t", "s") + ` THEN 0 ELSE 1 END`
+		SET _merge_to_insert = CASE
+			WHEN s._merge_key_kind = 1 THEN CASE WHEN ` + identityExistsExpression(s.spec, "t", "s") + ` THEN 0 ELSE 1 END
+			ELSE MAX(0, s._merge_occurrences - (` + s.containmentCountSubquery() + `))
+		END`
+}
+
+// markNewNewStatement flips _merge_new after _merge_to_insert is computed —
+// a separate statement because SQLite SET expressions all see pre-update
+// values, so the two cannot share one UPDATE.
+func (s *stagedBatch) markNewNewStatement() string {
+	return `UPDATE temp.` + stageTable + ` SET _merge_new = CASE WHEN _merge_to_insert > 0 THEN 1 ELSE 0 END`
+}
+
+// containmentCountSubquery returns the bare COUNT(*) subquery matching the
+// spec's fallback identity tuple, used by markNewStatement to compute how
+// many copies of a repeated digest still need inserting.
+func (s *stagedBatch) containmentCountSubquery() string {
+	spec, targetAlias, stageAlias := s.spec, "t", "s"
+	table := `main.` + quoteIdent(spec.Name)
+	var predicate string
+	switch spec.Kind {
+	case KindClaudeRequest:
+		predicate = identityColumnsPredicate(cols("timestamp session_id prompt_id event_sequence model input_tokens output_tokens duration_ms"), targetAlias, stageAlias)
+	case KindPendingTTFT:
+		predicate = identityColumnsPredicate(cols("session_id model span_end_unix ttft_ms"), targetAlias, stageAlias)
+	case KindCodexRequest:
+		predicate = identityColumnsPredicate(cols("timestamp session_id model input_tokens output_tokens duration_ms"), targetAlias, stageAlias)
+	default:
+		predicate = identityColumnsPredicate(spec.Columns, targetAlias, stageAlias)
+	}
+	index := identityLookupIndex(spec.Name)
+	if spec.Kind == KindClaudeRequest {
+		index = "idx_requests_timestamp"
+	} else if spec.Kind == KindPendingTTFT {
+		index = ""
+	}
+	from := table + ` AS ` + targetAlias
+	if index != "" {
+		from += ` INDEXED BY "` + index + `"`
+	}
+	return `SELECT COUNT(*) FROM ` + from + ` WHERE ` + predicate
 }
 
 func (s *stagedBatch) markNew(ctx context.Context) error {
-	_, err := s.conn.ExecContext(ctx, s.markNewStatement())
+	if _, err := s.conn.ExecContext(ctx, s.markNewStatement()); err != nil {
+		s.metrics.TargetStatements++
+		return err
+	}
+	s.metrics.TargetStatements++
+	_, err := s.conn.ExecContext(ctx, s.markNewNewStatement())
 	s.metrics.TargetStatements++
 	return err
 }
 
 func (s *stagedBatch) countNew(ctx context.Context) (int64, error) {
 	var count int64
-	err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM temp.`+stageTable+` WHERE _merge_new = 1`).Scan(&count)
+	err := s.conn.QueryRowContext(ctx, `SELECT COALESCE(SUM(_merge_to_insert), 0) FROM temp.`+stageTable+` WHERE _merge_new = 1`).Scan(&count)
 	return count, err
+}
+
+func (s *stagedBatch) ensureTally(ctx context.Context, maxCount int64) error {
+	if maxCount < 1 {
+		maxCount = 1
+	}
+	if _, err := s.conn.ExecContext(ctx, `DROP TABLE IF EXISTS temp._merge_tally`); err != nil {
+		return err
+	}
+	if _, err := s.conn.ExecContext(ctx, `CREATE TEMP TABLE _merge_tally (x INTEGER PRIMARY KEY)`); err != nil {
+		return err
+	}
+	// SQLite recursive CTE fill, chunk-safe for any realistic occurrence count.
+	_, err := s.conn.ExecContext(ctx, `
+		WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < ?)
+		INSERT INTO temp._merge_tally (x) SELECT x FROM seq`, maxCount)
+	return err
 }
 
 func (s *stagedBatch) insertNew(ctx context.Context) (int64, error) {
 	expected, err := s.countNew(ctx)
 	if err != nil {
+		return 0, err
+	}
+	var maxToInsert int64
+	if err := s.conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(_merge_to_insert), 0) FROM temp.`+stageTable).Scan(&maxToInsert); err != nil {
+		return 0, err
+	}
+	if err := s.ensureTally(ctx, maxToInsert); err != nil {
 		return 0, err
 	}
 	columns := make([]string, len(s.columns))
@@ -248,9 +358,13 @@ func (s *stagedBatch) insertNew(ctx context.Context) (int64, error) {
 		columns[i] = quoteIdent(column)
 		selected[i] = "s." + quoteIdent(column)
 	}
+	// The tally join fans each staged digest out to _merge_to_insert physical
+	// rows: N identical-but-distinct source rows (same identity tuple) must
+	// all land, not collapse to one.
 	query := `INSERT INTO main.` + quoteIdent(s.spec.Name) + ` (` + strings.Join(columns, ",") + `)
 		SELECT ` + strings.Join(selected, ",") + ` FROM temp.` + stageTable + ` AS s
-		WHERE s._merge_new = 1 ORDER BY s._merge_ordinal`
+		JOIN temp._merge_tally n ON n.x <= s._merge_to_insert
+		WHERE s._merge_new = 1 ORDER BY s._merge_ordinal, n.x`
 	result, err := s.conn.ExecContext(ctx, query)
 	s.metrics.TargetStatements++
 	if err != nil {
@@ -271,8 +385,15 @@ func (s *stagedBatch) newRows(ctx context.Context) ([]Row, error) {
 	for i, column := range s.columns {
 		selected[i] = quoteIdent(column)
 	}
+	var maxToInsert int64
+	if err := s.conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(_merge_to_insert), 0) FROM temp.`+stageTable).Scan(&maxToInsert); err != nil {
+		return nil, err
+	}
+	if err := s.ensureTally(ctx, maxToInsert); err != nil {
+		return nil, err
+	}
 	rows, err := s.conn.QueryContext(ctx,
-		`SELECT `+strings.Join(selected, ",")+` FROM temp.`+stageTable+` WHERE _merge_new = 1 ORDER BY _merge_ordinal`,
+		`SELECT `+strings.Join(selected, ",")+` FROM temp.`+stageTable+` s JOIN temp._merge_tally n ON n.x <= s._merge_to_insert WHERE s._merge_new = 1 ORDER BY s._merge_ordinal, n.x`,
 	)
 	if err != nil {
 		return nil, err
@@ -319,7 +440,7 @@ func (s *stagedBatch) missingDigest(ctx context.Context) (string, error) {
 
 func (s *stagedBatch) missingStatement() string {
 	return `SELECT s._merge_digest FROM temp.` + stageTable + ` AS s
-		WHERE NOT (` + identityExistsExpression(s.spec, "t", "s") + `)
+		WHERE NOT (` + identityContainedExpression(s.spec, "t", "s") + `)
 		ORDER BY s._merge_ordinal LIMIT 1`
 }
 

@@ -17,6 +17,10 @@ func TestVerifyChecksEveryUniqueSourceIdentity(t *testing.T) {
 	request := importRequest("verified", 100)
 	event := Row{Table: "events", Values: map[string]any{"timestamp": int64(101), "event_name": "same"}}
 	insertTestRow(t, target, request)
+	// Occurrence-aware containment: two identical source events are two
+	// distinct records (error-storm retries), so the target must hold BOTH
+	// copies for verification to pass.
+	insertTestRow(t, target, event)
 	insertTestRow(t, target, event)
 
 	verified, err := Verify(context.Background(), target, sliceSource{request, event, event}, nil)
@@ -25,6 +29,16 @@ func TestVerifyChecksEveryUniqueSourceIdentity(t *testing.T) {
 	}
 	if verified != 2 {
 		t.Fatalf("verified identities = %d, want 2", verified)
+	}
+
+	// A target holding only one of the two identical rows fails verification.
+	short := importTarget(t)
+	insertTestRow(t, short, request)
+	insertTestRow(t, short, event)
+	_, err = Verify(context.Background(), short, sliceSource{request, event, event}, nil)
+	var mergeErr *MergeError
+	if !errors.As(err, &mergeErr) || mergeErr.Code != ErrVerification {
+		t.Fatalf("error = %v, want verification error for missing duplicate copy", err)
 	}
 }
 

@@ -16,8 +16,11 @@ func TestInspectSQLiteCountsMainAndSourceDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SourceRows != 5 || got.NewRows != 2 || got.DuplicateRows != 3 {
-		t.Fatalf("preview = %+v, want source=5 new=2 duplicate=3", got)
+	// Occurrence-aware containment: the two identical events rows are two
+	// distinct records, and the import now inserts BOTH — the preview must
+	// agree (old collapse semantics reported 1 new + 1 duplicate).
+	if got.SourceRows != 5 || got.NewRows != 3 || got.DuplicateRows != 2 {
+		t.Fatalf("preview = %+v, want source=5 new=3 duplicate=2", got)
 	}
 }
 
