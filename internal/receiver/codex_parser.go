@@ -339,7 +339,7 @@ func (t *codexSpanTracker) removeRequest(key string) {
 // pricer (optional) supplies recomputed cost_usd at the moment tokens are
 // known (codex.sse_event with kind=response.completed). Codex never reports
 // cost_usd itself, so without pricer the row stays at cost=0.
-func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRecord, res *resourcepb.Resource, notifier Notifier, tracker *codexSpanTracker, pricer Pricer) bool {
+func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRecord, res *resourcepb.Resource, notifier Notifier, tracker *codexSpanTracker, pricer Pricer, stats *ingestStats) bool {
 	if lr == nil || repo == nil {
 		return false
 	}
@@ -422,6 +422,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		rowID, err := repo.InsertCodexAPIRequest(ctx, req)
 		if err != nil {
 			log.Printf("failed to insert codex api_request: %v", err)
+		if stats != nil {
+			stats.fail()
+		}
 			return false
 		}
 		if pendingStream && tracker != nil {
@@ -524,6 +527,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 
 			if _, err := repo.UpdateCodexAPIRequestTokens(ctx, upd); err != nil {
 				log.Printf("failed to update codex request tokens (session=%s model=%s): %v", upd.SessionID, upd.Model, err)
+			if stats != nil {
+				stats.fail()
+			}
 				return false
 			}
 			if tracker != nil {
@@ -548,6 +554,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		}
 		if err := repo.InsertCodexUserPrompt(ctx, ev); err != nil {
 			log.Printf("failed to insert codex user_prompt: %v", err)
+		if stats != nil {
+			stats.fail()
+		}
 			return false
 		}
 		notify()
@@ -566,6 +575,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		}
 		if err := repo.InsertCodexToolDecision(ctx, ev); err != nil {
 			log.Printf("failed to insert codex tool_decision: %v", err)
+		if stats != nil {
+			stats.fail()
+		}
 			return false
 		}
 		notify()
@@ -593,6 +605,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		}
 		if err := repo.InsertCodexToolResult(ctx, ev); err != nil {
 			log.Printf("failed to insert codex tool_result: %v", err)
+		if stats != nil {
+			stats.fail()
+		}
 			return false
 		}
 		notify()
@@ -633,6 +648,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 						ctx, info.rowID, info.sessionID, info.model, ts, ttftMs,
 					); err != nil {
 						log.Printf("failed to update codex ttft (session=%s): %v", info.sessionID, err)
+			if stats != nil {
+				stats.fail()
+			}
 					}
 				}
 			}
@@ -646,6 +664,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				)
 				if err != nil {
 					log.Printf("failed to update codex duration (session=%s): %v", info.sessionID, err)
+			if stats != nil {
+				stats.fail()
+			}
 				}
 				if err == nil {
 					if updated {
@@ -663,6 +684,9 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 						})
 						if insertErr != nil {
 							log.Printf("failed to insert codex duration-only row (session=%s): %v", info.sessionID, insertErr)
+			if stats != nil {
+				stats.fail()
+			}
 						} else {
 							notify()
 							return true

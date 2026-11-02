@@ -15,7 +15,9 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 func TestCodexE2E_APIRequestThenSSECompletion(t *testing.T) {
@@ -296,6 +298,172 @@ func TestCodexE2E_TTFTOnlyCompletionFinalizes(t *testing.T) {
 	repo.DB().QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE service_name = 'codex'`).Scan(&ttft)
 	if ttft != 410 {
 		t.Fatalf("expected ttft 410 to be finalized on the pending row, got %d", ttft)
+	}
+}
+
+
+// TestCodexE2E_ReplayedCompletionIsNoOp pins the at-least-once replay guard:
+// OTLP exporters retry failed batches, so the same authoritative completion
+// can land twice. The first delivery finalizes the pending row via the
+// tracker; the replay arrives with the tracker already consumed and must NOT
+// mint a second row — the identity guard matches the finalized row by
+// (session, model, full token vector) inside a timestamp window, because the
+// finalized row keeps the api_request's timestamp, not the completion's.
+func TestCodexE2E_ReplayedCompletionIsNoOp(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+	broker := api.NewBroker()
+	rcv := New(repo, &fakeResolver{}, broker, nil)
+
+	srv := grpc.NewServer()
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	codexResource := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+		{Key: "service.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "codex-cli"}}},
+	}}
+	export := func(records []*logspb.LogRecord) {
+		t.Helper()
+		_, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{
+			ResourceLogs: []*logspb.ResourceLogs{{
+				Resource: codexResource,
+				ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("export: %v", err)
+		}
+	}
+	attr := func(k, v string) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: v}}}
+	}
+
+	apiRec := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().Add(-2 * time.Second).UnixNano()),
+		Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", "conv-replay"),
+			attr("model", "gpt-5.1"),
+		},
+	}
+	completionAttrs := []*commontpb.KeyValue{
+		attr("event.name", "codex.sse_event"),
+		attr("event.kind", "response.completed"),
+		attr("conversation.id", "conv-replay"),
+		attr("model", "gpt-5.1"),
+		attr("input_token_count", "200"),
+		attr("output_token_count", "50"),
+		attr("tool_token_count", "250"),
+		attr("ttft_ms", "300"),
+	}
+	completion := &logspb.LogRecord{TimeUnixNano: uint64(time.Now().UnixNano()), Attributes: completionAttrs}
+
+	export([]*logspb.LogRecord{apiRec})
+	export([]*logspb.LogRecord{completion})
+	// The replay: same record bytes an OTLP exporter would resend.
+	export([]*logspb.LogRecord{completion})
+
+	var rows int
+	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE service_name = 'codex'`).Scan(&rows)
+	if rows != 1 {
+		t.Fatalf("replayed completion must be a no-op: got %d codex rows, want 1", rows)
+	}
+	var total int64
+	repo.DB().QueryRowContext(ctx, `SELECT total_tokens FROM api_requests WHERE service_name = 'codex'`).Scan(&total)
+	if total != 250 {
+		t.Fatalf("finalized row total_tokens = %d, want 250", total)
+	}
+	var agg int64
+	repo.DB().QueryRowContext(ctx, `SELECT COALESCE(SUM(request_count),0) FROM daily_model_agg WHERE service_name = 'codex'`).Scan(&agg)
+	if agg != 1 {
+		t.Fatalf("agg request_count = %d, want 1 (replay must not double-count)", agg)
+	}
+}
+
+
+// TestCodexE2E_ExportSignalsStorageFailure pins the OTLP delivery contract:
+// when every record in a batch fails storage, Export must return an error
+// (gRPC Internal / HTTP 500) so the exporter retries instead of pruning the
+// batch as delivered. Before this fix both transports answered success on
+// internal failure and the data was silently lost.
+func TestCodexE2E_ExportSignalsStorageFailure(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.NewRepository(d)
+	broker := api.NewBroker()
+	rcv := New(repo, &fakeResolver{}, broker, nil)
+
+	srv := grpc.NewServer()
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	good := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().UnixNano()),
+		Attributes: []*commontpb.KeyValue{
+			{Key: "event.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "api_request"}}},
+			{Key: "message.model", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "claude-3-5-haiku"}}},
+			{Key: "request_id", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "export-fail-1"}}},
+		},
+	}
+	resource := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+		{Key: "service.name", Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: "claude-code"}}},
+	}}
+	batch := &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+		Resource: resource,
+		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{good}}},
+	}}}
+
+	// Healthy path: the same batch must export cleanly first.
+	if _, err := cli.Export(ctx, batch); err != nil {
+		t.Fatalf("healthy export must succeed: %v", err)
+	}
+
+	// Storage failure: closing the underlying DB makes every insert fail.
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = cli.Export(ctx, batch)
+	if err == nil {
+		t.Fatal("export with total storage failure must return an error so the exporter retries")
+	}
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("error code = %v, want Internal", status.Code(err))
 	}
 }
 

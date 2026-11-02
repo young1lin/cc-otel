@@ -108,11 +108,13 @@ func (r *Repository) getCodexAPIRequestByID(ctx context.Context, id int64) (*Cod
 // UpdateCodexAPIRequestTokens finalizes a unified Codex request row with
 // completion accounting. When u.RequestRowID > 0 it targets that exact row
 // first (and only that row), otherwise it falls back to the newest zero-token
-// Codex row matching (session_id, model) within the last 5 minutes. The
-// matched row is updated with token columns, cost, full duration, and direct
-// TTFT, and the same deltas are added to daily_model_agg under
-// service_name='codex' (date keyed off the *row's* timestamp so midnight
-// drift lands on the correct day, request count unchanged).
+// Codex row matching (session_id, model) within the last 30 minutes (aligned
+// with the receiver tracker's eviction window so a tracker lost to a restart
+// mid-stream still finds its pending row). The matched row is updated with
+// token columns, cost, full duration, and direct TTFT, and the same deltas
+// are added to daily_model_agg under service_name='codex' (date keyed off the
+// *row's* timestamp so midnight drift lands on the correct day, request count
+// unchanged).
 //
 // An exact row that already carries token data is treated as
 // already-finalized: the transaction commits as a no-op and returns true
@@ -152,10 +154,10 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 		u.TTFTMs == 0 && u.DurationMs == 0 && u.CostUSD == 0 {
 		return true, nil
 	}
-	// 10 minutes: match the receiver-side tracker window (10 min lookup,
-	// 30 min eviction) so a tracker miss after a restart during a long stream
-	// still finds its pending row instead of double-inserting.
-	cutoff := u.Timestamp.Unix() - 600
+	// 30 minutes: match the receiver-side tracker eviction window so a
+	// tracker miss after a restart during a long stream still finds its
+	// pending row instead of double-inserting.
+	cutoff := u.Timestamp.Unix() - 1800
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -212,21 +214,25 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 		}
 		// Idempotent replay guard: OTLP delivery is at-least-once, and after
 		// the first completion finalizes its row (and the tracker entry is
-		// evicted), a byte-identical re-delivery would otherwise arrive here
-		// and insert a full duplicate — double-counting request_count, every
-		// token category, and cost in both api_requests and daily_model_agg.
-		// A duplicate carries the SAME event timestamp and token vector, so
-		// that tuple is the completion identity.
+		// evicted), a re-delivery would otherwise arrive here and insert a full
+		// duplicate — double-counting request_count, every token category, and
+		// cost in both api_requests and daily_model_agg. The completion's
+		// identity is (session, model, full token vector); its timestamp alone
+		// cannot be matched exactly because the finalized row keeps the
+		// API-REQUEST's timestamp (up to one tracker window earlier than the
+		// completion), while an orphan-path first insert keeps the completion's
+		// own. Match a window covering both shapes.
 		var dupID int64
 		dupErr := r.db.QueryRowContext(ctx, `
 			SELECT id FROM api_requests
 			WHERE session_id = ? AND model = ? AND service_name = ?
-			  AND timestamp = ?
+			  AND timestamp BETWEEN ? AND ?
 			  AND input_tokens = ? AND output_tokens = ?
 			  AND cache_read_tokens = ? AND cache_creation_tokens = ?
 			  AND reasoning_tokens = ? AND total_tokens = ?
 			LIMIT 1`,
-			u.SessionID, u.Model, CodexServiceName, u.Timestamp.Unix(),
+			u.SessionID, u.Model, CodexServiceName,
+			u.Timestamp.Unix()-1860, u.Timestamp.Unix()+60,
 			u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens,
 			u.ReasoningTokens, u.TotalTokens,
 		).Scan(&dupID)

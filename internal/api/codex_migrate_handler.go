@@ -183,12 +183,17 @@ func (h *Handler) runCodexMigration() {
 	// pre-run preview that promised them as new. Bounded deadline: these run
 	// AFTER the migration ctx is done, so an unbounded Background() here
 	// could stall a shutdown join for as long as the inspection takes.
+	// No-op re-runs (nothing inserted) keep the pre-run preview — it already
+	// showed new_rows=0 for every table, and skipping the staging pass saves
+	// its full-archive cost (~3s on the production archive) on repeat clicks.
 	postCtx, postCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer postCancel()
-	if post, perr := dbmerge.InspectCodexToAll(postCtx, h.repo.DB()); perr == nil {
-		job.mu.Lock()
-		job.preview = post
-		job.mu.Unlock()
+	if result.InsertedRows > 0 {
+		if post, perr := dbmerge.InspectCodexToAll(postCtx, h.repo.DB()); perr == nil {
+			job.mu.Lock()
+			job.preview = post
+			job.mu.Unlock()
+		}
 	}
 	job.mu.Lock()
 	job.running = false
@@ -197,11 +202,17 @@ func (h *Handler) runCodexMigration() {
 	job.lastResult = &result
 	job.mu.Unlock()
 
-	// The migration wrote a large burst through WAL; a passive checkpoint
-	// lets SQLite fold it back into the main DB file when idle (readers are
-	// never blocked; a busy WAL simply stays for the next checkpoint).
+	// The migration wrote a large burst through WAL. A passive checkpoint
+	// folds the frames back into the main DB when idle (readers never
+	// blocked); the follow-up TRUNCATE reclaims the -wal file, which neither
+	// passive checkpoints nor autocheckpoint ever shrink on their own — the
+	// production file stayed frozen at 340MB after the first big migration
+	// (R3 perf finding). Busy readers simply leave it for the next attempt.
 	if _, err := h.repo.DB().ExecContext(postCtx, `PRAGMA wal_checkpoint(PASSIVE)`); err != nil {
 		log.Printf("codex migration wal checkpoint: %v", err)
+	}
+	if _, err := h.repo.DB().ExecContext(postCtx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		log.Printf("codex migration wal truncate: %v", err)
 	}
 
 	// The unified pool changed: refresh every open dashboard.

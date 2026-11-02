@@ -38,6 +38,11 @@ func DSN(path string) string {
 		"cache_size(-65536)",
 		"mmap_size(268435456)",
 		"temp_store(MEMORY)",
+		// WAL high-water control (R3 perf finding): neither PASSIVE
+		// checkpoints nor autocheckpoint ever shrink the -wal file; after a
+		// large migration it stayed frozen at 340MB forever. The limit lets a
+		// RESET-ing checkpoint truncate the file back down.
+		"journal_size_limit(67108864)",
 	}
 	if nosyncEnabled() {
 		pragmas = append(pragmas, "synchronous(0)")

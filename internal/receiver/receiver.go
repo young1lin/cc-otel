@@ -18,6 +18,8 @@ import (
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type ModelResolver interface {
@@ -55,8 +57,38 @@ type logsServiceServer struct {
 	dshTracker   *dshStepTracker
 }
 
+// ingestStats counts records that reached a storage attempt vs records
+// whose storage failed, so Export can honour the OTLP delivery contract:
+// a batch we could not store must not answer success, or the exporter
+// prunes it from its retry queue and the data is silently lost.
+type ingestStats struct {
+	total  uint32
+	failed uint32
+}
+
+func (s *ingestStats) record() { s.total++ }
+func (s *ingestStats) fail()   { s.failed++ }
+
+// exportResult folds the stats into a response: a batch where EVERY record
+// failed storage returns a retryable error (gRPC Internal / HTTP 500) — safe
+// because nothing landed, so the exporter's retry re-inserts cleanly; a
+// partial failure returns success with PartialSuccess so the exporter keeps
+// its queue but the loss is visible to its metrics.
+func exportResult[T any](stats *ingestStats, resp T, mkPartial func(T) T) (T, error) {
+	var zero T
+	if stats.failed > 0 {
+		if stats.total > 0 && stats.failed >= stats.total {
+			return zero, status.Errorf(codes.Internal,
+				"cc-otel: %d/%d records failed storage", stats.failed, stats.total)
+		}
+		resp = mkPartial(resp)
+	}
+	return resp, nil
+}
+
 func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
 	shouldNotify := false
+	stats := &ingestStats{}
 	for _, rl := range req.ResourceLogs {
 		// DeepSeek Harness exports its whole session ledger, not Claude Code's
 		// event vocabulary, so it needs its own mapping before the Claude loop
@@ -64,7 +96,8 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 		// so a collector batching several clients into one request still lands
 		// each of them in its own path.
 		if resourceLogsIsDSH(rl) {
-			if s.handleDSHResourceLogs(ctx, rl) {
+			stats.record()
+			if s.handleDSHResourceLogs(ctx, rl, stats) {
 				shouldNotify = true
 			}
 			continue
@@ -74,9 +107,10 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 				// Source routing: Codex CLI clients are tagged via OTLP Resource
 				// service.name. Empty / unknown service.name keeps the existing
 				// Claude path for backward compatibility.
+				stats.record()
 				svc := serviceNameFromResource(rl.Resource)
 				if isCodexService(svc) {
-					dispatchCodexLog(ctx, s.repo, lr, rl.Resource, s.notifier, s.codexTracker, s.pricer)
+					dispatchCodexLog(ctx, s.repo, lr, rl.Resource, s.notifier, s.codexTracker, s.pricer, stats)
 					continue
 				}
 
@@ -106,28 +140,34 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 					apiReq.ActualModel = s.cfg.ResolveActualModel(apiReq.Model)
 					if inserted, err := s.repo.InsertRequest(ctx, apiReq); err != nil {
 						log.Printf("failed to insert api_request: %v", err)
+						stats.fail()
 					} else if inserted {
 						shouldNotify = true
 					}
 				case "user_prompt":
 					if err := s.repo.InsertUserPrompt(ctx, event); err != nil {
 						log.Printf("failed to insert user_prompt: %v", err)
+					stats.fail()
 					}
 				case "tool_decision":
 					if err := s.repo.InsertToolDecision(ctx, event); err != nil {
 						log.Printf("failed to insert tool_decision: %v", err)
+					stats.fail()
 					}
 				case "tool_result":
 					if err := s.repo.InsertToolResult(ctx, event); err != nil {
 						log.Printf("failed to insert tool_result: %v", err)
+					stats.fail()
 					}
 				case "api_error":
 					if err := s.repo.InsertAPIError(ctx, event); err != nil {
 						log.Printf("failed to insert api_error: %v", err)
+					stats.fail()
 					}
 				default:
 					if err := s.repo.InsertEvent(ctx, event); err != nil {
 						log.Printf("failed to insert event: %v", err)
+					stats.fail()
 					}
 				}
 			}
@@ -136,7 +176,13 @@ func (s *logsServiceServer) Export(ctx context.Context, req *collogspb.ExportLog
 	if shouldNotify && s.notifier != nil {
 		s.notifier.Notify()
 	}
-	return &collogspb.ExportLogsServiceResponse{}, nil
+	return exportResult(stats, &collogspb.ExportLogsServiceResponse{}, func(r *collogspb.ExportLogsServiceResponse) *collogspb.ExportLogsServiceResponse {
+		r.PartialSuccess = &collogspb.ExportLogsPartialSuccess{
+			RejectedLogRecords: int64(stats.failed),
+			ErrorMessage:       "cc-otel: " + strconv.Itoa(int(stats.failed)) + " records failed storage",
+		}
+		return r
+	})
 }
 
 // metricsServiceServer handles OTLP metric exports (token usage, cost aggregates, session counters, etc.).

@@ -368,7 +368,7 @@ func dshAPIRequest(lr *logspb.LogRecord, attrs map[string]string, timing dshStep
 // feedback-triggered full-prefix upload carries those bodies with whole file
 // contents, command output, and the system prompt, none of which cc-otel
 // displays, and persisting them would grow the database without bound.
-func (s *logsServiceServer) handleDSHResourceLogs(ctx context.Context, rl *logspb.ResourceLogs) bool {
+func (s *logsServiceServer) handleDSHResourceLogs(ctx context.Context, rl *logspb.ResourceLogs, stats *ingestStats) bool {
 	shouldNotify := false
 	for _, sl := range rl.ScopeLogs {
 		for _, lr := range sl.LogRecords {
@@ -417,6 +417,9 @@ func (s *logsServiceServer) handleDSHResourceLogs(ctx context.Context, rl *logsp
 				inserted, err := s.repo.InsertRequest(ctx, apiReq)
 				if err != nil {
 					log.Printf("dsh: insert api_request: %v", err)
+					if stats != nil {
+						stats.fail()
+					}
 				} else if inserted {
 					shouldNotify = true
 				}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/young1lin/cc-otel/internal/db"
@@ -82,6 +83,7 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 	shouldNotify := false
 	spanCount := 0
 	ttftCount := 0
+	stats := &ingestStats{}
 	// AI-SDK usage spans converted to api_request log records, grouped by the
 	// resource they arrived with so service.name attribution survives.
 	var aiSDKBatches []*logspb.ResourceLogs
@@ -103,6 +105,7 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 
 			for _, sp := range ss.Spans {
 				spanCount++
+				stats.record()
 				attrs := extractAttrs(sp.Attributes)
 
 				// Always keep a raw backup for later inspection / join-key selection.
@@ -175,6 +178,7 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 				}
 				if err != nil {
 					log.Printf("trace backfill ttft failed: %v", err)
+					stats.fail()
 				} else if updated {
 					shouldNotify = true
 					log.Printf("trace backfill ttft updated: request=%q session=%q prompt=%q model=%q end_unix=%d ttft_ms=%d",
@@ -186,6 +190,7 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 					// Enqueue for opportunistic application when InsertRequest runs.
 					if qErr := s.repo.EnqueuePendingTTFTSpan(ctx, requestID, sessionID, model, endUnix, ttft, string(rawJSON)); qErr != nil {
 						log.Printf("trace enqueue pending ttft failed: %v", qErr)
+						stats.fail()
 					}
 				}
 			}
@@ -224,7 +229,13 @@ func (s *tracesServiceServer) Export(ctx context.Context, req *coltracepb.Export
 		s.notifier.Notify()
 	}
 
-	return &coltracepb.ExportTraceServiceResponse{}, nil
+	return exportResult(stats, &coltracepb.ExportTraceServiceResponse{}, func(r *coltracepb.ExportTraceServiceResponse) *coltracepb.ExportTraceServiceResponse {
+		r.PartialSuccess = &coltracepb.ExportTracePartialSuccess{
+			RejectedSpans: int64(stats.failed),
+			ErrorMessage:  "cc-otel: " + strconv.Itoa(int(stats.failed)) + " spans failed storage",
+		}
+		return r
+	})
 }
 
 func firstNonEmpty(a, b string) string {

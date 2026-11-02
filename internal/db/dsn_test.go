@@ -24,7 +24,8 @@ func TestDSNWithoutNosyncEnvCarriesPoolPragmas(t *testing.T) {
 	got := DSN(filepath.Join("some", "dir", "test.db"))
 	want := "file:some/dir/test.db" +
 		"?_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)" +
-		"&_pragma=mmap_size(268435456)&_pragma=temp_store(MEMORY)"
+		"&_pragma=mmap_size(268435456)&_pragma=temp_store(MEMORY)" +
+		"&_pragma=journal_size_limit(67108864)"
 	if got != want {
 		t.Fatalf("DSN() = %q, want %q", got, want)
 	}
@@ -42,7 +43,7 @@ func TestDSNWithNosyncEnvAppendsSynchronousOff(t *testing.T) {
 	want := "file:some/dir/test.db" +
 		"?_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)" +
 		"&_pragma=mmap_size(268435456)&_pragma=temp_store(MEMORY)" +
-		"&_pragma=synchronous(0)"
+		"&_pragma=journal_size_limit(67108864)&_pragma=synchronous(0)"
 	if got != want {
 		t.Fatalf("DSN() = %q, want %q", got, want)
 	}

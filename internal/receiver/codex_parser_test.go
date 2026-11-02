@@ -166,7 +166,7 @@ func TestDispatchCodexLog_APIRequestAnchorsSuccessfulStream(t *testing.T) {
 			attr("model", "gpt-5.1"),
 			attrInt("duration_ms", 300),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 	if !ok {
 		t.Fatal("status-omitted successful request was not inserted")
 	}
@@ -207,7 +207,7 @@ func TestDispatchCodexLog_EnvironmentMapsToUserID(t *testing.T) {
 			attr("conversation.id", "env-session"),
 			attr("model", "gpt-5.1"),
 		},
-	}, res, nil, nil, nil)
+	}, res, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("request was not inserted")
 	}
@@ -229,7 +229,7 @@ func TestDispatchCodexLog_EnvironmentMapsToUserID(t *testing.T) {
 			attr("model", "gpt-5.1"),
 			attr("user.id", "explicit-user"),
 		},
-	}, res, nil, nil, nil)
+	}, res, nil, nil, nil, nil)
 	if !ok {
 		t.Fatal("second request was not inserted")
 	}
@@ -260,7 +260,7 @@ func TestDispatchCodexLog_APIRequestFailureKeepsReportedDuration(t *testing.T) {
 			attrInt("http.response.status_code", 500),
 			attr("error.message", "upstream failed"),
 		},
-	}, nil, nil, tracker, nil)
+	}, nil, nil, tracker, nil, nil)
 	if !ok {
 		t.Fatal("failed request row was not inserted")
 	}
@@ -303,7 +303,7 @@ func TestDispatchCodexLog_SSECompletedPersistsAccountingAndFullDuration(t *testi
 			attrInt("duration_ms", 300),
 			attrInt("http.response.status_code", 200),
 		},
-	}, res, nil, tracker, pricer); !ok {
+	}, res, nil, tracker, pricer, nil); !ok {
 		t.Fatal("request insert failed")
 	}
 
@@ -324,7 +324,7 @@ func TestDispatchCodexLog_SSECompletedPersistsAccountingAndFullDuration(t *testi
 			attrInt("tool_token_count", 110),
 			attrInt("ttft_ms", 250),
 		},
-	}, res, nil, tracker, pricer); !ok {
+	}, res, nil, tracker, pricer, nil); !ok {
 		t.Fatal("completion update failed")
 	}
 
@@ -386,7 +386,7 @@ func TestDispatchCodexLog_SSEDatabaseFailureRetainsTracker(t *testing.T) {
 			attrInt("duration_ms", 100),
 			attrInt("http.response.status_code", 200),
 		},
-	}, nil, nil, tracker, nil)
+	}, nil, nil, tracker, nil, nil)
 	if err := repo.DB().Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestDispatchCodexLog_SSEDatabaseFailureRetainsTracker(t *testing.T) {
 			attrInt("input_token_count", 10),
 			attrInt("output_token_count", 1),
 		},
-	}, nil, nil, tracker, nil)
+	}, nil, nil, tracker, nil, nil)
 	if ok {
 		t.Fatal("database failure reported success")
 	}
@@ -431,7 +431,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 			attr("conversation.id", "conv-duration"),
 			attr("model", "gpt-5.5"),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 
 	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
 		ObservedTimeUnixNano: uint64(start.Add(2408 * time.Millisecond).UnixNano()),
@@ -442,7 +442,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 			attr("conversation.id", "conv-duration"),
 			attr("model", "gpt-5.5"),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 
 	trackerSpan := spanIDFromLog(&logspb.LogRecord{SpanId: spanID})
 	if _, _, found := tracker.lookupRequest(
@@ -470,7 +470,7 @@ func TestDispatchCodexLog_WebsocketDurationBeforeSSEUsesObservedTime(t *testing.
 			attrInt("input_token_count", 1234),
 			attrInt("output_token_count", 567),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 
 	var input, output int64
 	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM api_requests WHERE service_name = 'codex'`).Scan(&rows, &input, &output, &duration); err != nil {
@@ -503,7 +503,7 @@ func TestDispatchCodexLog_WebsocketEventNameCanComeFromBody(t *testing.T) {
 			attr("conversation.id", "conv-body-kind"),
 			attr("model", "gpt-5.5"),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 
 	// Current Codex websocket events may put response.completed in the body and
 	// omit event.name. The receiver still needs to treat this as a
@@ -516,7 +516,7 @@ func TestDispatchCodexLog_WebsocketEventNameCanComeFromBody(t *testing.T) {
 			attr("conversation.id", "conv-body-kind"),
 			attr("model", "gpt-5.5"),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 
 	var rows, duration int64
 	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(duration_ms), 0) FROM api_requests WHERE service_name = 'codex'`).Scan(&rows, &duration); err != nil {
@@ -550,7 +550,7 @@ func TestDispatchCodexLog_SSECompletedUsesTrackedWebsocketRequestDuration(t *tes
 			attr("conversation.id", "conv-sse-duration"),
 			attr("model", "gpt-5.5"),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 
 	dispatchCodexLog(ctx, repo, &logspb.LogRecord{
 		ObservedTimeUnixNano: uint64(start.Add(3900 * time.Millisecond).UnixNano()),
@@ -562,7 +562,7 @@ func TestDispatchCodexLog_SSECompletedUsesTrackedWebsocketRequestDuration(t *tes
 			attrInt("input_token_count", 1000),
 			attrInt("output_token_count", 50),
 		},
-	}, res, nil, tracker, nil)
+	}, res, nil, tracker, nil, nil)
 
 	var rows, input, output, duration int64
 	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*), input_tokens, output_tokens, duration_ms FROM api_requests WHERE service_name = 'codex'`).Scan(&rows, &input, &output, &duration); err != nil {
@@ -605,7 +605,7 @@ func TestDispatchCodexLog_DiagnosticEventsAreNotPersisted(t *testing.T) {
 		}},
 	}
 	for _, record := range logs {
-		dispatchCodexLog(ctx, repo, record, res, nil, tracker, nil)
+		dispatchCodexLog(ctx, repo, record, res, nil, tracker, nil, nil)
 	}
 	if got := readCount(t, repo, `SELECT COUNT(*) FROM codex_events`); got != 0 {
 		t.Fatalf("codex_events rows = %d, want 0", got)
@@ -663,7 +663,7 @@ func TestDispatchCodexLog_OtherEvents(t *testing.T) {
 			dispatchCodexLog(ctx, repo, &logspb.LogRecord{
 				TimeUnixNano: uint64(1700000000) * 1e9,
 				Attributes:   c.attrs,
-			}, res, nil, nil, nil)
+			}, res, nil, nil, nil, nil)
 			after := readCount(t, repo, c.countSQL)
 			if after != before+1 {
 				t.Errorf("expected count to increase by 1; before=%d after=%d", before, after)
