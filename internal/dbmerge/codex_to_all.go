@@ -299,71 +299,74 @@ type CodexMigrationCounts struct {
 // row counts plus identity-based new/duplicate estimates. Absent codex
 // tables are skipped, so a fresh install reports an empty (all-zero) preview.
 func InspectCodexToAll(ctx context.Context, target *sql.DB) ([]CodexMigrationCounts, error) {
+	// Skeleton first: one counts row per plan, all zero, so a fresh install
+	// (or a DB without the archive tables) still reports the full table list.
 	out := make([]CodexMigrationCounts, 0, len(codexToAllPlans))
-	for _, plan := range codexToAllPlans {
-		counts := CodexMigrationCounts{SourceTable: plan.source, TargetTable: plan.target}
+	idx := make(map[string]int, len(codexToAllPlans))
+	anySource := false
+	for i, plan := range codexToAllPlans {
+		out = append(out, CodexMigrationCounts{SourceTable: plan.source, TargetTable: plan.target})
+		idx[plan.target] = i
 		exists, err := tableExists(ctx, target, plan.source)
 		if err != nil {
 			return nil, &MergeError{Code: ErrInspection, Table: plan.source, Err: err}
 		}
-		if !exists {
-			out = append(out, counts)
-			continue
+		if exists {
+			anySource = true
 		}
-		if err := target.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM "+quoteIdent(plan.source)).Scan(&counts.SourceRows); err != nil {
-			return nil, &MergeError{Code: ErrInspection, Table: plan.source, Err: err}
+	}
+	if !anySource {
+		return out, nil
+	}
+
+	// Precise preview: drive the SAME transform + staging machinery the
+	// migration itself uses (scanBatches -> newStagedBatch -> markNew ->
+	// countNew), without the INSERT. This is occurrence-aware for every
+	// table (not just the request table), so the post-migration card shows
+	// the true "all rows already merged" state — sub-event tables no longer
+	// unconditionally report new_rows = source_rows, and partially-topped-up
+	// tuples (manual row deletion, concurrent inserts between preview and
+	// import) are counted as top-up, not as fully present.
+	source, err := newCodexToAllSource(ctx, target)
+	if err != nil {
+		return nil, &MergeError{Code: ErrInspection, Err: err}
+	}
+	defer source.Close()
+	err = scanBatches(ctx, source, defaultBatchLimits(Options{}), func(batch rowBatch) error {
+		pos, ok := idx[batch.Table]
+		if !ok {
+			return fmt.Errorf("inspect: unexpected table %q from codex source", batch.Table)
 		}
-		if counts.SourceRows == 0 {
-			out = append(out, counts)
-			continue
+		out[pos].SourceRows += batch.SourceRows
+		if len(batch.Candidates) == 0 {
+			return nil
 		}
-		// Only the request table gets a precise identity estimate; the
-		// sub-event archive schemas map onto the unified columns via the
-		// transform, so an EXISTS join cannot be expressed directly. Their
-		// preview reports the source count as an upper bound — the migration
-		// itself still dedups every row exactly through staging.
-		newRows := counts.SourceRows
-		if plan.source == "codex_api_requests" {
-			var err error
-			newRows, err = countCodexNewRows(ctx, target, plan)
-			if err != nil {
-				return nil, err
-			}
+		stage, err := newStagedBatch(ctx, target, batch, stageOptions{})
+		if err != nil {
+			return err
 		}
-		counts.NewRows = newRows
-		counts.ExistingRows = counts.SourceRows - newRows
-		out = append(out, counts)
+		if err := stage.markNew(ctx); err != nil {
+			_ = stage.Close(context.Background())
+			return err
+		}
+		n, err := stage.countNew(ctx)
+		closeErr := stage.Close(context.Background())
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		out[pos].NewRows += n
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].ExistingRows = out[i].SourceRows - out[i].NewRows
 	}
 	return out, nil
-}
-
-// countCodexNewRows counts codex_api_requests archive rows whose unified
-// identity (the KindClaudeRequest fallback tuple — the archive has no
-// request_id column) does NOT already exist in api_requests. Input is
-// compared in normalized form: input - cache_read - cache_creation (>= 0).
-func countCodexNewRows(ctx context.Context, target *sql.DB, plan codexTablePlan) (int64, error) {
-	// NULL-safe IS comparisons mirror the staged identity predicate
-	// (stage.go identityColumnsPredicate) so the preview cannot overstate
-	// NewRows when either side holds NULL columns.
-	query := `
-		SELECT COUNT(*) FROM codex_api_requests AS c
-		WHERE NOT EXISTS (
-			SELECT 1 FROM api_requests AS t
-			WHERE t.timestamp IS c.timestamp
-			  AND t.session_id IS c.session_id
-			  AND t.prompt_id IS ''
-			  AND t.event_sequence IS c.event_sequence
-			  AND t.model IS c.model
-			  AND t.input_tokens IS MAX(c.input_tokens - c.cache_read_tokens - c.cache_creation_tokens, 0)
-			  AND t.output_tokens IS c.output_tokens
-			  AND t.duration_ms IS c.duration_ms
-		)`
-	var count int64
-	if err := target.QueryRowContext(ctx, query).Scan(&count); err != nil {
-		return 0, &MergeError{Code: ErrInspection, Table: plan.source, Err: err}
-	}
-	return count, nil
 }
 
 // MigrateCodexToAll runs the one-click migration: copy every archive row into

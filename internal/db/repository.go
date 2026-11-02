@@ -428,7 +428,7 @@ func (r *Repository) InsertRequest(ctx context.Context, req *APIRequest) (bool, 
 		select {
 		case <-ctx.Done():
 			return inserted, ctx.Err()
-		case <-time.After(time.Duration(25<<attempt) * time.Millisecond): // 25, 50, 100, 200ms
+		case <-time.After(time.Duration(25<<attempt) * time.Millisecond): // 25, 50, 100ms (the 200ms step is never reached)
 		}
 	}
 }

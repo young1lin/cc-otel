@@ -180,8 +180,12 @@ func (h *Handler) runCodexMigration() {
 	}
 	// Re-run the inspection AFTER the copy so the finished card shows the
 	// post-migration truth (all rows already merged) instead of the stale
-	// pre-run preview that promised them as new.
-	if post, perr := dbmerge.InspectCodexToAll(context.Background(), h.repo.DB()); perr == nil {
+	// pre-run preview that promised them as new. Bounded deadline: these run
+	// AFTER the migration ctx is done, so an unbounded Background() here
+	// could stall a shutdown join for as long as the inspection takes.
+	postCtx, postCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer postCancel()
+	if post, perr := dbmerge.InspectCodexToAll(postCtx, h.repo.DB()); perr == nil {
 		job.mu.Lock()
 		job.preview = post
 		job.mu.Unlock()
@@ -196,7 +200,7 @@ func (h *Handler) runCodexMigration() {
 	// The migration wrote a large burst through WAL; a passive checkpoint
 	// lets SQLite fold it back into the main DB file when idle (readers are
 	// never blocked; a busy WAL simply stays for the next checkpoint).
-	if _, err := h.repo.DB().ExecContext(context.Background(), `PRAGMA wal_checkpoint(PASSIVE)`); err != nil {
+	if _, err := h.repo.DB().ExecContext(postCtx, `PRAGMA wal_checkpoint(PASSIVE)`); err != nil {
 		log.Printf("codex migration wal checkpoint: %v", err)
 	}
 
