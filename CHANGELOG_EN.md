@@ -10,6 +10,9 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ### Fixed
 
+- **Duplicate-anchor redelivery ErrTxDone** (R5 rollback P1): insertCodexRowInTx committed inside the duplicate branch, so the caller's own commit raised sql.ErrTxDone and routine at-least-once redelivery answered 500. The helper never commits now (pinned by TestCodexE2E_DuplicateAnchorRedeliveryStaysOK: three identical anchors 200/200/200).
+- **bin→global merge schema-ensure wiring** (R5 rollback P1): import_global now calls ensureTargetSchema before importing, so an AllClient bin export merges into a still pre-AllClient production global instead of failing mid-merge on a missing column.
+
 - **OTLP delivery contract**: a batch where EVERY record fails storage now answers gRPC Internal / HTTP 500, so the batch is no longer acknowledged as delivered (retry behaviour is exporter-dependent; since nothing landed, a retry that does happen cannot duplicate rows); partial failures return PartialSuccess (rejected records are terminal per OTLP semantics — visible, not re-sent — so partially-landed rows cannot be duplicated).
 - **Codex completion replay double-count**: the replay guard matched timestamps exactly, but tracker-finalized rows keep the api_request's earlier timestamp — genuine redelivery slipped past and inserted a duplicate. Identity is now (session, model, full token vector) with a window match; e2e pins replay as a no-op.
 - **Retention-scoped migration sanity check**: daily_model_agg is retention-pruned while api_requests is not; the all-time comparison false-failed every re-run after the first post-migration prune. New `dbmerge.Options.RetentionDays` (handler injects config) + prune→re-migrate regression test.
