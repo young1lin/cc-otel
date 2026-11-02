@@ -261,6 +261,11 @@ func runMigrations(db *sql.DB) error {
 	_, err = db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_request_id ON api_requests(request_id) WHERE request_id != '';
 		CREATE INDEX IF NOT EXISTS idx_requests_timestamp ON api_requests(timestamp);
+		-- AllClient: every Codex read filters service_name + timestamp range;
+		-- without this the planner walks idx_requests_timestamp over the whole
+		-- (mostly Claude) window and row-fetches each candidate to test
+		-- service_name (EXPLAIN QUERY PLAN verified pre/post).
+		CREATE INDEX IF NOT EXISTS idx_requests_service_time ON api_requests(service_name, timestamp);
 		CREATE INDEX IF NOT EXISTS idx_requests_model ON api_requests(model);
 		CREATE INDEX IF NOT EXISTS idx_requests_session ON api_requests(session_id);
 		CREATE INDEX IF NOT EXISTS idx_requests_user ON api_requests(user_id);

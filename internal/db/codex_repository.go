@@ -124,7 +124,38 @@ func (r *Repository) getCodexAPIRequestByID(ctx context.Context, id int64) (*Cod
 // and false for the fallback INSERT. Either value lets the receiver drop the
 // matched in-memory tracker state.
 func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTokenUpdate) (bool, error) {
-	cutoff := u.Timestamp.Unix() - 300
+	// Same deferred read-then-write BUSY_SNAPSHOT race InsertRequest documents
+	// (repository.go): during an online import/migration a completion tx that
+	// straddles a batch commit gets SQLITE_BUSY immediately. Re-snapshotting
+	// is safe: every branch is idempotent (exact-row no-op, guarded fallback
+	// UPDATE, identity-checked fallback INSERT).
+	for attempt := 0; ; attempt++ {
+		handled, err := r.updateCodexTokensOnce(ctx, u)
+		if err == nil || attempt >= 3 || !isBusyErr(err) {
+			return handled, err
+		}
+		select {
+		case <-ctx.Done():
+			return handled, ctx.Err()
+		case <-time.After(time.Duration(25<<attempt) * time.Millisecond):
+		}
+	}
+}
+
+func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpdate) (bool, error) {
+	// Defense in depth against token-less completions (the per-poll SSE log
+	// record): an update that carries nothing must not fall through to the
+	// fallback INSERT and mint a phantom zero-token row.
+	if u.InputTokens == 0 && u.OutputTokens == 0 &&
+		u.CacheReadTokens == 0 && u.CacheCreationTokens == 0 &&
+		u.ReasoningTokens == 0 && u.TotalTokens == 0 &&
+		u.TTFTMs == 0 && u.DurationMs == 0 && u.CostUSD == 0 {
+		return true, nil
+	}
+	// 10 minutes: match the receiver-side tracker window (10 min lookup,
+	// 30 min eviction) so a tracker miss after a restart during a long stream
+	// still finds its pending row instead of double-inserting.
+	cutoff := u.Timestamp.Unix() - 600
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -159,10 +190,16 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	}
 
 	if rowID == 0 {
+		// Pending-row predicate must be as strict as the exact-row idempotency
+		// check above: input is stored NORMALIZED, so a fully-cached completion
+		// legitimately persists input=0; requiring all six token columns to be
+		// zero keeps finalized rows out of this match.
 		err = tx.QueryRowContext(ctx, `
 			SELECT id, timestamp FROM api_requests
 			WHERE session_id = ? AND model = ? AND service_name = ?
 			  AND input_tokens = 0 AND output_tokens = 0
+			  AND cache_read_tokens = 0 AND cache_creation_tokens = 0
+			  AND reasoning_tokens = 0 AND total_tokens = 0
 			  AND timestamp >= ?
 			ORDER BY id DESC LIMIT 1`,
 			u.SessionID, u.Model, CodexServiceName, cutoff,
@@ -172,6 +209,33 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 	if err == sql.ErrNoRows {
 		if commitErr := tx.Commit(); commitErr != nil {
 			return false, fmt.Errorf("commit empty codex update tx: %w", commitErr)
+		}
+		// Idempotent replay guard: OTLP delivery is at-least-once, and after
+		// the first completion finalizes its row (and the tracker entry is
+		// evicted), a byte-identical re-delivery would otherwise arrive here
+		// and insert a full duplicate — double-counting request_count, every
+		// token category, and cost in both api_requests and daily_model_agg.
+		// A duplicate carries the SAME event timestamp and token vector, so
+		// that tuple is the completion identity.
+		var dupID int64
+		dupErr := r.db.QueryRowContext(ctx, `
+			SELECT id FROM api_requests
+			WHERE session_id = ? AND model = ? AND service_name = ?
+			  AND timestamp = ?
+			  AND input_tokens = ? AND output_tokens = ?
+			  AND cache_read_tokens = ? AND cache_creation_tokens = ?
+			  AND reasoning_tokens = ? AND total_tokens = ?
+			LIMIT 1`,
+			u.SessionID, u.Model, CodexServiceName, u.Timestamp.Unix(),
+			u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens,
+			u.ReasoningTokens, u.TotalTokens,
+		).Scan(&dupID)
+		if dupErr == nil {
+			// Already applied — treat like the exact-row no-op.
+			return true, nil
+		}
+		if dupErr != sql.ErrNoRows {
+			return false, fmt.Errorf("codex completion identity check: %w", dupErr)
 		}
 		_, insertErr := r.InsertCodexAPIRequest(ctx, &CodexAPIRequest{
 			Timestamp:           u.Timestamp,
@@ -197,22 +261,38 @@ func (r *Repository) UpdateCodexAPIRequestTokens(ctx context.Context, u *CodexTo
 		return false, fmt.Errorf("lookup codex pending row: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	// Guard the fallback UPDATE: two concurrent completions can select the
+	// same pending row under WAL (readers don't block). Last-write-wins on the
+	// row is acceptable, but the agg deltas must apply EXACTLY once, so gate
+	// them on RowsAffected — the loser sees 0 and skips its deltas.
+	res, err := tx.ExecContext(ctx, `
 		UPDATE api_requests
 		SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
 		    cache_creation_tokens = ?, reasoning_tokens = ?, total_tokens = ?,
 		    cost_usd = ?,
 		    duration_ms = CASE WHEN ? > 0 THEN ? ELSE duration_ms END,
 		    ttft_ms = CASE WHEN ? > 0 THEN ? ELSE ttft_ms END
-		WHERE id = ?`,
+		WHERE id = ? AND input_tokens = 0 AND output_tokens = 0
+		  AND cache_read_tokens = 0 AND cache_creation_tokens = 0
+		  AND reasoning_tokens = 0 AND total_tokens = 0`,
 		u.InputTokens, u.OutputTokens, u.CacheReadTokens,
 		u.CacheCreationTokens, u.ReasoningTokens, u.TotalTokens,
 		costToInt64(u.CostUSD),
 		u.DurationMs, u.DurationMs,
 		u.TTFTMs, u.TTFTMs,
 		rowID,
-	); err != nil {
+	)
+	if err != nil {
 		return false, fmt.Errorf("update codex tokens: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// Someone else finalized this row between our SELECT and UPDATE.
+		// Commit as an idempotent no-op without agg deltas.
+		if commitErr := tx.Commit(); commitErr != nil {
+			return false, fmt.Errorf("commit raced codex update: %w", commitErr)
+		}
+		return true, nil
 	}
 
 	dateKey := time.Unix(rowTs, 0).Local().Format("2006-01-02")
@@ -412,28 +492,26 @@ func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, 
 	return err
 }
 
-// GetCodexDashboard mirrors GetDashboardForRange but reads the unified
-// api_requests pool filtered to Codex rows. Since the merge, input_tokens is
-// stored normalized (uncached), so the cache-hit denominator matches the
-// Claude-side formula input+cache_read.
+// GetCodexDashboard mirrors GetDashboardForRange but filtered to Codex
+// rows. It reads daily_model_agg (service_name='codex' rows are maintained
+// transactionally by the live receiver and the migration) instead of
+// scanning raw api_requests — the same trade the Claude dashboard makes
+// (agg rows are pruned to the retention window by Cleanup). Since the merge,
+// input_tokens is stored normalized (uncached), so the cache-hit denominator
+// matches the Claude-side formula input+cache_read.
 func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*Dashboard, error) {
-	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
-	if err != nil {
-		return nil, err
-	}
-
 	d := &Dashboard{}
 	var costUnits int64
-	err = r.db.QueryRowContext(ctx, `
+	err := r.db.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(SUM(cost_usd), 0),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
-			COUNT(*)
-		FROM api_requests
-		WHERE service_name = ? AND timestamp >= ? AND timestamp < ?`,
-		CodexServiceName, fromUnix, toUnix,
+			COALESCE(SUM(request_count), 0)
+		FROM daily_model_agg
+		WHERE service_name = ? AND date >= ? AND date <= ?`,
+		CodexServiceName, from, to,
 	).Scan(&costUnits, &d.TotalInputTokens, &d.TotalCacheReadTokens, &d.TotalOutputTokens, &d.RequestCount)
 	if err != nil {
 		return nil, err
@@ -446,21 +524,19 @@ func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*D
 }
 
 // GetCodexDailyStatsByModel returns per-(date, model) rollup rows with total
-// count, reading the unified pool filtered to Codex rows.
+// count, reading daily_model_agg filtered to Codex rows (same retention
+// trade as the Claude-side daily stats) instead of scanning raw
+// api_requests rows in the window.
 func (r *Repository) GetCodexDailyStatsByModel(ctx context.Context, from, to string, limit, offset int, granularity string) ([]DailyModelSummary, int64, error) {
-	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
-	if err != nil {
-		return nil, 0, err
-	}
-	dateExpr := dateExprForGranularity(granularity)
+	dateExpr := aggDateExpr(granularity)
 
 	var total int64
 	if err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM (
-			SELECT 1 FROM api_requests
-			WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
+			SELECT 1 FROM daily_model_agg
+			WHERE service_name = ? AND date >= ? AND date <= ?
 			GROUP BY %s, model
-		)`, dateExpr), CodexServiceName, fromUnix, toUnix).Scan(&total); err != nil {
+		)`, dateExpr), CodexServiceName, from, to).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -471,13 +547,13 @@ func (r *Repository) GetCodexDailyStatsByModel(ctx context.Context, from, to str
 		       COALESCE(SUM(output_tokens), 0),
 		       COALESCE(SUM(cache_read_tokens), 0),
 		       COALESCE(SUM(cache_creation_tokens), 0),
-		       COUNT(*)
-		FROM api_requests
-		WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
+		       COALESCE(SUM(request_count), 0)
+		FROM daily_model_agg
+		WHERE service_name = ? AND date >= ? AND date <= ?
 		GROUP BY d, model
 		ORDER BY d DESC, model
 		LIMIT ? OFFSET ?`, dateExpr),
-		CodexServiceName, fromUnix, toUnix, limit, offset,
+		CodexServiceName, from, to, limit, offset,
 	)
 	if err != nil {
 		return nil, 0, err

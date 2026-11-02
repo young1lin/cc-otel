@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -246,7 +247,16 @@ type Repository struct {
 func NewRepository(db *sql.DB) *Repository {
 	r := &Repository{db: db}
 
-	r.stmtInsReq, _ = db.Prepare(`
+	// A Prepare failure leaves a nil *sql.Stmt; every later Exec panics.
+	// schema drift must surface as a clear startup log, not a runtime 500.
+	prepare := func(target **sql.Stmt, label, query string) {
+		stmt, err := db.Prepare(query)
+		if err != nil {
+			log.Printf("repository: prepare %s failed: %v — falling back to per-call prepare", label, err)
+		}
+		*target = stmt
+	}
+	prepare(&r.stmtInsReq, "insert request", `
 		INSERT OR IGNORE INTO api_requests
 			(timestamp, session_id, user_id, prompt_id, prompt_length,
 			 model, actual_model, input_tokens, output_tokens,
@@ -274,7 +284,7 @@ func NewRepository(db *sql.DB) *Repository {
 	// stmtInsReq/stmtUpsAgg), once for codex.sse_event(response.completed)
 	// (token/cost/duration deltas, request_count unchanged). Keeping the two
 	// paths on separate UPSERTs is what stops a request from double-counting.
-	r.stmtUpsAggToks, _ = db.Prepare(`
+	prepare(&r.stmtUpsAggToks, "upsert agg tokens", `
 		INSERT INTO daily_model_agg (date, model, service_name, input_tokens, output_tokens,
 			cache_read_tokens, cache_creation_tokens, cost_usd, request_count)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
