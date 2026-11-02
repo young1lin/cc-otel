@@ -204,6 +204,15 @@ func (h *Handler) ImportStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.JobID = strings.TrimSpace(request.JobID)
+	// Mutual exclusion with the codex migration: both drive the staged
+	// import pipeline against the same live DB.
+	h.codexMigrate.mu.Lock()
+	migrationRunning := h.codexMigrate.running
+	h.codexMigrate.mu.Unlock()
+	if migrationRunning {
+		writeAPIError(w, http.StatusConflict, "migration_in_progress", "The Codex migration is running; start the database import after it finishes", nil)
+		return
+	}
 	status, err := manager.start(request.JobID)
 	switch {
 	case errors.Is(err, errImportNotFound):

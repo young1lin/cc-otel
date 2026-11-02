@@ -140,6 +140,15 @@ func newImportManager(
 	return m, nil
 }
 
+// HasActiveJob reports whether an import job currently occupies the
+// staged-import writer (inspecting/ready/importing). The codex migration
+// and file imports must not run concurrently against the live DB.
+func (m *importManager) HasActiveJob() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.job != nil && (m.job.State == importInspecting || m.job.State == importReady || m.job.State == importImporting)
+}
+
 func (m *importManager) reserveUpload(originalName string) (uploadReservation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

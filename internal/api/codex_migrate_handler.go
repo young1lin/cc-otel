@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -29,6 +30,13 @@ type codexMigrationJob struct {
 	lastResult *dbmerge.Result
 	err        string
 }
+
+// Terminal migration phases. dbmerge's own phase values are all mid-run;
+// pollers need to distinguish a finished job from one stuck in verify.
+const (
+	PhaseMigrateDone   dbmerge.Phase = "done"
+	PhaseMigrateFailed dbmerge.Phase = "failed"
+)
 
 type codexMigrationStatus struct {
 	Running    bool                             `json:"running"`
@@ -67,6 +75,21 @@ func (h *Handler) CodexMigrate(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(job.snapshot())
 		return
 	case http.MethodPost:
+		if h.repo == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "repository_unavailable", "repository not initialized", nil)
+			return
+		}
+		// The codex migration and file imports both write the live DB through
+		// the same staged pipeline; run one at a time (each pins a pool conn
+		// and holds BEGIN IMMEDIATE batches — same-file concurrent writers are
+		// the exact pattern the dedicated read-only source guards against).
+		h.importsMu.Lock()
+		imports := h.imports
+		h.importsMu.Unlock()
+		if imports != nil && imports.HasActiveJob() {
+			writeAPIError(w, http.StatusConflict, "import_in_progress", "A database import is running; start the Codex migration after it finishes", nil)
+			return
+		}
 		job.mu.Lock()
 		if job.running {
 			job.mu.Unlock()
@@ -79,9 +102,15 @@ func (h *Handler) CodexMigrate(w http.ResponseWriter, r *http.Request) {
 		job.phase = dbmerge.PhaseInspecting
 		job.table = ""
 		job.total, job.processed, job.inserted, job.duplicates = 0, 0, 0, 0
+		job.preview = nil
+		job.lastResult = nil
 		job.err = ""
 		job.mu.Unlock()
-		go h.runCodexMigration()
+		h.migrateWG.Add(1)
+		go func() {
+			defer h.migrateWG.Done()
+			h.runCodexMigration()
+		}()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(job.snapshot())
 		return
@@ -97,17 +126,29 @@ func (h *Handler) runCodexMigration() {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	fail := func(err error) {
+	// Hard deadline: a wedged migration must not hold running=true (and 409
+	// every future POST) forever. 30 minutes covers the largest archives.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	fail := func(err error, result *dbmerge.Result) {
 		job.mu.Lock()
 		job.running = false
 		job.finishedAt = time.Now().Unix()
+		job.phase = PhaseMigrateFailed
+		if result != nil {
+			// Batches committed before the failure are durable and
+			// idempotent-safe; surface what actually landed.
+			job.lastResult = result
+		}
 		job.err = err.Error()
 		job.mu.Unlock()
+		// Partial commits may have changed the pool: refresh dashboards.
+		h.broker.NotifySource("all")
 	}
 
 	preview, err := dbmerge.InspectCodexToAll(ctx, h.repo.DB())
 	if err != nil {
-		fail(err)
+		fail(err, nil)
 		return
 	}
 	job.mu.Lock()
@@ -127,19 +168,37 @@ func (h *Handler) runCodexMigration() {
 		job.duplicates = p.DuplicateRows
 		job.mu.Unlock()
 	}
+	// TotalRows from the preview above: skips the expensive re-inspect
+	// (a NOT EXISTS anti-join over the whole archive) inside MigrateCodexToAll.
 	result, err := dbmerge.MigrateCodexToAll(ctx, h.repo.DB(), dbmerge.Options{
-		Progress: progress,
+		Progress:  progress,
+		TotalRows: job.total,
 	})
 	if err != nil {
-		fail(err)
+		fail(err, &result)
 		return
+	}
+	// Re-run the inspection AFTER the copy so the finished card shows the
+	// post-migration truth (all rows already merged) instead of the stale
+	// pre-run preview that promised them as new.
+	if post, perr := dbmerge.InspectCodexToAll(context.Background(), h.repo.DB()); perr == nil {
+		job.mu.Lock()
+		job.preview = post
+		job.mu.Unlock()
 	}
 	job.mu.Lock()
 	job.running = false
 	job.finishedAt = time.Now().Unix()
-	job.phase = dbmerge.PhaseVerifying
+	job.phase = PhaseMigrateDone
 	job.lastResult = &result
 	job.mu.Unlock()
+
+	// The migration wrote a large burst through WAL; a passive checkpoint
+	// lets SQLite fold it back into the main DB file when idle (readers are
+	// never blocked; a busy WAL simply stays for the next checkpoint).
+	if _, err := h.repo.DB().ExecContext(context.Background(), `PRAGMA wal_checkpoint(PASSIVE)`); err != nil {
+		log.Printf("codex migration wal checkpoint: %v", err)
+	}
 
 	// The unified pool changed: refresh every open dashboard.
 	h.broker.NotifySource("all")

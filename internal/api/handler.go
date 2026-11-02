@@ -63,7 +63,13 @@ type PagedResponse struct {
 var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 func isValidDate(s string) bool {
-	return dateRe.MatchString(s)
+	// Shape first (cheap), then calendar validity: 2026-13-01 matches the
+	// regex but must not leak into repo queries that time.Parse it (a 500).
+	if !dateRe.MatchString(s) {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", s)
+	return err == nil
 }
 
 func parsePage(r *http.Request) (page, pageSize int) {
@@ -71,6 +77,11 @@ func parsePage(r *http.Request) (page, pageSize int) {
 	if v := r.URL.Query().Get("page"); v != "" {
 		if n, _ := strconv.Atoi(v); n > 0 {
 			page = n
+			// Clamp hostile offsets: a page of 10^9 would push OFFSET past
+			// any integer the query planner treats sanely.
+			if page > 1_000_000 {
+				page = 1_000_000
+			}
 		}
 	}
 	if v := r.URL.Query().Get("page_size"); v != "" {
@@ -123,6 +134,7 @@ type Handler struct {
 	recompute     *recomputeJob   // singleton background recompute; never nil after NewHandler
 	shutdownCtx   context.Context // cancels the background recompute goroutine on shutdown
 	codexMigrate  *codexMigrationJob // singleton AllClient migration job; never nil after NewHandler
+	migrateWG     sync.WaitGroup     // tracks the migration goroutine so Close can join it
 
 	// otlpHTTPBound reports whether THIS process owns the OTLP/HTTP listener.
 	// A TCP probe cannot tell that apart from some other program squatting on
@@ -188,7 +200,9 @@ func (h *Handler) InitImports() error {
 	return h.importInitErr
 }
 
-// Close cancels active inspection/import work and waits for file users to exit.
+// Close cancels active inspection/import work and waits for file users to
+// exit, then joins the AllClient migration goroutine so a migration in
+// flight finishes (or its context cancels) before the DB is torn down.
 func (h *Handler) Close() {
 	h.importsMu.Lock()
 	manager := h.imports
@@ -196,6 +210,7 @@ func (h *Handler) Close() {
 	if manager != nil {
 		manager.close()
 	}
+	h.migrateWG.Wait()
 }
 
 // Register wires all API and static-file routes onto the given ServeMux.
@@ -240,9 +255,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Embedded static files reflect the tree at compile time. For local UI edits without
 	// rebuilding, set CC_OTEL_STATIC_DIR to the static folder (e.g. internal/web/static).
+	// Assets carry no content hash in their names, so browsers must revalidate
+	// on every load — a cached app.js otherwise pins a UI to an old build after
+	// a daemon upgrade (no-cache still allows disk cache + 304s).
+	wrapStatic := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache")
+			h.ServeHTTP(w, r)
+		})
+	}
 	if dir := strings.TrimSpace(os.Getenv("CC_OTEL_STATIC_DIR")); dir != "" {
 		log.Printf("web UI: serving static from disk %q (CC_OTEL_STATIC_DIR)", dir)
-		mux.Handle("/", http.FileServer(http.Dir(dir)))
+		mux.Handle("/", wrapStatic(http.FileServer(http.Dir(dir))))
 		return
 	}
 
@@ -250,7 +274,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	if err != nil {
 		log.Printf("failed to create static FS: %v", err)
 	}
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("/", wrapStatic(http.FileServer(http.FS(staticFS))))
 }
 
 // Health reports database connectivity (200 ok, 503 error).
@@ -818,9 +842,8 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 // Clients returns per-client (service_name) token/cost aggregates for a date
 // range — the "which client consumed what" table behind the Clients panel.
 // Range parsing mirrors Dashboard (range=all|today|week|month + from/to
-// overrides). This reads api_requests (the never-pruned ledger) in the
-// merged non-Codex pool; Codex keeps its own tables and its tab hides the
-// panel.
+// overrides). This reads api_requests — the never-pruned unified pool that
+// now includes migrated and live Codex rows (service_name='codex').
 func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.repo == nil {
@@ -850,7 +873,7 @@ func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 // the selected date range — the pivot input for the Hour of Day view
 // ("how many Claude Opus tokens at 13:00, from Claude Code"). The client
 // stacks by model or client; hours with no data are simply absent rows.
-// Reads api_requests, i.e. the merged non-Codex pool.
+// Reads api_requests — the unified pool including Codex rows.
 func (h *Handler) Hours(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.repo == nil {
