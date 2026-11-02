@@ -24,10 +24,10 @@ English summary at the bottom.
 
 ## 发布流程（打 tag 触发）
 
-`v*` tag → `release.yml` 两个 job：
+`v*` tag → `publish.yml` 两个 job：
 
 1. `goreleaser`：照旧构建 6 平台归档 + checksums 上传 GitHub Release（**原有发布方式零改动**）。
-2. `npm`：`gh release download` 拉取刚上传的归档 → `scripts/build-npm.mjs` 组装 `dist/npm`（版本号注入、二进制 `chmod 755`）→ 逐包 `npm publish --access public`。预发布版本（如 `v1.2.3-rc.1`）以 `--tag next` 发布。
+2. `npm`：`gh release download` 拉取刚上传的归档 → `scripts/build-npm.mjs` 组装 `dist/npm`（版本号注入、二进制 `chmod 755`）→ 逐包 `npm publish --access public --provenance`（`--provenance` 触发取 OIDC token，Trusted Publishing 搭同一趟车）。预发布版本（如 `v1.2.3-rc.1`）以 `--tag next` 发布。
 
 **认证：npm Trusted Publishing（OIDC），全程无 NPM_TOKEN。** GitHub Actions 的 OIDC 令牌直接向 npm 证明本 workflow 的身份（与 dsh-cc 的 publish.yml 同一套方案），provenance 由 npm 自动生成。一次性引导（每个包都要做，共 7 个）：
 
@@ -36,9 +36,9 @@ English summary at the bottom.
    node scripts/build-npm.mjs --version <X.Y.Z> --artifacts dist/release --out dist/npm
    for d in dist/npm/*/; do (cd "$d" && npm publish --access public); done   # npm 会要求 OTP 验证码
    ```
-2. 到 npmjs.com 逐个包 **Settings → Trusted publishing** 添加绑定：user `young1lin` / repo `cc-otel` / workflow `release.yml`。
+2. 到 npmjs.com 逐个包 **Settings → Trusted publishing** 添加绑定：user `young1lin` / repo `cc-otel` / workflow `publish.yml`（**文件名必须与仓库里的完全一致**——GitHub OIDC claim 携带的是工作流文件名，不一致时 token 交换失败、npm 报 ENEEDAUTH）。
 
-绑定完成后，此后所有 `vX.Y.Z` tag 直接由 `release.yml` 的 `npm` job 免密发布。注意 Trusted Publishing 需要 **npm ≥ 11.5.1**（workflow 用 Node 24 并在版本不足时自动升级 npm）。
+绑定完成后，此后所有 `vX.Y.Z` tag 直接由 `publish.yml` 的 `npm` job 免密发布。注意 Trusted Publishing 需要 **npm ≥ 11.5.1**（workflow 用 Node 24 并在版本不足时自动升级 npm）。
 
 版本号规则：npm 版本 = git tag 去掉 `v` 前缀，与 goreleaser 版本一致；仓库内 `package.json` 永远写 `0.0.0` 占位，由组装脚本注入，避免发布后回改仓库。
 
