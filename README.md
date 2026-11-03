@@ -195,6 +195,8 @@ Claude Code 内置 OTEL SDK，通过 **OTLP**（OpenTelemetry Protocol，标准�
 - 每个 `claude_code.api_request` 日志事件携带一次 API 调用的完整信息（model、tokens、cost、duration、session.id、user.id 等 resource + record attributes），被落库到 `api_requests` 表。
 - `claude_code.token.usage`、`claude_code.cost.usage` 等 Metrics 接收时被显式跳过持久化（与 `api_request` log 数据冗余），仅用于不让客户端报错。
 - Trace span 用于抽取 `ttft_ms` 并回填到统一池 `api_requests` 的对应列；codex 的 `turn_ttft` 事件走同样的列（见下）。
+- **历史自动导入 + 30 天清理**：daemon 启动时（服务器绑定前、单写者窗口内）自动把 `codex_*` 冻结归档经标准迁移引擎导入统一池，并以精确行号区间记录（`codex_auto_import_ranges`）；已手动迁移过的库走零成本快路径（只记 marker 不重导，避免复活被剪枝的子事件行）。导入 **30 天后**自动删除这些区间、重建聚合、marker 置 purged——归档本体永不触碰，之后不再自动导入（手动按钮仍可主动重导）。
+- **导入弹窗支持历史 Codex 备份**：上传文件含 `codex_*` 归档时，现代文件在通用导入后追加归档映射；统一表结构过老（pre-AllClient）的 legacy 文件整体路由到 codex→统一映射（预览带 legacy 警告）。归档缺列自动以类型化常量补齐（古老 `tool_tokens` 拼写自动别名），token 归一化与在线路径一致，幂等可重跑。
 - `codex.turn_ttft`（回合级首输出时延）直接建模：对同（conversation, model）事件时间之前最新的零 TTFT 锚点行做**只填不清**的 `ttft_ms` 回填 —— completion 自带的 `ttft_ms` 是 Option（非流式/瞬时响应缺省），该事件常常是唯一的 TTFT 来源；权威 completion 带 ttft 时仍以后者为准。还会把 `codex_raw_otlp_events` 的历史行复制进来（同样受 TTL 约束）。`codex_raw_otlp_events` 是合并前的冻结存档，**无任何写入者**，仅由迁移读取。两者 schema 兼容已有 backfill 工具。
 
 **2. 存储（`internal/db/`）**

@@ -28,6 +28,9 @@
 - **OTLP/HTTP 接收器跨源防护**（R5）：浏览器跨源 POST（简单 content-type 也可驱动）现被 Origin 校验拒绝 403；真实导出端从不携带 Origin，零兼容性影响（originutil 单一实现，与仪表盘守卫共享端口感知比较）。
 - **405 补 `Allow` 头**（RFC 9110）：`/api/pricing`、`/api/pricing/recompute`、`/api/pricing/suggest`。
 - **文档纠偏**：raw 表写入方向纠正（`raw_otlp_events` 收 codex 未建模事件并受 TTL；`codex_raw_otlp_events` 为冻结存档、无写入者）、retention_days 注释不再误列 `api_requests`、“AllClient 页”幻影指针全部改为 DB 导入对话框中的实际按钮。
+- **Codex 历史自动导入 + 30 天清理**：启动时自动导入 `codex_*` 归档（单写者窗口内、精确行号区间记录；已迁移库零成本快路径），30 天后自动清除导入行并重建聚合；归档冻结不变。钉 TestAutoImport_* 四态。
+- **导入弹窗支持历史 Codex 备份**：legacy 文件（统一表结构过老）整体路由 codex→统一映射、现代文件追加归档映射；缺列类型化常量补齐 + `tool_tokens` 别名；归一化/幂等与在线一致。钉 TestImportLegacyCodexBackupLandsInUnifiedTables（活体 18899 全链路实测：500 含 cache→300 disjoint、tool_result 缺列默认、重传 0 新增）。
+- **turn_ttft 竞态**：OTLP 导出乱序时 turn 事件先于锚点到达，一次性 UPDATE 落空——现暂存（10min TTL）并在锚点插入时重试；实测修复前 1/2 行丢 ttft，修复后 3/3 全捕获。钉 TestCodexE2E_TurnTTFTBeforeAnchorIsStashedAndRetried。
 - **Codex TTFT 补齐**：`codex.turn_ttft`（回合级首输出时延）现在直接建模——completion 的 `ttft_ms` 是 Option（非流式/瞬时响应缺省，实测 30,735 行仅 27% 有值），turn 事件对同（conversation, model）事件时间前最新的零 TTFT 锚点行做只填不清回填；权威 completion 带 ttft 时仍以后者为准（四种时序钉 TestCodexE2E_TurnTTFTFillsAnchor）。
 - **重复锚点重投 ErrTxDone**（R5 rollback P1）：`insertCodexRowInTx` 在重复分支内部 commit，调用方再 commit 一次导致 `sql.ErrTxDone` —— 例行的至少一次投递重发返回 500。helper 现永不 commit（钉 TestCodexE2E_DuplicateAnchorRedeliveryStaysOK：三次相同锚点 200/200/200）。
 - **bin→global 合并 schema 升级接线**（R5 rollback P1）：`import_global` 现在导入前调用 `ensureTargetSchema`，AllClient 导出可并入仍为 pre-AllClient schema 的生产 global，不再因缺列中途失败。reation，旧公式显著高估）。
