@@ -281,6 +281,115 @@ func TestDispatchCodexLog_APIRequestFailureKeepsReportedDuration(t *testing.T) {
 	}
 }
 
+func TestDispatchCodexLog_SSECreatedFillsPerRequestTTFT(t *testing.T) {
+	// Regression (2026-11-03 live finding): the SSE transport (codex exec /
+	// HTTP-SSE) never reconstructed TTFT from response.created, so in a
+	// tool-loop turn only the first request got TTFT — from the turn-level
+	// codex.turn_ttft — and every later request stayed at 0. Both requests
+	// must now get their own per-request TTFT.
+	repo := newCodexReceiverRepo(t)
+	ctx := context.Background()
+	tracker := newCodexSpanTracker()
+	res := &resourcepb.Resource{Attributes: []*commontpb.KeyValue{
+		attr("service.name", "codex-cli"),
+	}}
+	base := time.Date(2026, 11, 3, 14, 25, 0, 0, time.Local)
+	dispatch := func(when time.Time, attrs ...*commontpb.KeyValue) {
+		t.Helper()
+		dispatchCodexLog(ctx, repo, &logspb.LogRecord{
+			TimeUnixNano:         uint64(when.UnixNano()),
+			ObservedTimeUnixNano: uint64(when.UnixNano()),
+			Attributes:           attrs,
+		}, res, nil, tracker, nil, nil)
+	}
+
+	// Request 1: dispatched at +100ms with 100ms setup (start = base).
+	dispatch(base.Add(100*time.Millisecond),
+		attr("event.name", "codex.api_request"),
+		attr("conversation.id", "sse-ttft-conv"),
+		attr("model", "glm-5.3"),
+		attrInt("duration_ms", 100),
+		attrInt("http.response.status_code", 200),
+	)
+	// First output at +600ms → TTFT #1 = 500ms.
+	dispatch(base.Add(600*time.Millisecond),
+		attr("event.name", "codex.sse_event"),
+		attr("event.kind", "response.created"),
+		attr("conversation.id", "sse-ttft-conv"),
+		attr("model", "glm-5.3"),
+	)
+	// Completion at +2300ms (usage-bearing).
+	dispatch(base.Add(2300*time.Millisecond),
+		attr("event.name", "codex.sse_event"),
+		attr("event.kind", "response.completed"),
+		attr("conversation.id", "sse-ttft-conv"),
+		attr("model", "glm-5.3"),
+		attrInt("input_token_count", 90),
+		attrInt("output_token_count", 12),
+	)
+	// Request 2 (tool loop): dispatched at +3000ms with 50ms setup
+	// (start = +2950ms).
+	dispatch(base.Add(3000*time.Millisecond),
+		attr("event.name", "codex.api_request"),
+		attr("conversation.id", "sse-ttft-conv"),
+		attr("model", "glm-5.3"),
+		attrInt("duration_ms", 50),
+		attrInt("http.response.status_code", 200),
+	)
+	// First output at +3400ms → TTFT #2 = 450ms (the previously-lost case).
+	dispatch(base.Add(3400*time.Millisecond),
+		attr("event.name", "codex.sse_event"),
+		attr("event.kind", "response.created"),
+		attr("conversation.id", "sse-ttft-conv"),
+		attr("model", "glm-5.3"),
+	)
+	dispatch(base.Add(5000*time.Millisecond),
+		attr("event.name", "codex.sse_event"),
+		attr("event.kind", "response.completed"),
+		attr("conversation.id", "sse-ttft-conv"),
+		attr("model", "glm-5.3"),
+		attrInt("input_token_count", 30),
+		attrInt("output_token_count", 4),
+	)
+
+	rows, err := repo.DB().QueryContext(ctx, `
+		SELECT timestamp, ttft_ms FROM api_requests
+		WHERE service_name = 'codex' AND session_id = 'sse-ttft-conv'
+		ORDER BY timestamp`)
+	if err != nil {
+		t.Fatalf("query rows: %v", err)
+	}
+	defer rows.Close()
+	var got []struct {
+		ts   int64
+		ttft int64
+	}
+	for rows.Next() {
+		var r struct {
+			ts   int64
+			ttft int64
+		}
+		if err := rows.Scan(&r.ts, &r.ttft); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 request rows, got %d", len(got))
+	}
+	// Request start = dispatch(+100ms) - setup(100ms) = base; first
+	// output at +600ms → TTFT #1 = 600ms (setup time is part of TTFT,
+	// same semantics as the websocket path's startNanos).
+	if got[0].ttft != 600 {
+		t.Fatalf("request 1 ttft = %d ms, want 600", got[0].ttft)
+	}
+	// Request start = +3000ms - 50ms setup = +2950ms; first output at
+	// +3400ms → TTFT #2 = 450ms (the previously-lost case).
+	if got[1].ttft != 450 {
+		t.Fatalf("request 2 ttft = %d ms, want 450 (tool-loop requests must not stay at 0)", got[1].ttft)
+	}
+}
+
 func TestDispatchCodexLog_SSECompletedPersistsAccountingAndFullDuration(t *testing.T) {
 	repo := newCodexReceiverRepo(t)
 	ctx := context.Background()

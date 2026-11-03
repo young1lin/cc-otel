@@ -541,6 +541,37 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		return true
 
 	case "codex.sse_event":
+		if eventKindFromLog(lr, attrs) == "response.created" {
+			// First output signal of an HTTP-SSE request. The pending api_request
+			// anchor (recorded at request dispatch, codex.api_request case above)
+			// gives an exact PER-REQUEST TTFT — the same reconstruction the
+			// websocket transport gets from codex.websocket_event. Without this
+			// branch, only the turn-level codex.turn_ttft fills TTFT, and in a
+			// tool-loop turn (N requests, 1 turn_ttft) every request after the
+			// first stays at 0 forever (live-verified against 0.160.0 on
+			// 2026-11-03: 4-of-6 and 3-of-4 rows per turn had ttft_ms=0).
+			if tracker != nil {
+				observedNanos := codexLogObservedUnixNanos(lr)
+				if observedNanos == 0 {
+					observedNanos = ts.UnixNano()
+				}
+				_, info, found := tracker.lookupRequest(
+					spanIDFromLog(lr), attrs["conversation.id"], attrs["model"],
+					observedNanos, 10*time.Minute,
+				)
+				if found {
+					ttftMs := (observedNanos - info.startNanos) / int64(time.Millisecond)
+					if ttftMs > 0 {
+						if err := repo.UpdateCodexRequestTTFT(
+							ctx, info.rowID, info.sessionID, info.model, ts, ttftMs,
+						); err != nil {
+							log.Printf("failed to update codex sse ttft (session=%s): %v", info.sessionID, err)
+						}
+					}
+				}
+			}
+			return false
+		}
 		if eventKindFromLog(lr, attrs) == "response.completed" {
 			upd := &db.CodexTokenUpdate{
 				SessionID:           attrs["conversation.id"],
