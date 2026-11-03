@@ -52,6 +52,7 @@
 - **文档双 tab 语义纠正**（R5 文档）：README 双语重写为 All Clients（不含 Codex）+ Codex 双标签；补 `bind_host` 配置节与升级须知；otel-events.md 存储映射更新为统一池口径。
 
 ### 变更
+- **修复 Codex 每请求 TTFT 缺失**：HTTP-SSE 传输（codex exec）此前从不为单个请求重建 TTFT——轮级 `codex.turn_ttft` 只能填工具循环轮的第一个请求，后续请求永远为 0（线上实测每轮 6 行有 4 行为 0）。现在 `response.created` 观测时间减去 pending `api_request` 的 startNanos 锚点为每个请求精确重建，与 websocket 路径同构（修复后线上实测 6/6 行全部有值）。
 - **单一统一视图（用户裁定的最终形态）**：`claude_pool_*` 视图不再排除 codex，KPI/图表/Sessions/Request Log/Clients/Hour of Day/Rate 全部覆盖含 Codex 在内的所有客户端；移除顶部 All Clients | Codex 标签页，`?source=` 旧深链加载时静默改写为普通 URL；Hour of Day 与 Rate、Clients 恒可用（此前在 Codex 标签下被隐藏）；SSE 任意来源事件均触发刷新。`/api/codex/*` 镜像端点保留（外部脚本用），仪表盘自身不再调用。
 - **`bind_host` 回环默认（升级注意）**：三个监听器（4317/4318/8899）默认从 `0.0.0.0` 收紧为 `127.0.0.1`，并启用 Host 白名单（仅 127.0.0.1/localhost/[::1]）。跨机器上报或远程访问的部署升级后需在 yaml 显式设 `bind_host: 0.0.0.0`（此时白名单自动停用，注意无内建鉴权）。详见 README 监听地址一节。
 
