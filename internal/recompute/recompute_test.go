@@ -137,12 +137,11 @@ func TestRun_CodexSubtractsCacheRead(t *testing.T) {
 	}
 }
 
-// TestRun_ScopedRebuildDoesNotResurrectPrunedAgg pins the R4 integrity F4
-// fix: an unscoped rebuild recomputed daily_model_agg from never-pruned
-// api_requests, resurrecting agg rows older than the retention window that
-// the startup Cleanup had deleted — dashboards showed out-of-retention data
-// until the next restart re-pruned. With RetentionDays the rebuild must
-// delete+rebuild only in-window dates.
+// TestRun_FullRangeRebuildMirrorsDetail pins the all-time-agg semantics
+// fixed in the merge reviews: daily_model_agg is never retention-pruned
+// (matching never-pruned api_requests), so the rebuild always covers the
+// full range and RetentionDays must NOT scope it — the rebuilt agg has to
+// mirror the detail table's span exactly.
 func TestRun_FullRangeRebuildMirrorsDetail(t *testing.T) {
 	db := newDB(t)
 	fresh := time.Now().Add(-1 * time.Hour)

@@ -30,7 +30,30 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 - **pending_ttft_spans purge**: processed/stale rows ride the raw TTL sweep (previously grew forever); raw archive future timestamps clamp to now.
 - **Codex cache-hit denominator aligned**: includes cache_creation like the Claude view and frontend token-math (Codex reports large cache_creation; the old formula overestimated).
 
+- **DSH path clamps both ends** (R5 P0): integer fields in DSH session-ledger body JSON bypassed parseAttrInt and could land raw as MaxInt64 counters / year-2262 timestamps; both sides now clamped.
+- **recompute agg rebuild is always full-range** (R5 P1, wording fix): daily_model_agg is no longer retention-pruned (matching never-pruned api_requests); INSERT-only rebuilds cannot resurrect anything and All-time views span the detail exactly. RetentionDays does not scope the rebuild; the post-migration sanity check alone stays conservatively window-scoped.
+- **`/api/requests` gains five unified-pool fields** (R5 API P1): reasoning_tokens/total_tokens/http_status/endpoint/conversation_id are now selected for real.
+- **OTLP/HTTP receiver cross-origin guard** (R5): cross-origin browser POSTs (even with simple content types) are rejected 403 via Origin checks; real exporters never send Origin and are unaffected.
+- **405 responses carry `Allow`** (RFC 9110): on /api/pricing, /api/pricing/recompute, /api/pricing/suggest.
+- **Docs corrections**: raw-table write direction fixed (raw_otlp_events receives unmodeled codex events under TTL; codex_raw_otlp_events is a frozen archive with no writers).
+- **Boot ANALYZE replaced by `PRAGMA optimize`** (R4 boot perf): full-DB ANALYZE measured 85-95% of every boot (1.4-1.85s on the 535MB DB); `PRAGMA optimize` with fresh stats measured 1ms. Boot drops from 1.46s to ~0.2s.
+- **`temp_store` switched to FILE** (R4 memory): TEMP b-trees and migration staging tables used to live in the wasm linear heap that never returns memory; on-disk temp stops the permanent RSS ratchet.
+- **BUSY retry coverage for write paths** (R4 concurrency): 7 bare `ExecContext` call sites now share `execWithBusyRetry` like the receiver path.
+- **recompute mutually exclusive with import/migration** (R4 concurrency): recompute, import and codex-migrate gate on `writerBusMu`; heavy writers no longer fight over the busy_timeout window (conflicts answer 409 `writer_busy`).
+- **SSE refresh coalescing + durations on demand** (R4 frontend): SSE refresh rounds carry an in-flight guard; Request Log paging no longer re-issues the full-table durations GROUP BY.
+- **Static assets ETag/304** (R4/R5 frontend): embedded assets ship content-hash ETags and answer If-None-Match with 304 (~500KB gzip saved per refresh on the echarts bundle); `/` shares the index.html hash; the CC_OTEL_STATIC_DIR dev mode skips ETags.
+- **Auto-import progress logs + timestamp-based rollback probe** (R4/R5 boot): large imports log progress every 2s (15s+ of silence looked like a hang); the rollback probe compares timestamps so fast-path DBs stop printing a spurious WARNING every boot.
+- **`/api/codex/intraday` rejects invalid dates with 400** (R5 consistency): the mirror used to drop both dates when either was missing and silently fall back to 200 + today's data; it now matches the base endpoint.
+- **API 4xx/5xx unified as structured JSON** (R5 consistency): plain-text `http.Error` replies across the dashboard family converge on the `writeAPIError` envelope with snake_case codes.
+- **Codex Sessions gains the User column and aligned ordering** (R5 display): the SELECT missed `MAX(user_id)` (column always empty); ordering aligns with the pool side (`SUM(cost_usd) DESC`).
+- **`/api/codex/requests` selects 8 more fields** (R5 API): event_name/event_sequence/terminal_type/service_version/host_arch/os_type/os_version/error_message were in the payload shape but never selected.
+- **Codex durations throughput columns computed** (R5 display): Out tok/s (avg/wt) were hardcoded 0.0; they now use the pool-side formulas and exclude duration_ms=0 rows.
+- **Migration card empty state** (R5 UX): after a daemon restart the idle card no longer claims no archive exists; it now says not-inspected-yet and idempotent.
+- **SSE refresh rule restored to main's** (R5 regression): claude-tagged events no longer refresh the Codex tab (every codex endpoint is service-filtered; it was pure over-refresh).
+- **TTFT tooltip line breaks fixed** (R5 display): literal backslash-n in the template became two visible characters; now a real newline.
+- **Docs rewritten for the two-tab semantics** (R5 docs): both READMEs wrongly described a single unified page and claimed `?source=codex` was removed; rewritten as All Clients (Codex excluded) + Codex tabs, plus a `bind_host` config section with upgrade notes and the unified-pool storage map in otel-events.md.
 ### Changed
+- **`bind_host` defaults to loopback (upgrade note)**: all three listeners (4317/4318/8899) tighten from `0.0.0.0` to `127.0.0.1` with a Host allowlist (127.0.0.1/localhost/[::1] only). Deployments that received cross-machine traffic must set `bind_host: 0.0.0.0` explicitly (the allowlist then disables itself; note there is no built-in auth). See the README listen-address section.
 
 - `/api/status` gains a `version` field (ldflags -X; "dev" for local builds).
 - Codex migration job logs start/done/fail with scanned/inserted/duplicates/verified counts; no-op re-runs skip the staging re-inspect (~3s saved).

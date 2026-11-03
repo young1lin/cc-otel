@@ -319,8 +319,6 @@ func rebuildAgg(ctx context.Context, db *sql.DB, parent string) error {
 	// with its never-pruned parents, and INSERT only materializes dates that
 	// still exist in the detail, so pruned detail can never come back.
 	deleteSQL := fmt.Sprintf(`DELETE FROM %s`, aggTable)
-	whereClause := ""
-	var whereArgs []any
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -350,10 +348,9 @@ func rebuildAgg(ctx context.Context, db *sql.DB, parent string) error {
 			%s
 			COALESCE(SUM(cost_usd), 0),
 			COUNT(*)
-		FROM %s%s
+		FROM %s
 		GROUP BY date(timestamp, 'unixepoch', 'localtime'), model%s`,
-		aggTable, middleAggColumns(parent), middleAggSelects(parent), extraAggSelects(parent), parent, whereClause, groupAggService(parent),
-	), whereArgs...); err != nil {
+		aggTable, middleAggColumns(parent), middleAggSelects(parent), extraAggSelects(parent), parent, groupAggService(parent))); err != nil {
 		return fmt.Errorf("rebuild %s: %w", aggTable, err)
 	}
 

@@ -21,9 +21,9 @@
 - **同源守卫**：变更类 `/api/*`（pricing、import、codex/migrate）拒绝跨源浏览器请求（Origin 校验；curl/CLI 不受影响）。
 - **pricing POST 请求体上限 1MB**（MaxBytesReader，与 import 一致）。
 - **`pending_ttft_spans` 清理**：processed/过期行随 raw TTL 清扫删除（原只增不删）；raw 归档未来时间戳钳制到当前时间，恶意/错钟不得逃逸 TTL。
-- **Codex cache-hit 分母对齐**：分母补上 `cache_creation`，与 Claude 视图和前端 token-math 一致（Codex 大量上报 cache_c
+- **Codex cache-hit 分母对齐**：分母补上 `cache_creation`，与 Claude 视图和前端 token-math 一致（Codex 大量上报 cache_creation，旧公式显著高估）。
 - **DSH 路径补齐双重钳制**（R5 P0）：DSH 会话账本的 body JSON 整数不经 parseAttrInt，先前可原样落库 MaxInt64 计数与 2262 年时间戳，重开永久仪表盘溢出毒害；现 ±2^40 钳制 + 未来时间戳钳到到达时刻（与 codex/claude 路径一致，新增 TestDSHE2E_HostileLedgerClamped 钉住）。
-- **recompute 保留窗口接线**（R5 P1）：`POST /api/pricing/recompute` 与 `tools/recompute_cost` 现传入 `retention_days`，聚合重建按窗口范围化，不再复活启动清理已修剪的行（此前 all-time KPI 会在下次重启回落）。
+- **recompute 聚合重建恒全量**（R5 P1 修正表述）: `daily_model_agg` 不再被保留清理（与 `api_requests` 一致永不修剪），INSERT-only 重建不可能复活已删行，All-time 视图与明细等宽；`RetentionDays` 对重建不生效，迁移后 sanity 检查仅作保守窗口。
 - **`/api/requests` 补齐五个统一池字段**（R5 API P1）：`reasoning_tokens`/`total_tokens`/`http_status`/`endpoint`/`conversation_id` 先前在统一端点恒为 0/空，与 `/api/codex/requests` 对同一行相互矛盾。
 - **OTLP/HTTP 接收器跨源防护**（R5）：浏览器跨源 POST（简单 content-type 也可驱动）现被 Origin 校验拒绝 403；真实导出端从不携带 Origin，零兼容性影响（originutil 单一实现，与仪表盘守卫共享端口感知比较）。
 - **405 补 `Allow` 头**（RFC 9110）：`/api/pricing`、`/api/pricing/recompute`、`/api/pricing/suggest`。
@@ -33,9 +33,26 @@
 - **turn_ttft 竞态**：OTLP 导出乱序时 turn 事件先于锚点到达，一次性 UPDATE 落空——现暂存（10min TTL）并在锚点插入时重试；实测修复前 1/2 行丢 ttft，修复后 3/3 全捕获。钉 TestCodexE2E_TurnTTFTBeforeAnchorIsStashedAndRetried。
 - **Codex TTFT 补齐**：`codex.turn_ttft`（回合级首输出时延）现在直接建模——completion 的 `ttft_ms` 是 Option（非流式/瞬时响应缺省，实测 30,735 行仅 27% 有值），turn 事件对同（conversation, model）事件时间前最新的零 TTFT 锚点行做只填不清回填；权威 completion 带 ttft 时仍以后者为准（四种时序钉 TestCodexE2E_TurnTTFTFillsAnchor）。
 - **重复锚点重投 ErrTxDone**（R5 rollback P1）：`insertCodexRowInTx` 在重复分支内部 commit，调用方再 commit 一次导致 `sql.ErrTxDone` —— 例行的至少一次投递重发返回 500。helper 现永不 commit（钉 TestCodexE2E_DuplicateAnchorRedeliveryStaysOK：三次相同锚点 200/200/200）。
-- **bin→global 合并 schema 升级接线**（R5 rollback P1）：`import_global` 现在导入前调用 `ensureTargetSchema`，AllClient 导出可并入仍为 pre-AllClient schema 的生产 global，不再因缺列中途失败。reation，旧公式显著高估）。
+- **bin→global 合并 schema 升级接线**（R5 rollback P1）：`import_global` 现在导入前调用 `ensureTargetSchema`，AllClient 导出可并入仍为 pre-AllClient schema 的生产 global，不再因缺列中途失败.
+- **启动 ANALYZE 换 `PRAGMA optimize`**（R4 启动性能）：全库 ANALYZE 实测占每次 boot 的 85-95%（535MB 库 1.4-1.85s）；stats 新鲜时 `PRAGMA optimize` 实测 1ms。boot 从 1.46s 降到 ~0.2s。
+- **`temp_store` 改 FILE**（R4 内存）：TEMP b-tree 与迁移 staging 表原驻 wasm 线性堆且从不归还内存，每次大迁移永久抬高 RSS 地板；落盘后峰值不再滞留。
+- **写路径 BUSY 重试补齐**（R4 并发）：7 处裸 `ExecContext` 统一走 `execWithBusyRetry`，与既有接收路径一致。
+- **recompute 与导入/迁移互斥**（R4 并发）：recompute 与 import/codex-migrate 同受 `writerBusMu` 门控，重量级写者不再并发争抢 busy_timeout 窗口（冲突时 409 `writer_busy`）。
+- **SSE 刷新合并 + durations 按需拉取**（R4 前端）：SSE 刷新轮次带 in-flight 守卫；Request Log 翻页不再重发全表 durations GROUP BY。
+- **静态资源 ETag/304**（R4/R5 前端）：embed 资产带内容哈希 ETag，`If-None-Match` 回 304（echarts 1MB 包每次刷新省 ~500KB gzip）；`/` 入口同哈希；开发模式自动跳过。
+- **自动导入进度日志 + 回滚探针按时间戳**（R4/R5 启动）：大归档导入每 2s 输出进度；回滚探针改比 timestamp，fast-path 库不再每次 boot 误刷 WARNING。
+- **`/api/codex/intraday` 非法日期 400**（R5 一致性）：原在 from/to 任一缺省时静默回退 200+今天数据；现与 base 端点一致拒绝。
+- **API 4xx/5xx 统一结构化 JSON**（R5 一致性）：dashboard 家族与参数校验的纯文本错误收敛为 `writeAPIError` 信封，错误码 snake_case。
+- **Codex Sessions 补 User 列并对齐排序**（R5 显示）：SELECT 漏 `MAX(user_id)` 导致 User 列恒空；排序对齐池侧 `SUM(cost_usd) DESC`。
+- **`/api/codex/requests` 补 8 字段**（R5 API）：event_name/event_sequence/terminal_type/service_version/host_arch/os_type/os_version/error_message 现由 SELECT 实取。
+- **Codex durations 吞吐列实算**（R5 显示）：Out tok/s (avg/wt) 原硬编码 0.0；现按池侧公式实算并排除 duration_ms=0 行。
+- **迁移卡片空态文案**（R5 UX）：daemon 重启后空闲态不再误报 No Codex archive tables found；改为提示未巡检、可幂等重跑。
+- **SSE 刷新规则回归 main**（R5 回归）：claude 标签事件不再刷新 Codex 标签（codex 端点全为 service 过滤，原为纯过度刷新）。
+- **TTFT 悬浮提示换行修复**（R5 显示）：模板串内字面反斜杠+n 改为真实换行。
+- **文档双 tab 语义纠正**（R5 文档）：README 双语重写为 All Clients（不含 Codex）+ Codex 双标签；补 `bind_host` 配置节与升级须知；otel-events.md 存储映射更新为统一池口径。
 
 ### 变更
+- **`bind_host` 回环默认（升级注意）**：三个监听器（4317/4318/8899）默认从 `0.0.0.0` 收紧为 `127.0.0.1`，并启用 Host 白名单（仅 127.0.0.1/localhost/[::1]）。跨机器上报或远程访问的部署升级后需在 yaml 显式设 `bind_host: 0.0.0.0`（此时白名单自动停用，注意无内建鉴权）。详见 README 监听地址一节。
 
 - `/api/status` 新增 `version` 字段（ldflags 注入，本地构建为 `dev`）。
 - Codex 迁移作业记录开始/完成/失败日志（含 scanned/inserted/duplicates/verified 计数）；no-op 重跑跳过 staging 后检视（省 ~3s）。

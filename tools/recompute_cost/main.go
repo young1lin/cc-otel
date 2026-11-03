@@ -112,14 +112,11 @@ func main() {
 		tables = append(tables, "codex_api_requests")
 	}
 
-	// Scope the agg rebuild to the config's retention window when a config is
-	// supplied (R5 P1): an all-time rebuild resurrects agg rows the startup
-	// cleanup pruned, and the KPIs would flip back at the next restart.
-	retentionDays := 0
-	if cfg != nil && cfg.RetentionDays > 0 {
-		retentionDays = cfg.RetentionDays
-	}
-	opts := recompute.Options{Tables: tables, From: fromUnix, To: toUnix, RetentionDays: retentionDays}
+	// The agg rebuild is always full-range: daily_model_agg is no longer
+	// retention-pruned, and INSERT-only rebuilds cannot resurrect anything
+	// (recompute.Options.RetentionDays is documented as unused). Passing a
+	// window-scoped value would not change the outcome.
+	opts := recompute.Options{Tables: tables, From: fromUnix, To: toUnix}
 	res, err := recompute.Run(ctx, database, reg, opts, *apply, func(p recompute.Progress) {
 		if p.Total > 0 {
 			log.Printf("%s: %d/%d scanned, %d changed", p.Table, p.Scanned, p.Total, p.Changed)

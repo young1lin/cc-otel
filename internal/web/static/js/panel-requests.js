@@ -150,8 +150,22 @@ export async function loadRequests({ skipDurations = false } = {}) {
             <td class="cost-val">$${r.cost_usd.toFixed(4)}</td>
             <td class="mono" title="${escapeHtml(
                 r.ttft_ms
-                    ? `TTFT (Time To First Token): ${r.ttft_ms}ms\\nHow long it took to receive the first token after the request started.\\n\\nmodel=${r.model || '—'}\\nsession=${r.session_id || '—'}\\nprompt=${r.prompt_id || '—'}\\ntime=${r.timestamp || '—'}\\nduration_ms=${r.duration_ms || '—'}`
-                    : `TTFT (Time To First Token): —\\nNo TTFT recorded yet for this request. It may be backfilled shortly from trace spans.\\n\\nmodel=${r.model || '—'}\\nsession=${r.session_id || '—'}\\nprompt=${r.prompt_id || '—'}\\ntime=${r.timestamp || '—'}\\nduration_ms=${r.duration_ms || '—'}`
+                    ? `TTFT (Time To First Token): ${r.ttft_ms}ms\
+How long it took to receive the first token after the request started.\
+\
+model=${r.model || '—'}\
+session=${r.session_id || '—'}\
+prompt=${r.prompt_id || '—'}\
+time=${r.timestamp || '—'}\
+duration_ms=${r.duration_ms || '—'}`
+                    : `TTFT (Time To First Token): —\
+No TTFT recorded yet for this request. It may be backfilled shortly from trace spans.\
+\
+model=${r.model || '—'}\
+session=${r.session_id || '—'}\
+prompt=${r.prompt_id || '—'}\
+time=${r.timestamp || '—'}\
+duration_ms=${r.duration_ms || '—'}`
             )}">${r.ttft_ms ? r.ttft_ms + 'ms' : '—'}</td>
             <td class="mono">${r.duration_ms ? r.duration_ms + 'ms' : '—'}</td>
         </tr>`).join('');

@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm 插件（推荐）：`dsh plugin --profile web add @young1lin/dsh-cc-otel`；或 `DSH_TELEMETRY_*` 环境变量 / `cordis.patch.yml` 手工接入 | [下文](#deepseek-harness-dsh-接入) |
 
 - 所有客户端共用同一个 cc-otel 实例，数据统一落到仪表盘；请求日志的 **Source 列**逐行标注来源。
-- Codex 的历史存档（`codex_*` 表）通过一键迁移并入统一池；新上报在接收侧直接归一化写入 `api_requests`（`service_name='codex'`），与 Claude Code、OpenCode 等共享 **统一客户端池**（首页单页视图，请求日志 Source 列区分来源）。旧的 `?source=codex` URL 参数已随合并移除。
+- Codex 的历史存档（`codex_*` 表）通过一键迁移并入统一池；新上报在接收侧直接归一化写入 `api_requests`（`service_name='codex'`）。仪表盘保留 **双标签页**：**All Clients** 标签渲染 Claude 系客户端（Claude Code / OpenCode 等，不含 Codex），**Codex** 标签读取统一池中 `service_name='codex'` 的行（含迁移历史 + 新上报）。URL 参数 `?source=claude|codex` 仍是官方深链机制，用于直达对应标签。
 - 新客户端接入调试：`go run ./tools/otlp_dump`（双传输、只打印不落库，AI SDK span 还会打印 cc-otel 将派生的 `would_store_api_request`）。
 
 ## 安装
@@ -259,11 +259,11 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899`)，首页即为各客户端统一视图，Codex 用量与 Claude Code 同页展示（Client 列标注 `codex`）。上面的 `environment = "dev"` 会作为 OTLP Resource 属性 `env` 上报，cc-otel 将其写入与 Claude Code `user.id` 相同的字段——Request Log 的 **User 列**由此区分 `dev` / `company` / `staging` / `prod` 环境。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入统一池的 `cost_usd`，Cost KPI 与 Claude 行等同。
+启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899`)，顶部切换 **All Clients / Codex** 标签：Codex 用量（含迁移历史与新上报）在 **Codex** 标签展示；All Clients 标签只含 Claude 系客户端。上面的 `environment = "dev"` 会作为 OTLP Resource 属性 `env` 上报，cc-otel 将其写入与 Claude Code `user.id` 相同的字段——Request Log 的 **User 列**由此区分 `dev` / `company` / `staging` / `prod` 环境。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入统一池的 `cost_usd`，Cost KPI 与 Claude 行等同。
 
 ### opencode 接入
 
-opencode 基于 Vercel AI SDK，用量上报在 GenAI **span** 上而非日志事件。cc-otel 会把 usage span 重塑成标准 `api_request` 形态，数据直接进入 首页主视图（无独立标签页），请求日志 Source 列显示 `opencode`。
+opencode 基于 Vercel AI SDK，用量上报在 GenAI **span** 上而非日志事件。cc-otel 会把 usage span 重塑成标准 `api_request` 形态，数据进入 **All Clients** 标签的统一视图，请求日志 Source 列显示 `opencode`。
 
 opencode 说 **OTLP/HTTP（`:4318`）**，指到 `:4317` 不通。两步配置：
 
@@ -438,12 +438,29 @@ CC-OTEL 的数据目录按以下顺序解析（详见 `internal/config/config.go
 cc-otel 有两套自动清理：
 
 ```yaml
-retention_days: 90    # 留存上限，单位天；0 = 永不清理。清理 events / *_events（raw 归档除外）与 daily_model_agg 等聚合表；api_requests 明细永不清理
+bind_host: 127.0.0.1  # 监听地址。默认 127.0.0.1（仅本机）；设 0.0.0.0 监听所有网卡（LAN 部署）。⚠️ 无内建鉴权，暴露到网络前必须自行加反代/防火墙；0.0.0.0 时 Host 白名单守卫自动停用
+retention_days: 90    # 留存上限，单位天；0 = 永不清理。清理 events / *_events（raw 归档除外）；api_requests 明细与 daily_model_agg 聚合永不清理（All-time 视图完整）
 raw_ttl_days: 5       # raw_otlp_events 的留存上限，单位天；0 = 永不清理。codex_raw_otlp_events 为冻结归档，不参与此清理
 ```
 
 - `retention_days`（默认 90）由 `cc-otel cleanup` 手动跑或后台周期任务使用。
 - `raw_ttl_days`（默认 5）由后台 hourly sweeper 单独管 raw 表，因为这两张表的体积权重最大。
+
+### 监听地址（bind_host）
+
+三个监听器（OTLP gRPC `:4317` / OTLP-HTTP `:4318` / Web UI `:8899`）共用 `bind_host`，**默认 `127.0.0.1` 仅本机可达**。需要让局域网内其他机器上报遥测或查看仪表盘时，设为 `0.0.0.0`：
+
+```yaml
+bind_host: 0.0.0.0
+```
+
+安全语义随监听地址切换：
+
+- `127.0.0.1`（默认）：Web 端点启用 **Host 白名单**，只接受 `Host: 127.0.0.1 / localhost / [::1]` 的请求（防 DNS 重绑定）；写操作另受同源守卫保护。
+- `0.0.0.0`：Host 白名单自动停用（合法 Host 不再可枚举），同源守卫仍在。**cc-otel 没有内建鉴权**——暴露到不可信网络前，请前置反向代理做认证或用防火墙限制来源 IP。
+- `bind_host` 只能通过 yaml 配置（无环境变量），缺省/留空回落 `127.0.0.1`。
+
+> **v0.1.4 → v0.1.5 升级注意**：旧版本监听 `0.0.0.0`（所有网卡），升级后默认收紧为本机回环。原本跨机器上报/访问的部署升级后会静默失联，需要显式加 `bind_host: 0.0.0.0` 恢复。
 
 ## Web UI
 
@@ -463,7 +480,7 @@ raw_ttl_days: 5       # raw_otlp_events 的留存上限，单位天；0 = 永不
 |------|------|
 | **Daily Detail** | 按日 / 按小时明细；Intraday 按桶柱状图（5 / 10 / 15 / 30 / 60 分钟，最长 7 天）；**Hour of Day** 子视图把整段区间折叠成 24 个小时桶，客户端 / 模型下拉切换透视（任意跨度可用） |
 | **Sessions** | 按会话聚合 Cost / Token |
-| **Clients** | 按 `service.name` 的客户端汇总表：Token 构成、请求数、成本、命中率、活跃区间、占比条（始终可见） |
+| **Clients** | 按 `service.name` 的客户端汇总表：Token 构成、请求数、成本、命中率、活跃区间、占比条（All Clients 标签可见；Codex 用量在 Codex 标签，此表仅统计 Claude 系客户端） |
 | **Request Log** | 按模型耗时与 **Out tok/s（平均 / 加权）** 汇总；单条请求列表含 TTFT；分页条支持页码直达 |
 | **Rate** | 各模型 **Token Rate over Time** 折线图；Weighted / Avg、Output / Total tok/s、5 / 15 / 30 / 60 min 桶；点击图例可 solo 单模型（**All models** 恢复） |
 

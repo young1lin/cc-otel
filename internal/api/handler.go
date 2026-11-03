@@ -298,7 +298,7 @@ func HostAllowlistGuard(bindHost string) func(http.Handler) http.Handler {
 					host = host[:i] // strip :port, keep [::1] brackets intact
 				}
 				if !loopback[host] && !loopback[strings.ToLower(host)] {
-					http.Error(w, "host not allowed", http.StatusForbidden)
+					writeAPIError(w, http.StatusForbidden, "host_not_allowed", "host not allowed", nil)
 					return
 				}
 			}
@@ -314,6 +314,11 @@ func HostAllowlistGuard(bindHost string) func(http.Handler) http.Handler {
 var staticETags sync.Map
 
 func staticETag(urlPath string) string {
+	// The file server resolves "/" to index.html — hash that asset too, or
+	// the entry document (~30KB) never gets a 304 (R5 review A5-F8).
+	if urlPath == "/" {
+		urlPath = "/index.html"
+	}
 	if urlPath == "" || strings.HasSuffix(urlPath, "/") {
 		return ""
 	}
@@ -389,13 +394,20 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// plus a server-side gzip of the 1MB echarts bundle (R4 review A5-F1).
 	// A content-hash ETag gives revalidation teeth: If-None-Match → 304.
 	wrapStatic := func(h http.Handler) http.Handler {
+		fromDisk := strings.TrimSpace(os.Getenv("CC_OTEL_STATIC_DIR")) != ""
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-cache")
-			if etag := staticETag(r.URL.Path); etag != "" {
-				w.Header().Set("ETag", etag)
-				if r.Header.Get("If-None-Match") == etag {
-					w.WriteHeader(http.StatusNotModified)
-					return
+			// ETags come from the embedded tree, which is immutable per process.
+			// Skip them in CC_OTEL_STATIC_DIR mode: hashing the embedded copy
+			// there would 304 a stale cache forever while the dev edits the
+			// disk file (R5 review A5-F9).
+			if !fromDisk {
+				if etag := staticETag(r.URL.Path); etag != "" {
+					w.Header().Set("ETag", etag)
+					if r.Header.Get("If-None-Match") == etag {
+						w.WriteHeader(http.StatusNotModified)
+						return
+					}
 				}
 			}
 			h.ServeHTTP(w, r)
@@ -1044,7 +1056,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	data, err := h.repo.GetDashboardForRange(r.Context(), from, to)
 	if err != nil {
 		log.Printf("dashboard error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1077,7 +1089,7 @@ func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 	data, err := h.repo.GetClientStats(r.Context(), from, to)
 	if err != nil {
 		log.Printf("clients error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1111,7 +1123,7 @@ func (h *Handler) Hours(w http.ResponseWriter, r *http.Request) {
 	data, err := h.repo.GetHourOfDayStats(r.Context(), from, to)
 	if err != nil {
 		log.Printf("hours error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string][]db.HourOfDayDetail{"data": data})
@@ -1137,14 +1149,14 @@ func (h *Handler) Calendar(w http.ResponseWriter, r *http.Request) {
 	from, to := rangeToFromTo(r.URL.Query().Get("range"))
 	if v := r.URL.Query().Get("from"); v != "" {
 		if !isValidDate(v) {
-			http.Error(w, "invalid from date", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid_date", "invalid from date", nil)
 			return
 		}
 		from = v
 	}
 	if v := r.URL.Query().Get("to"); v != "" {
 		if !isValidDate(v) {
-			http.Error(w, "invalid to date", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid_date", "invalid to date", nil)
 			return
 		}
 		to = v
@@ -1153,7 +1165,7 @@ func (h *Handler) Calendar(w http.ResponseWriter, r *http.Request) {
 	data, err := h.repo.GetCalendarDays(r.Context(), from, to)
 	if err != nil {
 		log.Printf("calendar error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1189,13 +1201,13 @@ func (h *Handler) DailyModel(w http.ResponseWriter, r *http.Request) {
 	total, err := h.repo.CountDailyStatsByModel(r.Context(), from, to, granularity)
 	if err != nil {
 		log.Printf("daily count error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	data, err := h.repo.GetDailyStatsByModel(r.Context(), from, to, pageSize, offset, granularity)
 	if err != nil {
 		log.Printf("daily data error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1227,7 +1239,7 @@ func (h *Handler) HourlyModel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !isValidDate(date) {
-		http.Error(w, "invalid date", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid_date", "from/to must be YYYY-MM-DD dates", nil)
 		return
 	}
 	model := r.URL.Query().Get("model")
@@ -1235,7 +1247,7 @@ func (h *Handler) HourlyModel(w http.ResponseWriter, r *http.Request) {
 	data, err := h.repo.GetHourlyStatsByModel(r.Context(), date, model)
 	if err != nil {
 		log.Printf("hourly data error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1281,18 +1293,18 @@ func (h *Handler) Intraday(w http.ResponseWriter, r *http.Request) {
 		from, to = rangeToFromTo(rng)
 	}
 	if !isValidDate(from) || !isValidDate(to) {
-		http.Error(w, "invalid date", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid_date", "from/to must be YYYY-MM-DD dates", nil)
 		return
 	}
 	loc := time.Local
 	fromT, errF := time.ParseInLocation("2006-01-02", from, loc)
 	toT, errT := time.ParseInLocation("2006-01-02", to, loc)
 	if errF != nil || errT != nil || toT.Before(fromT) {
-		http.Error(w, "invalid date range", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid_date_range", "to must not be before from", nil)
 		return
 	}
 	if toT.Sub(fromT) > 6*24*time.Hour {
-		http.Error(w, "intraday range must not exceed 7 days", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "range_too_wide", "intraday range must not exceed 7 days", nil)
 		return
 	}
 
@@ -1308,7 +1320,7 @@ func (h *Handler) Intraday(w http.ResponseWriter, r *http.Request) {
 	data, err := h.repo.GetIntradayStatsByModel(r.Context(), from, to, bucket, model)
 	if err != nil {
 		log.Printf("intraday data error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1345,18 +1357,18 @@ func (h *Handler) Rate(w http.ResponseWriter, r *http.Request) {
 		from, to = rangeToFromTo(rng)
 	}
 	if !isValidDate(from) || !isValidDate(to) {
-		http.Error(w, "invalid date", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid_date", "from/to must be YYYY-MM-DD dates", nil)
 		return
 	}
 	loc := time.Local
 	fromT, errF := time.ParseInLocation("2006-01-02", from, loc)
 	toT, errT := time.ParseInLocation("2006-01-02", to, loc)
 	if errF != nil || errT != nil || toT.Before(fromT) {
-		http.Error(w, "invalid date range", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid_date_range", "to must not be before from", nil)
 		return
 	}
 	if toT.Sub(fromT) > 6*24*time.Hour {
-		http.Error(w, "rate range must not exceed 7 days", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "range_too_wide", "rate range must not exceed 7 days", nil)
 		return
 	}
 
@@ -1372,7 +1384,7 @@ func (h *Handler) Rate(w http.ResponseWriter, r *http.Request) {
 	data, err := h.repo.GetRateOverTime(r.Context(), from, to, bucket, model)
 	if err != nil {
 		log.Printf("rate data error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1388,18 +1400,18 @@ func (h *Handler) Rate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SessionRate(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	if sessionID == "" {
-		http.Error(w, "session_id required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "session_id required", nil)
 		return
 	}
 
 	snap, err := h.repo.GetSessionRecentMinuteRate(r.Context(), sessionID)
 	if err != nil {
 		log.Printf("session rate error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if snap == nil {
-		http.Error(w, "no rate data for session", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "not_found", "no rate data for session", nil)
 		return
 	}
 
@@ -1426,12 +1438,12 @@ func (h *Handler) Requests(w http.ResponseWriter, r *http.Request) {
 
 	total, err := h.repo.CountRecentRequests(r.Context(), model, from, to)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	data, err := h.repo.GetRecentRequests(r.Context(), pageSize, offset, model, from, to)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1460,13 +1472,13 @@ func (h *Handler) Sessions(w http.ResponseWriter, r *http.Request) {
 	total, err := h.repo.CountSessionStats(r.Context(), from, to)
 	if err != nil {
 		log.Printf("sessions count error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	data, err := h.repo.GetSessionStats(r.Context(), from, to, pageSize, offset)
 	if err != nil {
 		log.Printf("sessions data error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if data == nil {
@@ -1480,7 +1492,7 @@ func (h *Handler) Sessions(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "SSE not supported", nil)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -1522,7 +1534,7 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 	models, err := h.repo.GetDistinctModels(r.Context())
 	if err != nil {
 		log.Printf("models error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return
 	}
 	if models == nil {

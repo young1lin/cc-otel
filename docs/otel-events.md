@@ -182,8 +182,9 @@ codex.websocket_event kind=response.created/response.completed
 
 ### 1. `codex.api_request` — Request Metadata / 请求元数据
 
-Fired for Codex API calls. This event is the first row anchor for
-`codex_api_requests`; token fields are usually still zero until the completion
+Fired for Codex API calls. This event is the first row anchor for the
+unified pool's `api_requests` (`service_name='codex'`; pre-merge archive:
+`codex_api_requests`); token fields are usually still zero until the completion
 event arrives.
 
 | 属性 | 类型 | 说明 |

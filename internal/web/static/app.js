@@ -341,7 +341,7 @@ initDatabaseImport({
     onImported: () => loadAll(),
 });
 initCustomRangePicker();
-initCodexMigrate({ openPopover, closePopover, onMigrated: () => loadAll() });
+initCodexMigrate({ onMigrated: () => loadAll() });
 applySourceFromURL();
 syncSourceTabsUI();
 initSourceTabs();

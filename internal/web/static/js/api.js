@@ -77,8 +77,9 @@ export const loadDailyData = ({ from, to, page = 1, pageSize = 20, granularity =
 export const loadCalendarData = ({ from, to }) =>
     fetchJSON(apiPath('calendar') + qs({ from, to }));
 
-export const loadHourlyData = (date) =>
-    fetchJSON(apiPath('hourly') + qs({ date }));
+// No loadHourlyData: /api/hourly has no /api/codex mirror (the Codex tab
+// hides the Hour-of-Day sub-tab), and the export had no callers even on
+// main. Removed in R5 review (A5-F6).
 
 export const loadIntradayData = ({ from, to, bucket = 30, model = '' } = {}) =>
     fetchJSON(apiPath('intraday') + qs({ from, to, bucket, model }));

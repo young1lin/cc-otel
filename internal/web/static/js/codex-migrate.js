@@ -48,7 +48,7 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
                 + '<td>' + fmt(t.new_rows) + '</td>'
                 + '<td>' + fmt(t.existing_rows) + '</td>'
                 + '</tr>').join('')
-            : '<tr><td colspan="4">No Codex archive tables found in this database — nothing to migrate.</td></tr>';
+            : '<tr><td colspan="4">Not inspected yet — run <b>Merge Codex history</b> to preview. The merge is idempotent: re-running only adds rows that are missing.</td></tr>';
 
         if (job && job.running) {
             const pct = job.total_rows ? Math.round((job.processed_rows / job.total_rows) * 100) : 0;

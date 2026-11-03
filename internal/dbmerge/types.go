@@ -82,12 +82,11 @@ type Options struct {
 	TotalRows int64
 	Progress  ProgressFunc
 	Window    *TimeWindow
-	// RetentionDays scopes the post-migration agg sanity check to the
-	// retention window when > 0: Cleanup prunes daily_model_agg older than
-	// this while api_requests is never pruned, so an all-time comparison
-	// would fail every re-run on installs with retention (default 90d) and
-	// codex history older than the window. 0 keeps the all-time check
-	// (tests, retention disabled).
+	// RetentionDays makes the post-migration agg sanity check more
+	// conservative when > 0 (both counts scoped to the window). Cleanup no
+	// longer prunes daily_model_agg — kept for compatibility with callers
+	// that derive it from their retention config. 0 keeps the all-time
+	// check (tests, retention disabled).
 	RetentionDays int
 	retryDelays   []time.Duration
 	beforeCommit  func(batch int) error

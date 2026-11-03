@@ -558,12 +558,12 @@ func MigrateCodexToAll(ctx context.Context, target *sql.DB, options Options) (Re
 	// applied cover this; the sanity check below is a cheap backstop. Both
 	// counts run in ONE statement: two separate autocommit reads race against
 	// the live receiver (a commit between them fails every migration by 1).
-	// daily_model_agg is retention-pruned by Cleanup while api_requests is
-	// not, so with RetentionDays > 0 BOTH subselects are scoped to the
-	// retention window — the pruned tail is intentionally absent from agg
-	// and must not fail the comparison (R3 retention + error-recovery
-	// finding: the unscoped check bricked every re-run after the first
-	// post-migration restart pruned old agg rows).
+	// daily_model_agg is no longer retention-pruned by Cleanup (it is kept
+	// forever, matching never-pruned api_requests), so with RetentionDays > 0
+	// BOTH subselects are scoped to the retention window purely as a
+	// conservative backstop — the windowed comparison cannot fail on rows
+	// outside it either way (kept from the era when Cleanup did prune; R5
+	// residue review).
 	query := `SELECT (SELECT COUNT(*) FROM api_requests WHERE service_name = ?),
 		        (SELECT COALESCE(SUM(request_count), 0) FROM daily_model_agg WHERE service_name = ?)`
 	args := []any{db.CodexServiceName, db.CodexServiceName}

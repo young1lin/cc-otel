@@ -215,9 +215,9 @@ func (h *Handler) runCodexMigration() {
 		job.mu.Unlock()
 	}
 	// TotalRows from the preview above: skips MigrateCodexToAll's internal
-	// full-archive inspection. RetentionDays scopes the post-migration agg
-	// sanity check to the retention window (Cleanup prunes daily_model_agg
-	// older than this while api_requests is never pruned).
+	// full-archive inspection. RetentionDays makes the post-migration agg
+	// sanity check conservative (window-scoped); Cleanup no longer prunes
+	// daily_model_agg.
 	result, err := dbmerge.MigrateCodexToAll(ctx, h.repo.DB(), dbmerge.Options{
 		Progress:      progress,
 		TotalRows:     job.total,

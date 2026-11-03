@@ -136,8 +136,8 @@ Where the data lands:
 
 | Tool | Tables | Dashboard view |
 |------|--------|----------------|
-| Codex | unified pool (`api_requests`, `service_name='codex'`; legacy `codex_*` archive merges via one-click migration) | main view, **Source** column |
-| opencode, DeepSeek Harness | shared Claude tables, tagged by `service_name` | main view, **Source** column |
+| Codex | unified pool (`api_requests`, `service_name='codex'`; legacy `codex_*` archive merges via one-click migration) | **Codex** tab (`?source=codex`) |
+| opencode, DeepSeek Harness | shared Claude tables, tagged by `service_name` | **All Clients** tab, **Source** column |
 
 Since the AllClient merge every client — Codex included — is normalized into the
 Claude Code shape and shares one unified pool, distinguished by the `service_name`

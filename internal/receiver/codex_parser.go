@@ -123,9 +123,10 @@ func toolOriginOrDerive(attrs map[string]string) string {
 	return "builtin"
 }
 
-// satAdd/satSub/satClampLow are saturating int64 helpers for client-reported
-// token counters: a hostile or buggy exporter must not wrap the arithmetic
-// (wrap-positive would defeat the <0 clamp and store garbage).
+// satAdd is a saturating int64 helper for client-reported token counters:
+// a hostile or buggy exporter must not wrap the arithmetic (wrap-positive
+// would defeat the <0 clamp and store garbage). The shared fold lives in
+// db.UncachedInput; this local add guards the pre-fold accumulation.
 func satAdd(a, b int64) int64 {
 	if a > 0 && b > math.MaxInt64-a {
 		return math.MaxInt64

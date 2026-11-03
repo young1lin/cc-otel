@@ -38,12 +38,13 @@ async function runScheduledRefresh() {
 }
 
 export function shouldRefreshForSSE(incomingSource, currentSource) {
-    // Single dashboard page since the merge. The All Clients tab renders the
-    // claude_pool views (codex excluded, own tab); 'claude' events can still
-    // shift Codex-tab data only via the shared pool aggregates, so the
-    // Claude tag keeps refreshing everything. Parameters stay for signature
-    // compatibility.
-    return incomingSource === 'all' || incomingSource === 'claude' || incomingSource === currentSource;
+    // One page hosts both tabs. Every codex completion is dual-tagged
+    // (claude + codex) by the receiver, and the Codex tab reads only
+    // service_name='codex' rows — claude-tagged events cannot move its
+    // numbers. Refreshing the Codex tab on every claude event was pure
+    // over-refresh (R5 review A1-F2), so this keeps the pre-merge rule:
+    // refresh when the event matches the open tab (or is pool-wide).
+    return incomingSource === 'all' || incomingSource === currentSource;
 }
 
 function connectSSE() {

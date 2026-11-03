@@ -659,7 +659,8 @@ func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, 
 // rows. It reads daily_model_agg (service_name='codex' rows are maintained
 // transactionally by the live receiver and the migration) instead of
 // scanning raw api_requests — the same trade the Claude dashboard makes
-// (agg rows are pruned to the retention window by Cleanup). Since the merge,
+// (daily_model_agg is never retention-pruned; it spans all of
+// api_requests). Since the merge,
 // input_tokens is stored normalized (uncached), so the cache-hit denominator
 // matches the Claude-side formula input+cache_read.
 func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*Dashboard, error) {
@@ -903,6 +904,8 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 		       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		       reasoning_tokens, total_tokens, cost_usd, duration_ms, ttft_ms,
 		       http_status, endpoint, conversation_id,
+		       event_name, event_sequence, terminal_type, service_version,
+		       host_arch, os_type, os_version, error_message,
 		       service_name
 		FROM api_requests
 		WHERE `+where+`
@@ -922,6 +925,8 @@ func (r *Repository) GetCodexRecentRequests(ctx context.Context, limit, offset i
 			&rec.InputTokens, &rec.OutputTokens, &rec.CacheReadTokens, &rec.CacheCreationTokens,
 			&rec.ReasoningTokens, &rec.TotalTokens, &costUnits, &rec.DurationMs, &rec.TTFTMs,
 			&rec.HTTPStatus, &rec.Endpoint, &rec.ConversationID,
+			&rec.EventName, &rec.EventSequence, &rec.TerminalType, &rec.ServiceVersion,
+			&rec.HostArch, &rec.OSType, &rec.OSVersion, &rec.ErrorMessage,
 			&rec.ServiceName,
 		); err != nil {
 			return nil, 0, err
@@ -959,12 +964,16 @@ func (r *Repository) GetCodexSessionStats(ctx context.Context, from, to string, 
 		       COUNT(*),
 		       COALESCE(SUM(input_tokens), 0),
 		       COALESCE(SUM(output_tokens), 0),
-		       COALESCE(SUM(cost_usd), 0)
+		       COALESCE(SUM(cost_usd), 0),
+		       MAX(user_id)
 		FROM api_requests
 		WHERE service_name = ? AND timestamp >= ? AND timestamp < ?
 		  AND session_id != ''
 		GROUP BY session_id
-		ORDER BY MAX(timestamp) DESC
+		-- Same ordering as the pool-side Sessions panel (SUM(cost_usd) DESC):
+		-- the two tabs render one table, divergent default sorts read as a
+		-- data bug (R5 review A4-F4).
+		ORDER BY SUM(cost_usd) DESC, MAX(timestamp) DESC
 		LIMIT ? OFFSET ?`, CodexServiceName, fromUnix, toUnix, limit, offset)
 	if err != nil {
 		return nil, 0, err
@@ -976,7 +985,7 @@ func (r *Repository) GetCodexSessionStats(ctx context.Context, from, to string, 
 		var s SessionStat
 		var minTs, costUnits int64
 		if err := rows.Scan(&s.SessionID, &minTs, &s.RequestCount,
-			&s.InputTokens, &s.OutputTokens, &costUnits,
+			&s.InputTokens, &s.OutputTokens, &costUnits, &s.UserID,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -987,9 +996,21 @@ func (r *Repository) GetCodexSessionStats(ctx context.Context, from, to string, 
 	return out, total, rows.Err()
 }
 
+// codexDurationWhere appends the same "exclude missing durations" filter
+// the pool-side GetDurationStatsByModel applies, so AVG(x*1000/duration_ms)
+// never divides by zero and the two tabs stay shape-identical.
+func codexDurationWhere(where string) string {
+	if where == "" {
+		return " duration_ms > 0"
+	}
+	return where + " AND duration_ms > 0"
+}
+
 // GetCodexDurationStatsByModel returns per-model latency stats from the
-// unified pool. Codex does not emit token-throughput, so AvgOutTokensPS /
-// AvgTotTokensPS stay at 0.
+// unified pool. Throughput columns use the pool-side formulas — the unified
+// pool rows carry output_tokens and duration_ms, so they are computable
+// (R5 review A4-F11; the old "Codex does not emit token-throughput" note
+// described the frozen archive, not the pool).
 func (r *Repository) GetCodexDurationStatsByModel(ctx context.Context, model, from, to string) ([]DurationStat, error) {
 	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
 	if err != nil {
@@ -1007,10 +1028,13 @@ func (r *Repository) GetCodexDurationStatsByModel(ctx context.Context, model, fr
 		SELECT model,
 		       COUNT(*),
 		       AVG(duration_ms), AVG(ttft_ms),
-		       0.0, 0.0,
+		       AVG(CAST(output_tokens AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_out_tokens_per_s,
+		       AVG(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_total_tokens_per_s,
+		       SUM(CAST(output_tokens AS REAL)) * 1000.0 / NULLIF(SUM(duration_ms), 0) AS weighted_out_tokens_per_s,
+		       SUM(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL)) * 1000.0 / NULLIF(SUM(duration_ms), 0) AS weighted_total_tokens_per_s,
 		       MAX(duration_ms), MIN(duration_ms)
 		FROM api_requests
-		WHERE `+where+`
+		WHERE `+codexDurationWhere(where)+`
 		GROUP BY model
 		ORDER BY COUNT(*) DESC`, args...)
 	if err != nil {
@@ -1024,6 +1048,7 @@ func (r *Repository) GetCodexDurationStatsByModel(ctx context.Context, model, fr
 		if err := rows.Scan(&d.Model, &d.RequestCount,
 			&d.AvgDurationMs, &d.AvgTTFTMs,
 			&d.AvgOutTokensPS, &d.AvgTotTokensPS,
+			&d.WeightedOutTokensPS, &d.WeightedTotTokensPS,
 			&d.MaxDurationMs, &d.MinDurationMs,
 		); err != nil {
 			return nil, err

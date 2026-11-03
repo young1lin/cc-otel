@@ -124,6 +124,13 @@ func (h *Handler) CodexIntraday(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	// Explicitly-provided dates must be valid even when the other side is
+	// omitted (R5 review A4-F1): the old "either side empty → drop both"
+	// fallback silently swallowed an invalid from/to and returned today's
+	// data with 200 — the base endpoint 400s the same request.
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
 	from := q.Get("from")
 	to := q.Get("to")
 	if from == "" || to == "" {

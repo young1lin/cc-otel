@@ -98,6 +98,9 @@ func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, r
 		// are invisible on the Codex tab until a manual one-click migration
 		// runs. Surface the risk instead of skipping silently.
 		var archiveNew int
+		// Best-effort probe: on probe failure (e.g. table missing) we
+		// deliberately stay silent — the warning is advisory, and failing the
+		// boot path over it would be worse than missing one warning.
 		_ = database.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_api_requests WHERE timestamp > ?", marker.importedAt).Scan(&archiveNew)
 		if archiveNew > 0 {
 			log.Printf("codex auto-import: WARNING: %d archive row(s) newer than the imported ranges exist (rollback window or manual archive edits?) — run the in-app Codex migration to pick them up", archiveNew)

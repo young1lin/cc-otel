@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm plugin (recommended): `dsh plugin --profile web add @young1lin/dsh-cc-otel`; or `DSH_TELEMETRY_*` env vars / `cordis.patch.yml` | [below](#deepseek-harness-dsh) |
 
 - Every client shares the same cc-otel instance; the request log's **Source column** labels each row.
-- Codex's legacy archive (`codex_*` tables) merges into the unified pool via the one-click migration; live reports are normalized into `api_requests` (`service_name='codex'`) at ingest, sharing the **unified client pool** (single-page front view, Source column) with Claude Code, OpenCode, etc. The old `?source=codex` URL parameter was removed with the merge.
+- Codex's legacy archive (`codex_*` tables) merges into the unified pool via the one-click migration; live reports are normalized into `api_requests` (`service_name='codex'`) at ingest. The dashboard keeps **two source tabs**: **All Clients** renders the Claude-family clients (Claude Code / OpenCode etc., Codex excluded), while **Codex** reads the unified pool's `service_name='codex'` rows (migrated history + live). The `?source=claude|codex` URL parameter remains the official deep-link mechanism for switching tabs.
 - Debugging a new client: `go run ./tools/otlp_dump` (both transports, prints without storing; for AI SDK spans it also prints the `would_store_api_request` cc-otel would derive).
 
 ## Install
@@ -261,11 +261,11 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-Start Codex and use normally. Open the dashboard (`http://localhost:8899`) — the front page is the unified per-client view and Codex usage appears alongside Claude Code (Client column shows `codex`). The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into the unified pool's `cost_usd`, so the Cost KPI matches the Claude rows.
+Start Codex and use normally. Open the dashboard (`http://localhost:8899`) and switch between the **All Clients / Codex** tabs at the top: Codex usage (migrated history + live) lives on the **Codex** tab; the All Clients tab covers the Claude-family clients only. The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into the unified pool's `cost_usd`, so the Cost KPI matches the Claude rows.
 
 ### opencode
 
-opencode is built on the Vercel AI SDK, which reports token usage on GenAI **spans** rather than log events. cc-otel reshapes the usage span into the standard `api_request` shape, so opencode data lands in the unified main view (no separate tab); the request log's Source column reads `opencode`.
+opencode is built on the Vercel AI SDK, which reports token usage on GenAI **spans** rather than log events. cc-otel reshapes the usage span into the standard `api_request` shape, so opencode data lands in the **All Clients** tab's unified view; the request log's Source column reads `opencode`.
 
 opencode speaks **OTLP/HTTP (`:4318`)** — pointing it at `:4317` will not work. Two steps:
 
@@ -440,12 +440,29 @@ Environment variable overrides (highest priority):
 cc-otel runs two independent cleanups:
 
 ```yaml
-retention_days: 90    # retention cap in days; 0 = keep forever. Prunes events / *_events (raw archives exempt) and daily_model_agg-style aggregates; api_requests detail is never pruned
+bind_host: 127.0.0.1  # Listen address. Default 127.0.0.1 (localhost only); set 0.0.0.0 to listen on all interfaces (LAN). ⚠️ No built-in auth — front it with a proxy/firewall before exposing; the Host allowlist guard disables itself on 0.0.0.0
+retention_days: 90    # retention cap in days; 0 = keep forever. Prunes events / *_events (raw archives exempt); api_requests detail and daily_model_agg aggregates are never pruned (All-time views stay complete)
 raw_ttl_days: 5       # cap on raw_otlp_events in days; 0 = keep forever. codex_raw_otlp_events is a frozen archive excluded from this sweep
 ```
 
 - `retention_days` (default 90) is consumed by `cc-otel cleanup` and the periodic prune.
 - `raw_ttl_days` (default 5) is consumed by a separate hourly sweeper, because the raw tables dominate disk usage.
+
+### Listen address (bind_host)
+
+All three listeners (OTLP gRPC `:4317` / OTLP-HTTP `:4318` / Web UI `:8899`) share `bind_host`, which **defaults to `127.0.0.1` — reachable from this machine only**. To let other machines on your LAN report telemetry or view the dashboard, set it to `0.0.0.0`:
+
+```yaml
+bind_host: 0.0.0.0
+```
+
+The security posture switches with the address:
+
+- `127.0.0.1` (default): web endpoints enforce a **Host allowlist** accepting only `Host: 127.0.0.1 / localhost / [::1]` (anti DNS-rebinding); mutations are additionally same-origin guarded.
+- `0.0.0.0`: the Host allowlist disables itself (valid Hosts are no longer enumerable); the same-origin guard remains. **cc-otel has no built-in auth** — put an authenticating reverse proxy in front or restrict source IPs with a firewall before exposing it to untrusted networks.
+- `bind_host` is yaml-only (no environment variable); empty/omitted falls back to `127.0.0.1`.
+
+> **v0.1.4 → v0.1.5 upgrade note**: older versions listened on `0.0.0.0` (all interfaces); the default is now loopback-only. Deployments that previously received cross-machine traffic or were accessed remotely will silently go dark after upgrading — add `bind_host: 0.0.0.0` to restore that.
 
 ## Web UI
 
@@ -465,7 +482,7 @@ Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model
 |-------|-------------|
 | **Daily Detail** | Per-day / per-hour tables; Intraday per-bucket bar chart (5 / 10 / 15 / 30 / 60 min, up to 7 days); the **Hour of Day** subtab folds the whole range into 24 hour buckets with client / model pivot dropdowns (any span) |
 | **Sessions** | Per-session Cost / Token aggregates |
-| **Clients** | Per-`service.name` totals: token composition, requests, cost, hit rate, active span, share bar (always visible) |
+| **Clients** | Per-`service.name` totals: token composition, requests, cost, hit rate, active span, share bar (visible on the All Clients tab; Codex usage lives on the Codex tab — this table counts Claude-family clients only) |
 | **Request Log** | Per-model duration and **Out tok/s (avg / weighted)** summary; per-request list with TTFT; pagination bar with page-number jump |
 | **Rate** | Per-model **Token Rate over Time** line chart; Weighted / Avg, Output / Total tok/s, 5 / 15 / 30 / 60 min buckets; click legend to solo one model (**All models** to restore) |
 
