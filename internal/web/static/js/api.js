@@ -1,17 +1,13 @@
 // Thin wrappers around every /api/* endpoint. The only place fetch() is called.
-// When state.source === 'codex', routed endpoints hit /api/codex/* — the Codex
-// mirror of the unified pool (service_name='codex': migrated history + live).
-// /api/codex/migrate remains for the one-click history migration UI.
-import { state } from './state.js';
+// All endpoints serve the unified pool — every client, Codex included. The
+// /api/codex/* mirrors stay available for external scripts; only the
+// one-click history migration UI (/api/codex/migrate) is still dashboard-used.
 
-const CODEX_ROUTES = new Set([
-    'dashboard', 'calendar', 'daily', 'requests', 'sessions', 'durations', 'models', 'intraday',
-]);
-
+// All loaders hit the generic endpoints: the unified pool serves every
+// client (Codex included). The /api/codex/* mirror endpoints remain for
+// external scripts and legacy deep links only — the dashboard never routes
+// to them anymore.
 function apiPath(name) {
-    if (state.source === 'codex' && CODEX_ROUTES.has(name)) {
-        return '/api/codex/' + name;
-    }
     return '/api/' + name;
 }
 

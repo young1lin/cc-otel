@@ -10,12 +10,13 @@ import (
 	"time"
 )
 
-// Mixed-data isolation e2e (R3 review A4-F3): after the merge, service_name
-// filtering is the ONLY line between the Codex tab and the All-Clients tab —
-// before the merge they were physically separate tables, so a dropped WHERE
-// used to be invisible. Seed one row per service and assert BOTH directions:
-// /api/codex/* sees only codex; /api/dashboard and /api/clients see all three.
-func TestUnifiedPool_MixedDataIsolation(t *testing.T) {
+// Mixed-data unification e2e (final user-directed state): every client —
+// Codex included — is normalized into the unified pool, and the generic
+// dashboard endpoints serve ALL of it. The /api/codex/* mirror endpoints
+// stay per-source (service_name='codex') for deep links and scripts. Seed
+// one row per service and assert BOTH directions: /api/codex/* sees only
+// codex; /api/dashboard and /api/clients see all three.
+func TestUnifiedPool_MixedDataUnification(t *testing.T) {
 	h, repo := newCodexAPITestHandler(t)
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -66,21 +67,18 @@ func TestUnifiedPool_MixedDataIsolation(t *testing.T) {
 		t.Fatalf("codex requests must contain exactly the codex row; body=%s", body)
 	}
 
-	// All-Clients endpoints read the claude_pool views, which EXCLUDE codex
-	// by design (pre-merge main UI semantics are canonical): they must see
-	// claude-code + opencode (2), and codex must NOT leak in.
+	// All-Clients endpoints read the claude_pool views, which now mirror the
+	// full unified pool: they must see all three services, Codex included
+	// (the merge's whole point — one dashboard, Source column labels rows).
 	dash := get("/api/dashboard?from=2026-05-12&to=2026-05-12")
-	if got := int(dash["request_count"].(float64)); got != 2 {
-		t.Fatalf("all-clients dashboard request_count = %d, want 2 (claude+opencode; codex stays on its own tab)", got)
+	if got := int(dash["request_count"].(float64)); got != 3 {
+		t.Fatalf("unified dashboard request_count = %d, want 3 (claude+opencode+codex)", got)
 	}
 	clients := get("/api/clients?from=2026-05-12&to=2026-05-12")
 	cbody := marshaled(clients)
-	for _, svc := range []string{"claude-code", "opencode"} {
+	for _, svc := range []string{"claude-code", "opencode", "codex"} {
 		if !strings.Contains(cbody, svc) {
 			t.Fatalf("clients endpoint missing service %q; body=%s", svc, cbody)
 		}
-	}
-	if strings.Contains(cbody, "codex") {
-		t.Fatalf("clients endpoint must not include codex (view isolation); body=%s", cbody)
 	}
 }

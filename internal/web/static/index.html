@@ -70,10 +70,9 @@
 
 <div class="layout">
 
-    <nav class="source-tabs" aria-label="Telemetry source">
-        <button type="button" class="source-tab is-active" data-source="claude">All Clients</button>
-        <button type="button" class="source-tab" data-source="codex">Codex</button>
-    </nav>
+    <!-- Source tabs removed: the merge's final state is ONE unified view —
+         every client (Codex included) renders in the same dashboard; the
+         Request Log Source column and the Clients panel attribute rows. -->
 
     <div class="kpi-row">
         <div class="hero-stats">
@@ -434,7 +433,8 @@
                 <div class="dbi-migrate-head">
                     <strong>Codex history migration</strong>
                     <span>Merge the legacy Codex archive (<code>codex_*</code> tables) into the
-                    All&nbsp;Clients pool as <code>service_name "codex"</code>. One click, with
+                    unified pool as <code>service_name "codex"</code> — the rows then appear across
+                    the dashboard (Source column marks them). One click, with
                     identity dedup — re-running only adds rows that are missing.</span>
                 </div>
                 <div class="dbi-migrate-status" id="codex-migrate-status" aria-live="polite"></div>

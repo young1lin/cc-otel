@@ -418,18 +418,21 @@ func runMigrations(db *sql.DB) error {
 		return fmt.Errorf("codex indexes: %w", err)
 	}
 
-	// AllClient pool views — the original All Clients | Codex tab design:
-	// the generic dashboard endpoints serve the NON-Codex pool through these
-	// views (claude-code, opencode, DSH, …), while the Codex tab reads
-	// /api/codex/* (service_name='codex' in the same unified tables). Views
-	// are recreated on every boot so schema drift can never serve mixed data.
+	// AllClient pool views — UNIFIED semantics (user-directed final state):
+	// every client, Codex included, is normalized into api_requests /
+	// daily_model_agg, and the generic dashboard endpoints serve ALL of it
+	// through these views. The historical name claude_pool_* is kept so the
+	// ~15 read queries keep working; the views are now plain mirrors of the
+	// unified tables (no service_name filter). Per-source views live on in
+	// the /api/codex/* mirror endpoints (service_name='codex'). Recreated on
+	// every boot so schema drift can never serve mixed data.
 	_, err = db.Exec(`
 		DROP VIEW IF EXISTS claude_pool_requests;
 		CREATE VIEW claude_pool_requests AS
-			SELECT * FROM api_requests WHERE service_name IS NULL OR service_name != 'codex';
+			SELECT * FROM api_requests;
 		DROP VIEW IF EXISTS claude_pool_agg;
 		CREATE VIEW claude_pool_agg AS
-			SELECT * FROM daily_model_agg WHERE service_name IS NULL OR service_name != 'codex';
+			SELECT * FROM daily_model_agg;
 	`)
 	if err != nil {
 		return fmt.Errorf("pool views: %w", err)

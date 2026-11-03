@@ -58,13 +58,13 @@ function installRequestPanelDOM() {
     return { durationWrap, durationBody, requestBody, modelFilter };
 }
 
-test('Codex request log keeps duration summary when duration rows exist', async () => {
+test('request log keeps duration summary when duration rows exist', async () => {
     const oldDocument = global.document;
     const oldFetch = global.fetch;
 
     try {
         const dom = installRequestPanelDOM();
-        state.source = 'codex';
+        state.source = 'claude';
         state.currentRange = 'custom';
         state.customFrom = '2026-05-12';
         state.customTo = '2026-05-12';
@@ -74,8 +74,8 @@ test('Codex request log keeps duration summary when duration rows exist', async 
 
         global.fetch = async (url) => {
             const u = String(url);
-            // state.source='codex' → apiPath routes to the /api/codex/* mirror.
-            if (u.startsWith('/api/codex/durations')) {
+            // Unified view: generic endpoints serve every client.
+            if (u.startsWith('/api/durations')) {
                 return jsonResponse([{
                     model: 'gpt-5.5',
                     request_count: 1,
@@ -86,7 +86,7 @@ test('Codex request log keeps duration summary when duration rows exist', async 
                     min_duration_ms: 4200,
                 }]);
             }
-            if (u.startsWith('/api/codex/requests')) {
+            if (u.startsWith('/api/requests')) {
                 return jsonResponse({
                     data: [{
                         timestamp: '2026-05-12T10:09:39+08:00',
@@ -125,17 +125,17 @@ test('Codex request log keeps duration summary when duration rows exist', async 
     }
 });
 
-test('model filter can reset stale source selection before loading Codex models', async () => {
+test('model filter can reset stale selection before loading models', async () => {
     const oldDocument = global.document;
     const oldFetch = global.fetch;
 
     try {
         const dom = installRequestPanelDOM();
-        state.source = 'codex';
+        state.source = 'claude';
         dom.modelFilter.value = 'claude-opus-4-7';
 
         global.fetch = async (url) => {
-            assert.equal(String(url), '/api/codex/models');
+            assert.equal(String(url), '/api/models');
             return jsonResponse(['gpt-5.5']);
         };
 
@@ -157,7 +157,7 @@ test('resetting model options clears the old source filter before awaiting model
         const dom = installRequestPanelDOM();
         dom.modelFilter.value = 'claude-opus-4-7';
         dom.modelFilter.options = [{ value: 'claude-opus-4-7' }];
-        state.source = 'codex';
+        state.source = 'claude';
         let resolveModels;
         global.fetch = async () => new Promise(resolve => { resolveModels = resolve; });
 

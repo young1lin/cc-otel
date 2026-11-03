@@ -76,9 +76,10 @@ export function updateDailyViewControls() {
 
     if (!canHour && state.dailyDetailView === 'hour') state.dailyDetailView = 'day';
 
-    // /api/hours reads the non-Codex pool and has no codex mirror, so the
-    // subtab disappears under the Codex source (original design).
-    const canHourday = state.source !== 'codex';
+    // Hour-of-Day now folds the FULL unified pool (Codex rows included —
+    // /api/hours serves every client since the merge), so the subtab is
+    // always available.
+    const canHourday = true;
     if (hourdayBtn) hourdayBtn.style.display = canHourday ? '' : 'none';
     if (!canHourday && state.dailyDetailView === 'hourday') state.dailyDetailView = 'day';
 

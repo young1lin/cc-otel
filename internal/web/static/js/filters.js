@@ -192,9 +192,7 @@ export function syncRangeNavUIFromState() {
 // Pass { replace: true } when canonicalizing the URL after a popstate or on boot.
 export function syncURLFromState({ replace = false } = {}) {
     const p = new URLSearchParams();
-    if (state.source && state.source !== 'claude') {
-        p.set('source', state.source);
-    }
+    // No source param: the unified view renders every client.
     if (state.currentRange === 'custom' && state.customFrom && state.customTo) {
         p.set('from', state.customFrom);
         p.set('to', state.customTo);

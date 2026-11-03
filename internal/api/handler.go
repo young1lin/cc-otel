@@ -1102,7 +1102,7 @@ func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 // the selected date range — the pivot input for the Hour of Day view
 // ("how many Claude Opus tokens at 13:00, from Claude Code"). The client
 // stacks by model or client; hours with no data are simply absent rows.
-// Reads the claude_pool_requests view — the non-codex side of the unified pool.
+// Reads the claude_pool_requests view — a mirror of the full unified pool.
 func (h *Handler) Hours(w http.ResponseWriter, r *http.Request) {
 	if rejectInvalidDateParams(w, r) {
 		return

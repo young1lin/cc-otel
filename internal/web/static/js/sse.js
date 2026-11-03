@@ -38,13 +38,10 @@ async function runScheduledRefresh() {
 }
 
 export function shouldRefreshForSSE(incomingSource, currentSource) {
-    // One page hosts both tabs. Every codex completion is dual-tagged
-    // (claude + codex) by the receiver, and the Codex tab reads only
-    // service_name='codex' rows — claude-tagged events cannot move its
-    // numbers. Refreshing the Codex tab on every claude event was pure
-    // over-refresh (R5 review A1-F2), so this keeps the pre-merge rule:
-    // refresh when the event matches the open tab (or is pool-wide).
-    return incomingSource === 'all' || incomingSource === currentSource;
+    // One unified view renders every source, so any event — claude, codex
+    // or pool-wide — can move visible numbers. Signature kept for the test
+    // suite; both parameters are intentionally ignored now.
+    return true;
 }
 
 function connectSSE() {

@@ -57,10 +57,10 @@ test('import css uses graphite fill and not accent for progress', () => {
     assert.match(css, /\.dbi-progress-fill[^}]*background:\s*var\(--text-muted\)/s);
 });
 
-test('all SSE tag refreshes either source', () => {
+test('every SSE tag refreshes the unified view', () => {
     assert.equal(shouldRefreshForSSE('all', 'claude'), true);
-    assert.equal(shouldRefreshForSSE('all', 'codex'), true);
-    assert.equal(shouldRefreshForSSE('codex', 'claude'), false);
+    assert.equal(shouldRefreshForSSE('codex', 'claude'), true);
+    assert.equal(shouldRefreshForSSE('claude', 'claude'), true);
 });
 
 test('verifying has a working panel with no cancel action', () => {

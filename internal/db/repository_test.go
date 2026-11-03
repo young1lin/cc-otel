@@ -822,12 +822,12 @@ func TestGetSessionRecentMinuteRate(t *testing.T) {
 	}
 }
 
-// TestGenericQueriesExcludeCodexRows pins the original All Clients | Codex
-// tab semantics on top of the unified pool: the generic dashboard queries
-// (claude_pool_* views) must never see service_name="codex" rows, while the
-// codex mirror queries see only those. Without this the All Clients tab
-// silently absorbs Codex numbers after the AllClient merge.
-func TestGenericQueriesExcludeCodexRows(t *testing.T) {
+// TestGenericQueriesIncludeCodexRows pins the FINAL unified semantics on
+// top of the unified pool: the generic dashboard queries (claude_pool_*)
+// serve EVERY client, Codex included — one dashboard, Source column
+// attributes rows. The codex mirror queries keep seeing only their slice
+// (service_name='codex') for external scripts and legacy deep links.
+func TestGenericQueriesIncludeCodexRows(t *testing.T) {
 	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
 	database, err := Init(cfg)
 	if err != nil {
@@ -854,28 +854,36 @@ func TestGenericQueriesExcludeCodexRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dash.RequestCount != 1 {
-		t.Fatalf("dashboard must count only the non-codex row: got %d requests", dash.RequestCount)
+	if dash.RequestCount != 2 {
+		t.Fatalf("unified dashboard must count both rows (claude + codex): got %d requests", dash.RequestCount)
 	}
 
 	rows, err := repo.GetDailyStatsByModel(ctx, from, to, 100, 0, "day")
 	if err != nil {
 		t.Fatal(err)
 	}
+	seenDaily := false
 	for _, row := range rows {
 		if row.Model == "glm-5.3" {
-			t.Fatal("codex model leaked into the generic daily stats")
+			seenDaily = true
 		}
+	}
+	if !seenDaily {
+		t.Fatal("codex model missing from the generic daily stats (unified pool must include it)")
 	}
 
 	models, err := repo.GetDistinctModels(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	seenModel := false
 	for _, m := range models {
 		if m == "glm-5.3" {
-			t.Fatal("codex model leaked into the generic model filter")
+			seenModel = true
 		}
+	}
+	if !seenModel {
+		t.Fatal("codex model missing from the generic model filter (unified pool must include it)")
 	}
 
 	// The codex mirror must still see its row (same unified pool, other side).
