@@ -216,6 +216,9 @@ func (h *Handler) InitImports() error {
 		parent = context.Background()
 	}
 	h.imports, h.importInitErr = newImportManager(parent, h.repo.DB(), h.cfg.DBPath, h.broker, defaultImportEngine{})
+	if h.imports != nil {
+		h.imports.retentionDays = h.retentionDays()
+	}
 	return h.importInitErr
 }
 

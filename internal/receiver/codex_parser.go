@@ -196,6 +196,88 @@ type codexSpanTracker struct {
 	mu           sync.Mutex
 	spans        map[string]spanInfo
 	nextFallback uint64
+	// turnTTFT stashes codex.turn_ttft observations that arrived BEFORE
+	// their anchor row was committed. Separate OTLP export flushes are not
+	// order-preserving (live-verified: one exec landed ttft, the next lost
+	// it because the turn event beat the anchor insert), so a miss is
+	// retried when the anchor lands.
+	turnTTFT map[string][]turnTTFTObs
+}
+
+// turnTTFTObs is one stashed turn-level TTFT observation.
+type turnTTFTObs struct {
+	tsUnixNano int64
+	ms         int64
+}
+
+const (
+	turnTTFTStashTTL    = 10 * time.Minute
+	turnTTFTStashPerKey = 8
+)
+
+func turnTTFTKey(conversationID, model string) string {
+	return conversationID + "\x00" + model
+}
+
+// stashTurnTTFT records an unapplied turn_ttft observation, pruning the
+// per-key list by age (10min) and size (8, oldest dropped first).
+func (t *codexSpanTracker) stashTurnTTFT(conversationID, model string, ts time.Time, ms int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.turnTTFT == nil {
+		t.turnTTFT = make(map[string][]turnTTFTObs)
+	}
+	key := turnTTFTKey(conversationID, model)
+	list := append(t.turnTTFT[key], turnTTFTObs{ts.UnixNano(), ms})
+	now := time.Now().UnixNano()
+	fresh := list[:0]
+	for _, o := range list {
+		if now-o.tsUnixNano < int64(turnTTFTStashTTL) {
+			fresh = append(fresh, o)
+		}
+	}
+	if len(fresh) > turnTTFTStashPerKey {
+		fresh = fresh[len(fresh)-turnTTFTStashPerKey:]
+	}
+	if len(fresh) == 0 {
+		delete(t.turnTTFT, key)
+	} else {
+		t.turnTTFT[key] = fresh
+	}
+}
+
+// drainTurnTTFT returns and removes stashed observations that belong to
+// THIS anchor: observed at or after the anchor timestamp (a turn's first
+// output cannot precede the request that started the turn) and within 1h.
+// Leftovers from other turns stay stashed for their own anchors and age out
+// via the TTL prune. Returned observations are ts-ascending so the earliest
+// (this turn's) fill wins under fill-only semantics.
+func (t *codexSpanTracker) drainTurnTTFT(conversationID, model string, anchorTS time.Time) []turnTTFTObs {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := turnTTFTKey(conversationID, model)
+	list := t.turnTTFT[key]
+	if len(list) == 0 {
+		return nil
+	}
+	lo := anchorTS.UnixNano()
+	hi := lo + int64(time.Hour)
+	var out []turnTTFTObs
+	keep := list[:0]
+	for _, o := range list {
+		if o.tsUnixNano >= lo && o.tsUnixNano <= hi {
+			out = append(out, o)
+		} else {
+			keep = append(keep, o)
+		}
+	}
+	if len(keep) == 0 {
+		delete(t.turnTTFT, key)
+	} else {
+		t.turnTTFT[key] = keep
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].tsUnixNano < out[j].tsUnixNano })
+	return out
 }
 
 type spanInfo struct {
@@ -441,6 +523,19 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 				stats.fail()
 			}
 			return false
+		}
+		if rowID > 0 && tracker != nil {
+			// A turn_ttft that beat this anchor to the receiver is stashed;
+			// fill now (exact-row, fill-only — an authoritative completion
+			// ttft still overwrites via the finalize CASE-WHEN).
+			for _, obs := range tracker.drainTurnTTFT(req.ConversationID, req.Model, req.Timestamp) {
+				if err := repo.UpdateCodexRequestTTFT(
+					ctx, rowID, req.SessionID, req.Model,
+					time.Unix(0, obs.tsUnixNano), obs.ms,
+				); err != nil {
+					log.Printf("failed to apply stashed codex turn ttft (conv=%s): %v", req.ConversationID, err)
+				}
+			}
 		}
 		if pendingStream && tracker != nil {
 			observedNanos := codexLogObservedUnixNanos(lr)
@@ -719,15 +814,22 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		// the only TTFT a turn produces. Fill-only join onto the newest
 		// zero-TTFT anchor of the same (conversation, model) at or before the
 		// event time — see UpdateCodexTurnTTFT for the ordering argument.
-		if err := repo.UpdateCodexTurnTTFT(
+		applied, err := repo.UpdateCodexTurnTTFT(
 			ctx, attrs["conversation.id"], attrs["model"],
 			ts, parseAttrInt(attrs, "duration_ms"),
-		); err != nil {
+		)
+		if err != nil {
 			log.Printf("failed to fill codex ttft from turn_ttft (conv=%s): %v", attrs["conversation.id"], err)
 			if stats != nil {
 				stats.fail()
 			}
 			return false
+		}
+		if !applied && tracker != nil {
+			// The anchor row was not committed yet (export flush reorder —
+			// live-verified intermittent miss). Stash and retry when the
+			// anchor insert lands.
+			tracker.stashTurnTTFT(attrs["conversation.id"], attrs["model"], ts, parseAttrInt(attrs, "duration_ms"))
 		}
 		return true
 

@@ -586,11 +586,11 @@ func (r *Repository) UpdateCodexTurnTTFT(
 	conversationID, model string,
 	ts time.Time,
 	ttftMs int64,
-) error {
+) (bool, error) {
 	if conversationID == "" || model == "" || ttftMs <= 0 {
-		return nil
+		return false, nil
 	}
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 		UPDATE api_requests
 		SET ttft_ms = ?
 		WHERE id = (
@@ -605,7 +605,11 @@ func (r *Repository) UpdateCodexTurnTTFT(
 		ttftMs, conversationID, model, CodexServiceName,
 		ts.Unix(), ts.Unix()-3600,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // InsertCodexRawEvent inserts the raw OTLP payload into the shared

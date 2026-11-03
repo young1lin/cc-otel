@@ -885,6 +885,98 @@ func TestCodexE2E_TurnTTFTFillsAnchor(t *testing.T) {
 	}
 }
 
+
+// TestCodexE2E_TurnTTFTBeforeAnchorIsStashedAndRetried pins the live-caught
+// race: OTLP export flushes are not order-preserving, so codex.turn_ttft
+// can reach the receiver BEFORE its anchor row is committed. The one-shot
+// UPDATE misses; the observation must be stashed and retried when the
+// anchor insert lands (live evidence: one exec kept ttft=1906, the next
+// lost it with ttft=0 before this fix).
+func TestCodexE2E_TurnTTFTBeforeAnchorIsStashedAndRetried(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+
+	srv := grpc.NewServer()
+	rcv := New(repo, fakeResolver{}, api.NewBroker(), nil)
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	attr := func(k, v string) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	export := func(records ...*logspb.LogRecord) {
+		t.Helper()
+		if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+			Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
+			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
+		}}}); err != nil {
+			t.Fatalf("export: %v", err)
+		}
+	}
+	base := time.Now().Add(-10 * time.Second)
+
+	// turn_ttft FIRST — anchor not committed yet, direct UPDATE must miss.
+	export(&logspb.LogRecord{TimeUnixNano: uint64(base.Add(2400 * time.Millisecond).UnixNano()), Attributes: []*commontpb.KeyValue{
+		attr("event.name", "codex.turn_ttft"),
+		attr("conversation.id", "conv-race"),
+		attr("model", "glm-5.3"),
+		attr("duration_ms", "2400"),
+	}})
+	var n int
+	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE conversation_id='conv-race'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("turn_ttft must not mint rows: got %d", n)
+	}
+
+	// Anchor lands — the stash must drain onto it.
+	export(&logspb.LogRecord{TimeUnixNano: uint64(base.UnixNano()), Attributes: []*commontpb.KeyValue{
+		attr("event.name", "codex.api_request"),
+		attr("conversation.id", "conv-race"),
+		attr("model", "glm-5.3"),
+	}})
+	var ttft int64
+	repo.DB().QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE conversation_id='conv-race'`).Scan(&ttft)
+	if ttft != 2400 {
+		t.Fatalf("stashed turn_ttft must be retried on anchor insert: got %d, want 2400", ttft)
+	}
+
+	// A ttft-less completion afterwards must keep the stashed fill, and a
+	// duplicate anchor export must not resurrect a stale stash fill (0-row).
+	export(&logspb.LogRecord{TimeUnixNano: uint64(base.Add(6 * time.Second).UnixNano()), Attributes: []*commontpb.KeyValue{
+		attr("event.name", "codex.sse_event"),
+		attr("event.kind", "response.completed"),
+		attr("conversation.id", "conv-race"),
+		attr("model", "glm-5.3"),
+		attr("input_token_count", "100"),
+		attr("output_token_count", "40"),
+		attr("cached_token_count", "0"),
+		attr("reasoning_token_count", "0"),
+		attr("tool_token_count", "140"),
+	}})
+	repo.DB().QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE conversation_id='conv-race'`).Scan(&ttft)
+	if ttft != 2400 {
+		t.Fatalf("ttft-less completion must keep the stashed fill: got %d, want 2400", ttft)
+	}
+}
+
 type fakeResolver struct{}
 
 func (fakeResolver) ResolveActualModel(s string) string { return s }

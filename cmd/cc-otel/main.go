@@ -400,6 +400,14 @@ func cmdServe() {
 	repo := db.NewRepository(database)
 	defer repo.Close()
 
+	// One-shot auto-import of the legacy codex_* archive into the unified
+	// pool, recorded with exact row-id ranges and purged 30 days later. Runs
+	// BEFORE the servers bind so the daemon is the single writer while the
+	// ranges are captured; failures log and continue (retried next boot).
+	if err := autoImportCodex(ctx, database, repo, cfg.RetentionDays); err != nil {
+		log.Printf("codex auto-import: %v", err)
+	}
+
 	// Bootstrap daily_model_agg from existing api_requests if agg table is empty.
 	if needsRebuild, err := repo.NeedsAggRebuild(ctx); err != nil {
 		log.Printf("agg rebuild check error: %v", err)

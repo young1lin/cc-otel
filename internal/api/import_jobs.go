@@ -64,6 +64,13 @@ type ImportJobStatus struct {
 type importEngine interface {
 	Inspect(context.Context, string, *sql.DB, dbmerge.ProgressFunc) (dbmerge.Inspection, error)
 	Merge(context.Context, *sql.DB, string, dbmerge.Options) (dbmerge.Result, error)
+	// CodexMerge streams a legacy codex_* archive carried by an uploaded
+	// file into the unified tables (the import-dialog path for historical
+	// Codex data; occurrence-aware, idempotent).
+	CodexMerge(context.Context, *sql.DB, string, dbmerge.Options) (dbmerge.Result, error)
+	// CodexArchiveRows counts codex_* archive rows inside an uploaded file
+	// (0 when the file carries none). Errors only on unreadable files.
+	CodexArchiveRows(context.Context, string) (int64, error)
 }
 
 type defaultImportEngine struct{}
@@ -76,12 +83,26 @@ func (defaultImportEngine) Merge(ctx context.Context, target *sql.DB, path strin
 	return dbmerge.MergeSQLite(ctx, target, path, options)
 }
 
+func (defaultImportEngine) CodexMerge(ctx context.Context, target *sql.DB, path string, options dbmerge.Options) (dbmerge.Result, error) {
+	return dbmerge.MigrateCodexToAllFromPath(ctx, target, path, options)
+}
+
+func (defaultImportEngine) CodexArchiveRows(ctx context.Context, path string) (int64, error) {
+	return dbmerge.CountCodexArchiveRowsInFile(ctx, path)
+}
+
 type importJob struct {
 	ImportJobStatus
 	path          string
 	cancel        context.CancelFunc
 	startedImport bool
 	active        bool
+	// codexOnly: the uploaded file's unified tables are too old for the
+	// generic pipeline, but it carries a codex_* archive — merge imports
+	// only that archive. codexToo: a modern file that ALSO carries a codex
+	// archive; merge appends it after the generic import.
+	codexOnly bool
+	codexToo  bool
 }
 
 type uploadReservation struct {
@@ -99,6 +120,9 @@ type importManager struct {
 	broker *Broker
 	engine importEngine
 	job    *importJob
+	// retentionDays scopes the codex-archive import's agg sanity check to
+	// the retention window (0 = all-time). Set by the handler from config.
+	retentionDays int
 
 	now          func() time.Time
 	maxFileBytes int64
@@ -208,8 +232,40 @@ func (m *importManager) completeUpload(jobID string, size int64, sha256 string) 
 func (m *importManager) runInspection(ctx context.Context, jobID, path string) {
 	defer m.wg.Done()
 	preview, err := m.engine.Inspect(ctx, path, m.target, m.progressCallback(jobID))
+	// Historical Codex backups: the file may carry a legacy codex_*
+	// archive the generic registry deliberately ignores — surface it in
+	// the preview, and when the file's unified tables are TOO OLD for the
+	// generic pipeline (pre-AllClient schema), route the whole job through
+	// the codex archive mapping so historical Codex data still lands in
+	// the correct unified tables.
+	codexRows, codexErr := m.engine.CodexArchiveRows(ctx, path)
+	codexOnly, codexToo := false, false
+	if codexErr == nil && codexRows > 0 {
+		if err != nil {
+			preview = dbmerge.Inspection{
+				SourceRows: codexRows,
+				NewRows:    codexRows, // estimate; staging dedups exactly
+				Tables: []dbmerge.TableStats{{
+					Name: "codex archive → api_requests & events", SourceRows: codexRows, NewRows: codexRows,
+				}},
+				Warnings: []string{"legacy unified-table schema: only the codex archive will be imported"},
+			}
+			err = nil
+			codexOnly = true
+		} else {
+			codexToo = true
+			preview.SourceRows += codexRows
+			preview.Tables = append(preview.Tables, dbmerge.TableStats{
+				Name: "codex archive → api_requests & events", SourceRows: codexRows,
+			})
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.job != nil && m.job.JobID == jobID {
+		m.job.codexOnly = codexOnly
+		m.job.codexToo = codexToo
+	}
 	if m.job == nil || m.job.JobID != jobID {
 		return
 	}
@@ -290,13 +346,56 @@ func (m *importManager) start(jobID string) (*ImportJobStatus, error) {
 
 func (m *importManager) runMerge(ctx context.Context, jobID, path, sha string, total int64) {
 	defer m.wg.Done()
-	result, err := m.engine.Merge(ctx, m.target, path, dbmerge.Options{
-		BatchSize: dbmerge.MaxBatchSize,
-		SourceID:  "upload:" + sha,
-		Location:  time.Local,
-		TotalRows: total,
-		Progress:  m.progressCallback(jobID),
-	})
+	m.mu.Lock()
+	var codexOnly, codexToo bool
+	if m.job != nil && m.job.JobID == jobID {
+		codexOnly, codexToo = m.job.codexOnly, m.job.codexToo
+	}
+	m.mu.Unlock()
+	var result dbmerge.Result
+	var err error
+	if codexOnly {
+		// Legacy file: only its codex_* archive is importable; route the
+		// whole job through the codex→unified mapping.
+		result, err = m.engine.CodexMerge(ctx, m.target, path, dbmerge.Options{
+			BatchSize:     dbmerge.MaxBatchSize,
+			SourceID:      "upload:" + sha,
+			Location:      time.Local,
+			TotalRows:     total,
+			RetentionDays: m.retentionDays,
+			Progress:      m.progressCallback(jobID),
+		})
+	} else {
+		result, err = m.engine.Merge(ctx, m.target, path, dbmerge.Options{
+			BatchSize: dbmerge.MaxBatchSize,
+			SourceID:  "upload:" + sha,
+			Location:  time.Local,
+			TotalRows: total,
+			Progress:  m.progressCallback(jobID),
+		})
+		if err == nil && codexToo {
+			// Modern file that also carries a codex archive: append it.
+			codexRes, cerr := m.engine.CodexMerge(ctx, m.target, path, dbmerge.Options{
+				BatchSize:     dbmerge.MaxBatchSize,
+				SourceID:      "upload:" + sha,
+				Location:      time.Local,
+				RetentionDays: m.retentionDays,
+				Progress:      m.progressCallback(jobID),
+			})
+			if cerr != nil {
+				err = cerr
+			} else {
+				result.ScannedRows += codexRes.ScannedRows
+				result.InsertedRows += codexRes.InsertedRows
+				result.DuplicateRows += codexRes.DuplicateRows
+				result.VerifiedIdentities += codexRes.VerifiedIdentities
+				for _, ts := range codexRes.Tables {
+					ts.Name += " (codex archive)"
+					result.Tables = append(result.Tables, ts)
+				}
+			}
+		}
+	}
 	notify := result.InsertedRows > 0
 	m.mu.Lock()
 	if m.job == nil || m.job.JobID != jobID {

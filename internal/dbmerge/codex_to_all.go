@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/young1lin/cc-otel/internal/db"
@@ -108,6 +109,93 @@ func (s *codexToAllSource) Close() error {
 	return s.db.Close()
 }
 
+// codexColDecl describes one expected archive column for the adaptive
+// SELECT builder below.
+type codexColDecl struct {
+	name    string
+	numeric bool // missing numeric columns default to 0, text to ''
+}
+
+// codexArchiveCols lists, per archive table, the columns the migration reads,
+// in the EXACT order the row scanners below expect. External legacy backups
+// can predate some of these columns, so codexArchiveSelect substitutes a
+// typed constant for every column the source table lacks — the scanners and
+// the unified mapping stay untouched, missing data lands as zero/empty.
+var codexArchiveCols = map[string][]codexColDecl{
+	"codex_api_requests": {
+		{"timestamp", true}, {"session_id", false}, {"user_id", false}, {"model", false},
+		{"input_tokens", true}, {"output_tokens", true}, {"cache_read_tokens", true}, {"cache_creation_tokens", true},
+		{"reasoning_tokens", true}, {"total_tokens", true}, {"cost_usd", true}, {"duration_ms", true}, {"ttft_ms", true},
+		{"http_status", true}, {"endpoint", false}, {"conversation_id", false},
+		{"event_name", false}, {"event_sequence", true}, {"terminal_type", false},
+		{"service_version", false}, {"host_arch", false}, {"os_type", false}, {"os_version", false}, {"error_message", false},
+	},
+	"codex_user_prompt_events": {
+		{"timestamp", true}, {"session_id", false}, {"conversation_id", false}, {"prompt_text", false}, {"prompt_length", true},
+		{"event_sequence", true}, {"terminal_type", false}, {"service_version", false},
+	},
+	"codex_tool_decision_events": {
+		{"timestamp", true}, {"session_id", false}, {"conversation_id", false}, {"tool_name", false}, {"call_id", false},
+		{"decision", false}, {"source", false}, {"event_sequence", true}, {"terminal_type", false},
+	},
+	"codex_tool_result_events": {
+		{"timestamp", true}, {"session_id", false}, {"conversation_id", false}, {"tool_name", false}, {"call_id", false},
+		{"success", true}, {"duration_ms", true}, {"arguments_length", true}, {"output_length", true},
+		{"tool_origin", false}, {"mcp_server", false}, {"event_sequence", true}, {"terminal_type", false}, {"error_message", false},
+	},
+	"codex_raw_otlp_events": {
+		{"timestamp", true}, {"event_type", false}, {"raw_json", false},
+	},
+}
+
+// codexArchiveSelect builds the adaptive SELECT for one archive table:
+// present columns pass through, missing ones become typed constants in the
+// same position. Column presence is read from the source's own schema.
+func codexArchiveSelect(ctx context.Context, d *sql.DB, table string) (string, error) {
+	decls, ok := codexArchiveCols[table]
+	if !ok {
+		return "", fmt.Errorf("no column declaration for %s", table)
+	}
+	present := make(map[string]bool, len(decls))
+	rows, err := d.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notn, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notn, &dflt, &pk); err != nil {
+			return "", err
+		}
+		present[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, len(decls))
+	for _, col := range decls {
+		if present[col.name] {
+			parts = append(parts, col.name)
+			continue
+		}
+		// Ancient backups named the client-reported total "tool_tokens"
+		// before the total_tokens column existed — alias it through.
+		if table == "codex_api_requests" && col.name == "total_tokens" && present["tool_tokens"] {
+			parts = append(parts, "tool_tokens AS total_tokens")
+			continue
+		}
+		if col.numeric {
+			parts = append(parts, "0 AS "+col.name)
+		} else {
+			parts = append(parts, "'' AS "+col.name)
+		}
+	}
+	return "SELECT " + strings.Join(parts, ", ") + " FROM " + table + " ORDER BY id ASC", nil
+}
+
 func tableExists(ctx context.Context, d *sql.DB, name string) (bool, error) {
 	var one int
 	err := d.QueryRowContext(ctx, `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&one)
@@ -130,17 +218,15 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 			continue
 		}
 		var scan func(*sql.Rows) (Row, error)
-		var query string
+		// Adaptive SELECT: external legacy backups may predate some columns;
+		// missing ones are substituted with typed constants so the scanners
+		// and the unified mapping below stay unchanged.
+		query, qerr := codexArchiveSelect(ctx, s.db, plan.source)
+		if qerr != nil {
+			return &MergeError{Code: ErrInspection, Table: plan.source, Err: qerr}
+		}
 		switch plan.source {
 		case "codex_api_requests":
-			query = `
-				SELECT timestamp, session_id, user_id, model,
-				       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-				       reasoning_tokens, total_tokens, cost_usd, duration_ms, ttft_ms,
-				       http_status, endpoint, conversation_id,
-				       event_name, event_sequence, terminal_type,
-				       service_version, host_arch, os_type, os_version, error_message
-				FROM codex_api_requests ORDER BY id ASC`
 			scan = func(rows *sql.Rows) (Row, error) {
 				var v struct {
 					Timestamp, Input, Output, CacheRead, CacheCreate                  int64
@@ -179,10 +265,6 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 				}}, nil
 			}
 		case "codex_user_prompt_events":
-			query = `
-				SELECT timestamp, session_id, conversation_id, prompt_text, prompt_length,
-				       event_sequence, terminal_type, service_version
-				FROM codex_user_prompt_events ORDER BY id ASC`
 			scan = func(rows *sql.Rows) (Row, error) {
 				var timestamp, promptLength, eventSequence int64
 				var sessionID, conversationID, promptText, terminalType, serviceVersion string
@@ -200,10 +282,6 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 				}}, nil
 			}
 		case "codex_tool_decision_events":
-			query = `
-				SELECT timestamp, session_id, conversation_id, tool_name, call_id,
-				       decision, source, event_sequence, terminal_type
-				FROM codex_tool_decision_events ORDER BY id ASC`
 			scan = func(rows *sql.Rows) (Row, error) {
 				var timestamp, eventSequence int64
 				var sessionID, conversationID, toolName, callID, decision, source, terminalType string
@@ -220,11 +298,6 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 				}}, nil
 			}
 		case "codex_tool_result_events":
-			query = `
-				SELECT timestamp, session_id, conversation_id, tool_name, call_id,
-				       success, duration_ms, arguments_length, output_length,
-				       tool_origin, mcp_server, event_sequence, terminal_type, error_message
-				FROM codex_tool_result_events ORDER BY id ASC`
 			scan = func(rows *sql.Rows) (Row, error) {
 				var timestamp, eventSequence, success, duration, argumentsLength, outputLength int64
 				var sessionID, conversationID, toolName, callID, toolOrigin, mcpServer, terminalType, errorMessage string
@@ -245,7 +318,6 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 				}}, nil
 			}
 		default: // codex_raw_otlp_events
-			query = `SELECT timestamp, event_type, raw_json FROM codex_raw_otlp_events ORDER BY id ASC`
 			scan = func(rows *sql.Rows) (Row, error) {
 				var timestamp int64
 				var eventType, rawJSON string
@@ -368,6 +440,73 @@ func InspectCodexToAll(ctx context.Context, target *sql.DB) ([]CodexMigrationCou
 		out[i].ExistingRows = out[i].SourceRows - out[i].NewRows
 	}
 	return out, nil
+}
+
+// CountCodexArchiveRowsInFile counts codex_* archive rows inside an
+// external database file (0 when it carries no archive tables). Used by the
+// import dialog to detect historical Codex backups.
+func CountCodexArchiveRowsInFile(ctx context.Context, path string) (int64, error) {
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)", filepath.ToSlash(filepath.Clean(path)))
+	ro, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return 0, err
+	}
+	ro.SetMaxOpenConns(1)
+	defer ro.Close()
+	var total int64
+	for _, plan := range codexToAllPlans {
+		exists, err := tableExists(ctx, ro, plan.source)
+		if err != nil {
+			return 0, err
+		}
+		if !exists {
+			continue
+		}
+		var n int64
+		if err := ro.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+plan.source).Scan(&n); err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// MigrateCodexToAllFromPath streams the codex_* archive tables of an
+// EXTERNAL legacy database file (the import-dialog path for historical
+// Codex backups) into the unified pool of target. Same pipeline, same
+// occurrence-aware dedup and ledger as the in-DB migration, so importing the
+// same legacy file twice inserts nothing the second time and rows already
+// migrated from a local archive are counted as duplicates, not re-inserted.
+func MigrateCodexToAllFromPath(ctx context.Context, target *sql.DB, srcPath string, options Options) (Result, error) {
+	options.SourceID = codexSourceID
+	if options.Location == nil {
+		options.Location = time.Local
+	}
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)", filepath.ToSlash(filepath.Clean(srcPath)))
+	ro, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return Result{}, &MergeError{Code: ErrInspection, Err: err}
+	}
+	ro.SetMaxOpenConns(1)
+	defer ro.Close()
+	source := &codexToAllSource{db: ro}
+	if options.TotalRows == 0 {
+		for _, plan := range codexToAllPlans {
+			exists, err := tableExists(ctx, ro, plan.source)
+			if err != nil {
+				return Result{}, &MergeError{Code: ErrInspection, Table: plan.source, Err: err}
+			}
+			if !exists {
+				continue
+			}
+			var n int64
+			if err := ro.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+plan.source).Scan(&n); err != nil {
+				return Result{}, &MergeError{Code: ErrInspection, Table: plan.source, Err: err}
+			}
+			options.TotalRows += n
+		}
+	}
+	return Import(ctx, target, source, options)
 }
 
 // MigrateCodexToAll runs the one-click migration: copy every archive row into
