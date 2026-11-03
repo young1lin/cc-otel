@@ -821,3 +821,75 @@ func TestGetSessionRecentMinuteRate(t *testing.T) {
 		t.Fatalf("expected nil for missing session, got %+v", missing)
 	}
 }
+
+// TestGenericQueriesExcludeCodexRows pins the original All Clients | Codex
+// tab semantics on top of the unified pool: the generic dashboard queries
+// (claude_pool_* views) must never see service_name="codex" rows, while the
+// codex mirror queries see only those. Without this the All Clients tab
+// silently absorbs Codex numbers after the AllClient merge.
+func TestGenericQueriesExcludeCodexRows(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo := NewRepository(database)
+	ctx := context.Background()
+	now := time.Now()
+
+	_, _ = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp: now, Model: "claude-opus-4-6", InputTokens: 100,
+		CostUSD: 0.01, RequestID: "cl-1", ServiceName: "claude-code",
+	})
+	_, _ = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp: now, Model: "glm-5.3", InputTokens: 700,
+		CostUSD: 0.02, RequestID: "cx-1", ServiceName: CodexServiceName,
+	})
+
+	from := now.Add(-24 * time.Hour).Format("2006-01-02")
+	to := now.Add(24 * time.Hour).Format("2006-01-02")
+
+	dash, err := repo.GetDashboardForRange(ctx, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dash.RequestCount != 1 {
+		t.Fatalf("dashboard must count only the non-codex row: got %d requests", dash.RequestCount)
+	}
+
+	rows, err := repo.GetDailyStatsByModel(ctx, from, to, 100, 0, "day")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Model == "glm-5.3" {
+			t.Fatal("codex model leaked into the generic daily stats")
+		}
+	}
+
+	models, err := repo.GetDistinctModels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range models {
+		if m == "glm-5.3" {
+			t.Fatal("codex model leaked into the generic model filter")
+		}
+	}
+
+	// The codex mirror must still see its row (same unified pool, other side).
+	codexRows, _, err := repo.GetCodexDailyStatsByModel(ctx, from, to, 100, 0, "day")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, row := range codexRows {
+		if row.Model == "glm-5.3" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("codex mirror lost the codex row")
+	}
+}

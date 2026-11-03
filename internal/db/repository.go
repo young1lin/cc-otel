@@ -636,7 +636,7 @@ func (r *Repository) BackfillTTFTNearest(ctx context.Context, sessionID, promptI
 	var id int64
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE session_id = ?
 		  AND prompt_id = ?
 		  AND model = ?
@@ -673,7 +673,7 @@ func (r *Repository) BackfillTTFTNearestLoose(ctx context.Context, sessionID, mo
 	var id int64
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE session_id = ?
 		  AND model = ?
 		  AND ttft_ms = 0
@@ -820,7 +820,7 @@ func (r *Repository) GetDashboardForRange(ctx context.Context, from, to string) 
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_creation_tokens), 0),
 			COALESCE(SUM(request_count), 0)
-		FROM daily_model_agg
+		FROM claude_pool_agg
 		WHERE date >= ? AND date <= ?`, from, to).Scan(
 		&totalCost, &totalInput, &totalOutput,
 		&totalCacheRead, &totalCacheCreation, &d.RequestCount,
@@ -870,7 +870,7 @@ func (r *Repository) GetClientStats(ctx context.Context, from, to string) ([]Cli
 			COUNT(*),
 			MIN(date(timestamp, 'unixepoch', 'localtime')),
 			MAX(date(timestamp, 'unixepoch', 'localtime'))
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE timestamp >= ? AND timestamp < ?
 		GROUP BY svc
 		ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)
@@ -943,7 +943,7 @@ func (r *Repository) GetHourOfDayStats(ctx context.Context, from, to string) ([]
 			COALESCE(SUM(cache_creation_tokens), 0),
 			COALESCE(SUM(cost_usd), 0),
 			COUNT(*)
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE timestamp >= ? AND timestamp < ?
 		GROUP BY h, COALESCE(NULLIF(service_name, ''), ?), model
 		ORDER BY h, COALESCE(NULLIF(service_name, ''), ?), model`,
@@ -979,7 +979,7 @@ func (r *Repository) GetDailyStats(ctx context.Context, from, to string) ([]Dail
 			COALESCE(SUM(request_count), 0),
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(input_tokens + cache_read_tokens + cache_creation_tokens), 0)
-		FROM daily_model_agg
+		FROM claude_pool_agg
 		WHERE date >= ? AND date <= ?
 		GROUP BY date
 		ORDER BY date`, from, to)
@@ -1018,7 +1018,7 @@ func (r *Repository) GetDailyStatsByModel(ctx context.Context, from, to string, 
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_creation_tokens), 0),
 			COALESCE(SUM(request_count), 0)
-		FROM daily_model_agg
+		FROM claude_pool_agg
 		WHERE date >= ? AND date <= ?
 		GROUP BY `+dateExpr+`, model
 		ORDER BY `+dateExpr+` DESC, SUM(cost_usd) DESC LIMIT ? OFFSET ?`, from, to, limit, offset)
@@ -1053,7 +1053,7 @@ func (r *Repository) GetCalendarDays(ctx context.Context, from, to string) ([]Ca
 			COALESCE(SUM(cache_creation_tokens), 0),
 			COALESCE(SUM(cost_usd), 0),
 			COALESCE(SUM(request_count), 0)
-		FROM daily_model_agg
+		FROM claude_pool_agg
 		WHERE date >= ? AND date <= ?
 		GROUP BY date, model
 		ORDER BY date ASC, model ASC`, from, to)
@@ -1121,7 +1121,7 @@ func (r *Repository) GetHourlyStatsByModel(ctx context.Context, date string, mod
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_creation_tokens), 0),
 			COALESCE(COUNT(*), 0)
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE timestamp >= ? AND timestamp < ?
 	`
 	args := []interface{}{fromUnix, toExclusiveUnix}
@@ -1180,7 +1180,7 @@ func (r *Repository) GetIntradayStatsByModel(ctx context.Context, fromYMD, toYMD
 			COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(cache_creation_tokens), 0),
 			COALESCE(COUNT(*), 0)
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE timestamp >= ? AND timestamp < ?
 	`
 	args := []any{bucketSec, fromUnix, toExclusiveUnix}
@@ -1269,7 +1269,7 @@ func (r *Repository) GetRateOverTime(ctx context.Context, fromYMD, toYMD string,
 			COALESCE(SUM(duration_ms), 0) AS duration_ms_sum,
 			AVG(CAST(output_tokens AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_out_per_s,
 			AVG(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL) * 1000.0 / CAST(duration_ms AS REAL)) AS avg_total_per_s
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE timestamp >= ? AND timestamp < ? AND duration_ms > 0
 	`
 	args := []any{bucketSec, fromUnix, toExclusiveUnix}
@@ -1339,7 +1339,7 @@ func (r *Repository) GetSessionRecentMinuteRate(ctx context.Context, sessionID s
 	const bucketSec int64 = 60
 	var lastActive sql.NullInt64
 	err := r.db.QueryRowContext(ctx, `
-		SELECT MAX(timestamp) FROM api_requests
+		SELECT MAX(timestamp) FROM claude_pool_requests
 		WHERE session_id = ? AND duration_ms > 0`, sessionID,
 	).Scan(&lastActive)
 	if err == sql.ErrNoRows || !lastActive.Valid {
@@ -1360,7 +1360,7 @@ func (r *Repository) GetSessionRecentMinuteRate(ctx context.Context, sessionID s
 			COALESCE(SUM(duration_ms), 0),
 			AVG(CAST(output_tokens AS REAL) * 1000.0 / CAST(duration_ms AS REAL)),
 			AVG(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL) * 1000.0 / CAST(duration_ms AS REAL))
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE session_id = ? AND duration_ms > 0
 		  AND timestamp >= ? AND timestamp < ?
 	`
@@ -1406,7 +1406,7 @@ func (r *Repository) CountDailyStatsByModel(ctx context.Context, from, to string
 	var count int64
 	err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM (
-			SELECT 1 FROM daily_model_agg
+			SELECT 1 FROM claude_pool_agg
 			WHERE date >= ? AND date <= ?
 			GROUP BY `+dateExpr+`, model
 		)`, from, to).Scan(&count)
@@ -1454,7 +1454,7 @@ func (r *Repository) GetRecentRequests(ctx context.Context, limit, offset int, m
 		service_name, service_version, host_arch, os_type, os_version,
 		error_type, error_message, error_code, error_retryable,
 		reasoning_tokens, total_tokens, http_status, endpoint, conversation_id
-		FROM api_requests` + whereClause + ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+		FROM claude_pool_requests` + whereClause + ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -1488,7 +1488,7 @@ func (r *Repository) GetRecentRequests(ctx context.Context, limit, offset int, m
 // GetDistinctModels returns all unique model names in the database.
 func (r *Repository) GetDistinctModels(ctx context.Context) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT DISTINCT model FROM daily_model_agg WHERE model != '' ORDER BY model`)
+		`SELECT DISTINCT model FROM claude_pool_agg WHERE model != '' ORDER BY model`)
 	if err != nil {
 		return nil, err
 	}
@@ -1511,7 +1511,7 @@ func (r *Repository) CountRecentRequests(ctx context.Context, model, from, to st
 		return 0, err
 	}
 	var count int64
-	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests`+whereClause, args...).Scan(&count)
+	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM claude_pool_requests`+whereClause, args...).Scan(&count)
 	return count, err
 }
 
@@ -1546,7 +1546,7 @@ func (r *Repository) GetDurationStatsByModel(ctx context.Context, model, from, t
 			SUM(CAST((input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) AS REAL)) * 1000.0 / NULLIF(SUM(duration_ms), 0) AS weighted_total_tokens_per_s,
 			MAX(duration_ms) AS max_duration_ms,
 			MIN(duration_ms) AS min_duration_ms
-		FROM api_requests`+whereClause+`
+		FROM claude_pool_requests`+whereClause+`
 		GROUP BY model
 		ORDER BY avg_duration_ms DESC
 		LIMIT ?`, append(args, lim)...)
@@ -1591,7 +1591,7 @@ func (r *Repository) GetSessionStats(ctx context.Context, from, to string, limit
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(cost_usd), 0)
-		FROM api_requests
+		FROM claude_pool_requests
 		WHERE session_id != ''
 		  AND timestamp >= ? AND timestamp < ?
 		GROUP BY session_id
@@ -1624,7 +1624,7 @@ func (r *Repository) CountSessionStats(ctx context.Context, from, to string) (in
 	}
 	var count int64
 	err = r.db.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT session_id) FROM api_requests
+		SELECT COUNT(DISTINCT session_id) FROM claude_pool_requests
 		WHERE session_id != ''
 		  AND timestamp >= ? AND timestamp < ?`, fromUnix, toExclusiveUnix).Scan(&count)
 	return count, err

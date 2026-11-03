@@ -415,6 +415,23 @@ func runMigrations(db *sql.DB) error {
 		return fmt.Errorf("codex indexes: %w", err)
 	}
 
+	// AllClient pool views — the original All Clients | Codex tab design:
+	// the generic dashboard endpoints serve the NON-Codex pool through these
+	// views (claude-code, opencode, DSH, …), while the Codex tab reads
+	// /api/codex/* (service_name='codex' in the same unified tables). Views
+	// are recreated on every boot so schema drift can never serve mixed data.
+	_, err = db.Exec(`
+		DROP VIEW IF EXISTS claude_pool_requests;
+		CREATE VIEW claude_pool_requests AS
+			SELECT * FROM api_requests WHERE service_name != 'codex';
+		DROP VIEW IF EXISTS claude_pool_agg;
+		CREATE VIEW claude_pool_agg AS
+			SELECT * FROM daily_model_agg WHERE service_name != 'codex';
+	`)
+	if err != nil {
+		return fmt.Errorf("pool views: %w", err)
+	}
+
 	// 5) Codex sub-event tables — populated in Task 5 + Task 10.
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS codex_user_prompt_events (
