@@ -351,35 +351,68 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 	// Guard the fallback UPDATE: two concurrent completions can select the
 	// same pending row under WAL (readers don't block). Last-write-wins on the
 	// row is acceptable, but the agg deltas must apply EXACTLY once, so gate
-	// them on RowsAffected — the loser sees 0 and skips its deltas.
-	res, err := tx.ExecContext(ctx, `
-		UPDATE api_requests
-		SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-		    cache_creation_tokens = ?, reasoning_tokens = ?, total_tokens = ?,
-		    cost_usd = ?,
-		    duration_ms = CASE WHEN ? > 0 THEN ? ELSE duration_ms END,
-		    ttft_ms = CASE WHEN ? > 0 THEN ? ELSE ttft_ms END
-		WHERE id = ? AND input_tokens = 0 AND output_tokens = 0
-		  AND cache_read_tokens = 0 AND cache_creation_tokens = 0
-		  AND reasoning_tokens = 0 AND total_tokens = 0`,
-		u.InputTokens, u.OutputTokens, u.CacheReadTokens,
-		u.CacheCreationTokens, u.ReasoningTokens, u.TotalTokens,
-		costToInt64(u.CostUSD),
-		u.DurationMs, u.DurationMs,
-		u.TTFTMs, u.TTFTMs,
-		rowID,
-	)
-	if err != nil {
-		return false, fmt.Errorf("update codex tokens: %w", err)
-	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		// Someone else finalized this row between our SELECT and UPDATE.
-		// Commit as an idempotent no-op without agg deltas.
-		if commitErr := tx.Commit(); commitErr != nil {
-			return false, fmt.Errorf("commit raced codex update: %w", commitErr)
+	// them on RowsAffected. When the loser simply returned "success" its
+	// token vector was dropped silently and the tracker entry evicted (R1
+	// review A2-3) — for the fallback path, retry the NEXT-newest pending row
+	// (the loser's own anchor) before giving up.
+	excluded := int64(0)
+	for {
+		if u.RequestRowID == 0 && excluded != 0 {
+			err = tx.QueryRowContext(ctx, `
+				SELECT id, timestamp FROM api_requests
+				WHERE session_id = ? AND model = ? AND service_name = ?
+				  AND input_tokens = 0 AND output_tokens = 0
+				  AND cache_read_tokens = 0 AND cache_creation_tokens = 0
+				  AND reasoning_tokens = 0 AND total_tokens = 0
+				  AND timestamp >= ? AND id != ?
+				ORDER BY id DESC LIMIT 1`,
+				u.SessionID, u.Model, CodexServiceName, cutoff, excluded,
+			).Scan(&rowID, &rowTs)
+			if err == sql.ErrNoRows {
+				// No other pending row: treat as an idempotent no-op.
+				if commitErr := tx.Commit(); commitErr != nil {
+					return false, fmt.Errorf("commit raced codex update: %w", commitErr)
+				}
+				return true, nil
+			}
+			if err != nil {
+				return false, fmt.Errorf("reselect codex pending row: %w", err)
+			}
 		}
-		return true, nil
+		res, err := tx.ExecContext(ctx, `
+			UPDATE api_requests
+			SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+			    cache_creation_tokens = ?, reasoning_tokens = ?, total_tokens = ?,
+			    cost_usd = ?,
+			    duration_ms = CASE WHEN ? > 0 THEN ? ELSE duration_ms END,
+			    ttft_ms = CASE WHEN ? > 0 THEN ? ELSE ttft_ms END
+			WHERE id = ? AND input_tokens = 0 AND output_tokens = 0
+			  AND cache_read_tokens = 0 AND cache_creation_tokens = 0
+			  AND reasoning_tokens = 0 AND total_tokens = 0`,
+			u.InputTokens, u.OutputTokens, u.CacheReadTokens,
+			u.CacheCreationTokens, u.ReasoningTokens, u.TotalTokens,
+			costToInt64(u.CostUSD),
+			u.DurationMs, u.DurationMs,
+			u.TTFTMs, u.TTFTMs,
+			rowID,
+		)
+		if err != nil {
+			return false, fmt.Errorf("update codex tokens: %w", err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected > 0 {
+			break
+		}
+		// Someone else finalized this row between our SELECT and UPDATE.
+		if u.RequestRowID != 0 {
+			// Pinned path: a duplicate delivery racing its own first apply —
+			// commit as an idempotent no-op without agg deltas.
+			if commitErr := tx.Commit(); commitErr != nil {
+				return false, fmt.Errorf("commit raced codex update: %w", commitErr)
+			}
+			return true, nil
+		}
+		excluded = rowID
 	}
 
 	dateKey := time.Unix(rowTs, 0).Local().Format("2006-01-02")
@@ -397,7 +430,7 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 // InsertCodexUserPrompt inserts a Codex prompt into the shared
 // user_prompt_events table.
 func (r *Repository) InsertCodexUserPrompt(ctx context.Context, e *CodexEvent) error {
-	_, err := r.db.ExecContext(ctx, `
+	err := r.execWithBusyRetry(ctx, `
 		INSERT INTO user_prompt_events
 			(timestamp, session_id, user_id, prompt_id, prompt_text, prompt_length,
 			 event_sequence, terminal_type, service_name, service_version,
@@ -413,7 +446,7 @@ func (r *Repository) InsertCodexUserPrompt(ctx context.Context, e *CodexEvent) e
 // InsertCodexToolDecision inserts a Codex approval into the shared
 // tool_decision_events table.
 func (r *Repository) InsertCodexToolDecision(ctx context.Context, e *CodexEvent) error {
-	_, err := r.db.ExecContext(ctx, `
+	err := r.execWithBusyRetry(ctx, `
 		INSERT INTO tool_decision_events
 			(timestamp, session_id, user_id, prompt_id, event_sequence, tool_name,
 			 decision, source, terminal_type, conversation_id, call_id, service_name)
@@ -430,7 +463,7 @@ func (r *Repository) InsertCodexToolDecision(ctx context.Context, e *CodexEvent)
 // tool_result_size_bytes column; Codex-only detail (arguments_length,
 // mcp_server, tool_origin) rides in the dedicated columns.
 func (r *Repository) InsertCodexToolResult(ctx context.Context, e *CodexEvent) error {
-	_, err := r.db.ExecContext(ctx, `
+	err := r.execWithBusyRetry(ctx, `
 		INSERT INTO tool_result_events
 			(timestamp, session_id, user_id, prompt_id, event_sequence, tool_name,
 			 success, duration_ms, tool_result_size_bytes, decision_source, decision_type,
@@ -554,7 +587,7 @@ func (r *Repository) UpdateCodexRequestTTFT(
 	}
 
 	cutoff := ts.Unix() - 600
-	_, err := r.db.ExecContext(ctx, `
+	err := r.execWithBusyRetry(ctx, `
 		UPDATE api_requests
 		SET ttft_ms = ?
 		WHERE id = (
@@ -615,7 +648,7 @@ func (r *Repository) UpdateCodexTurnTTFT(
 // InsertCodexRawEvent inserts the raw OTLP payload into the shared
 // raw_otlp_events table (identical schema to the legacy codex one).
 func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, timestampUnix int64, rawJSON string) error {
-	_, err := r.db.ExecContext(ctx, `
+	err := r.execWithBusyRetry(ctx, `
 		INSERT INTO raw_otlp_events (timestamp, event_type, raw_json) VALUES (?, ?, ?)`,
 		timestampUnix, eventType, rawJSON,
 	)
@@ -650,12 +683,17 @@ func (r *Repository) GetCodexDashboard(ctx context.Context, from, to string) (*D
 		return nil, err
 	}
 	d.TotalCostUSD = costToFloat64(costUnits)
+	// Fold the full input side, exactly like GetDashboardForRange: the same
+	// h-input KPI card renders both endpoints, so total_input_tokens must
+	// mean the same thing (input + cache_read + cache_creation) on both
+	// tabs or the two dashboards cannot be reconciled (R1 review A5-2).
+	d.TotalInputTokens += d.TotalCacheReadTokens + cacheCreate
 	// Same denominator as the Claude dashboard (GetDailyStats) and the
 	// frontend token-math: the full input side, cache_creation included.
 	// The old input+cache_read form diverged for Codex, which reports
 	// large cache_creation volumes (docs review A6).
-	if d.TotalInputTokens+d.TotalCacheReadTokens+cacheCreate > 0 {
-		d.CacheHitRate = float64(d.TotalCacheReadTokens) / float64(d.TotalInputTokens+d.TotalCacheReadTokens+cacheCreate)
+	if d.TotalInputTokens > 0 {
+		d.CacheHitRate = float64(d.TotalCacheReadTokens) / float64(d.TotalInputTokens)
 	}
 	return d, nil
 }

@@ -239,25 +239,40 @@ func (m *importManager) runInspection(ctx context.Context, jobID, path string) {
 	// the codex archive mapping so historical Codex data still lands in
 	// the correct unified tables.
 	codexRows, codexErr := m.engine.CodexArchiveRows(ctx, path)
+	if codexErr != nil {
+		// Never silently drop the archive: a modern file whose codex_* check
+		// failed (transient IO/BUSY) would otherwise import without its codex
+		// history and nobody would notice (R1 review A3-6).
+		log.Printf("import %s: codex archive check failed: %v", jobID, codexErr)
+	}
 	codexOnly, codexToo := false, false
 	if codexErr == nil && codexRows > 0 {
-		if err != nil {
-			preview = dbmerge.Inspection{
-				SourceRows: codexRows,
-				NewRows:    codexRows, // estimate; staging dedups exactly
-				Tables: []dbmerge.TableStats{{
-					Name: "codex archive → api_requests & events", SourceRows: codexRows, NewRows: codexRows,
-				}},
-				Warnings: []string{"legacy unified-table schema: only the codex archive will be imported"},
-			}
-			err = nil
-			codexOnly = true
-		} else {
+		// Only the legacy-schema signal may degrade to codexOnly. An
+		// integrity failure (ErrIntegrityCheck) must FAIL the job: the
+		// archive count on a corrupt file still succeeds, but streaming it
+		// in would import half-broken data under a "legacy file" label
+		// (R1 review A3-2).
+		if err == nil {
 			codexToo = true
 			preview.SourceRows += codexRows
 			preview.Tables = append(preview.Tables, dbmerge.TableStats{
 				Name: "codex archive → api_requests & events", SourceRows: codexRows,
 			})
+		} else {
+			var mergeErr *dbmerge.MergeError
+			if errors.As(err, &mergeErr) && mergeErr.Code == dbmerge.ErrUnsupportedSchema {
+				preview = dbmerge.Inspection{
+					SourceRows: codexRows,
+					NewRows:    codexRows, // estimate; staging dedups exactly
+					Tables: []dbmerge.TableStats{{
+						Name: "codex archive → api_requests & events", SourceRows: codexRows, NewRows: codexRows,
+					}},
+					Warnings: []string{"legacy unified-table schema: only the codex archive will be imported"},
+				}
+				err = nil
+				codexOnly = true
+			}
+			// any other Inspect error (integrity, IO) fails the job as-is
 		}
 	}
 	m.mu.Lock()
@@ -537,7 +552,15 @@ func (m *importManager) sweep(startup bool) error {
 	if m.job != nil {
 		currentPath = m.job.path
 		if !m.job.active {
-			expired := (m.job.State == importFailed && now.Unix() >= m.job.UpdatedAt+int64(time.Hour/time.Second)) ||
+			// A job stuck in the UPLOADING phase has a client that stopped
+			// feeding the multipart body without a deadline (webSrv sets no
+			// ReadTimeout). The handler goroutine stays blocked in io.Copy, so
+			// sweep is the only thing that can free the single slot — otherwise
+			// every later upload 409s import_busy until restart (R1 A2-1).
+			uploadStuck := m.job.Phase == dbmerge.PhaseUploading && m.job.State == importInspecting &&
+				now.Unix() >= m.job.CreatedAt+int64((10*time.Minute)/time.Second)
+			expired := uploadStuck ||
+				(m.job.State == importFailed && now.Unix() >= m.job.UpdatedAt+int64(time.Hour/time.Second)) ||
 				(m.job.State == importReady && now.Unix() >= m.job.UpdatedAt+int64((24*time.Hour)/time.Second))
 			if expired {
 				expiredPath = m.job.path

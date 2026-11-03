@@ -87,8 +87,14 @@ func parsePage(r *http.Request) (page, pageSize int) {
 		}
 	}
 	if v := r.URL.Query().Get("page_size"); v != "" {
-		if n, _ := strconv.Atoi(v); n > 0 && n <= 2000 {
+		if n, _ := strconv.Atoi(v); n > 0 {
 			pageSize = n
+			// Clamp, don't reset: page_size=5000 used to fall back to the
+			// default 20, silently answering with far less than requested
+			// (R1 review A4-11).
+			if pageSize > 2000 {
+				pageSize = 2000
+			}
 		}
 	}
 	return
@@ -805,7 +811,11 @@ func (h *Handler) runRecompute() {
 		h.recompute.changed = p.Changed
 		h.recompute.mu.Unlock()
 	}
-	res, err := recompute.Run(ctx, h.repo.DB(), h.pricer, recompute.Options{}, true, progress)
+	// The frozen codex_* archive is NOT recomputed from the stock endpoint:
+	// identity ignores cost_usd, so an archive rewrite would silently fork
+	// the archive from its already-imported unified-pool copies. Explicit
+	// Tables via the CLI can still opt in.
+	res, err := recompute.Run(ctx, h.repo.DB(), h.pricer, recompute.Options{Tables: []string{"api_requests"}}, true, progress)
 	h.recompute.mu.Lock()
 	h.recompute.running = false
 	h.recompute.finishedAt = time.Now().Unix()
@@ -862,7 +872,27 @@ func rangeToFromTo(rangeParam string) (from, to string) {
 //   - or range=today|week|month|all
 //   - optional: model=<name> to filter down to a single model
 //   - optional: limit=<n> (default 2000, max 2000)
+//
+// rejectInvalidDateParams centralizes the mirror-consistent rule the Codex
+// endpoints already enforce: a from/to that was EXPLICITLY provided but is
+// not a valid calendar date is a client bug and gets a 400 — never a silent
+// fallback to range defaults (which would answer with data the caller never
+// asked for; R1 review A4-1).
+func rejectInvalidDateParams(w http.ResponseWriter, r *http.Request) bool {
+	q := r.URL.Query()
+	for _, name := range []string{"from", "to"} {
+		if v := q.Get(name); v != "" && !isValidDate(v) {
+			writeAPIError(w, http.StatusBadRequest, "invalid_date", "Parameter '"+name+"' must be a valid date (YYYY-MM-DD)", nil)
+			return true
+		}
+	}
+	return false
+}
 func (h *Handler) Durations(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if h.repo == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -905,6 +935,10 @@ func (h *Handler) Durations(w http.ResponseWriter, r *http.Request) {
 
 // Dashboard returns aggregated token usage and cost KPIs for a date range.
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	from, to := rangeToFromTo(r.URL.Query().Get("range"))
 	// Allow explicit from/to to override range param
 	if v := r.URL.Query().Get("from"); v != "" && isValidDate(v) {
@@ -929,6 +963,10 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 // overrides). This reads api_requests — the never-pruned unified pool that
 // now includes migrated and live Codex rows (service_name='codex').
 func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if h.repo == nil {
 		json.NewEncoder(w).Encode(map[string][]db.ClientSummary{"data": {}})
@@ -957,8 +995,12 @@ func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 // the selected date range — the pivot input for the Hour of Day view
 // ("how many Claude Opus tokens at 13:00, from Claude Code"). The client
 // stacks by model or client; hours with no data are simply absent rows.
-// Reads api_requests — the unified pool including Codex rows.
+// Reads the claude_pool_requests view — the non-codex side of the unified pool.
 func (h *Handler) Hours(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if h.repo == nil {
 		json.NewEncoder(w).Encode(map[string][]db.HourOfDayDetail{"data": {}})
@@ -986,6 +1028,10 @@ type CalendarResponse struct {
 
 // Calendar returns compact per-day aggregates for the dashboard usage calendar.
 func (h *Handler) Calendar(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if h.repo == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1023,6 +1069,10 @@ func (h *Handler) Calendar(w http.ResponseWriter, r *http.Request) {
 
 // DailyModel returns per-day, per-model token usage and cost with pagination.
 func (h *Handler) DailyModel(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
 	if from == "" || to == "" || !isValidDate(from) || !isValidDate(to) {
@@ -1121,6 +1171,10 @@ type IntradayResponse struct {
 //   - bucket=5|10|15|30|60 (default 30)
 //   - model=<name> (optional filter)
 func (h *Handler) Intraday(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	q := r.URL.Query()
 	from := q.Get("from")
 	to := q.Get("to")
@@ -1181,6 +1235,10 @@ type RateResponse struct {
 
 // Rate returns per-(bucket, model) token throughput over time for the rate chart.
 func (h *Handler) Rate(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	q := r.URL.Query()
 	from := q.Get("from")
 	to := q.Get("to")
@@ -1256,6 +1314,10 @@ func (h *Handler) SessionRate(w http.ResponseWriter, r *http.Request) {
 
 // Requests returns individual API request records with optional model and date filters.
 func (h *Handler) Requests(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	page, pageSize := parsePage(r)
 	offset := (page - 1) * pageSize
 	model := r.URL.Query().Get("model")
@@ -1286,6 +1348,10 @@ func (h *Handler) Requests(w http.ResponseWriter, r *http.Request) {
 
 // Sessions returns per-session aggregated stats with pagination.
 func (h *Handler) Sessions(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
 	from, to := rangeToFromTo(r.URL.Query().Get("range"))
 	if v := r.URL.Query().Get("from"); v != "" && isValidDate(v) {
 		from = v

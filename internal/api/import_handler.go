@@ -48,6 +48,20 @@ func (h *Handler) ImportInspect(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
+	// The inspection reads the live pool through a pooled connection while
+	// the one-click migration writes it under BEGIN IMMEDIATE batches — the
+	// exact mixed read/write pattern that corrupted an import_ledger page
+	// during R5 offline testing. Gate the whole upload+inspect path against
+	// a running migration, exactly like ImportStart (R1 review A2-2).
+	h.writerBusMu.Lock()
+	h.codexMigrate.mu.Lock()
+	migrationRunning := h.codexMigrate.running
+	h.codexMigrate.mu.Unlock()
+	h.writerBusMu.Unlock()
+	if migrationRunning {
+		writeAPIError(w, http.StatusConflict, "migration_in_progress", "The Codex migration is running; upload after it finishes", nil)
+		return
+	}
 	manager, ok := h.importManager(w)
 	if !ok {
 		return
@@ -243,7 +257,9 @@ func (h *Handler) ImportDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	jobID := strings.TrimSpace(r.URL.Query().Get("job_id"))
 	if jobID == "" {
-		writeAPIError(w, http.StatusNotFound, "job_not_found", "Database import job not found", nil)
+		// A missing job_id is a client bug, not a missing resource — 400,
+		// distinguishable from a real unknown job (R1 review A4-8).
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "Parameter 'job_id' is required", nil)
 		return
 	}
 	err := manager.delete(jobID)

@@ -14,7 +14,7 @@ import (
 // preferring explicit ?from=&to= over ?range=. An explicitly supplied but
 // invalid from/to is REJECTED (ok=false → 400): silently substituting the
 // range default would return data the caller never asked for. Only when no
-// explicit value is given does ?range= (default "30d") apply.
+// explicit value is given does ?range= (default "today") apply.
 func codexResolveRange(r *http.Request) (string, string, bool) {
 	q := r.URL.Query()
 	from, to := rangeToFromTo(q.Get("range"))
@@ -70,8 +70,9 @@ func (h *Handler) CodexDashboard(w http.ResponseWriter, r *http.Request) {
 // CodexCalendar returns compact per-day aggregates for the Codex usage calendar.
 func (h *Handler) CodexCalendar(w http.ResponseWriter, r *http.Request) {
 	if h.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(CalendarResponse{Data: []db.CalendarDay{}})
+		// 503 like every other codex endpoint — a 200 with empty data would
+		// lie to health probes (R1 review A4-3).
+		writeAPIError(w, http.StatusServiceUnavailable, "repository_unavailable", "repository not initialized", nil)
 		return
 	}
 	from, to, ok := codexResolveRange(r)

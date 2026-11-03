@@ -208,10 +208,12 @@ func scanTable(ctx context.Context, db *sql.DB, reg pricing.Registry, table stri
 			continue
 		}
 
-		// Codex stores input_tokens inclusive of cached tokens; Calc wants uncached.
+		// Codex stores input_tokens inclusive of BOTH cache classes; Calc wants
+		// uncached (mirrors migration + live-receiver normalization:
+		// input - cacheRead - cacheCreate, clamped at 0).
 		uncachedInput := input
 		if table == "codex_api_requests" {
-			uncachedInput = input - cacheRead
+			uncachedInput = input - cacheRead - cacheCreate
 			if uncachedInput < 0 {
 				uncachedInput = 0
 			}

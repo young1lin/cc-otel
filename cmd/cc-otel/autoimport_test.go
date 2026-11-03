@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/young1lin/cc-otel/internal/config"
 	"github.com/young1lin/cc-otel/internal/db"
+	"github.com/young1lin/cc-otel/internal/dbmerge"
 )
 
 func newAutoTestDB(t *testing.T) *db.Repository {
@@ -170,5 +173,133 @@ func TestAutoImport_HoldsBefore30Days(t *testing.T) {
 	}
 	if got := codexUnifiedCount(t, repo); got != 1 {
 		t.Fatalf("day-29 boot must hold: got %d rows", got)
+	}
+}
+
+// T7 (R1 review P1): a crash between the first committed batch and the
+// marker write must NOT strand imported rows outside the purge ranges. The
+// persistent attempt pre-snapshot makes the next boot resume against the
+// ORIGINAL pre ids, so (pre, post] covers both runs' rows.
+func TestAutoImport_ResumesAfterCrashedEngine(t *testing.T) {
+	repo := newAutoTestDB(t)
+	ctx := context.Background()
+	seedArchive(t, repo, "crash-conv", time.Now().Add(-48*time.Hour))
+
+	orig := runCodexMigrate
+	defer func() { runCodexMigrate = orig }()
+
+	// First boot: the real engine fully commits, then the process dies
+	// before the caller records the marker (the exact P1 crash window).
+	runCodexMigrate = func(ctx context.Context, database *sql.DB, retentionDays int) (dbmerge.Result, error) {
+		res, err := dbmerge.MigrateCodexToAll(ctx, database, dbmerge.Options{
+			Location:      time.Local,
+			RetentionDays: retentionDays,
+		})
+		if err != nil {
+			return res, err
+		}
+		return res, fmt.Errorf("simulated crash after commit")
+	}
+	if err := autoImportCodex(ctx, repo.DB(), repo, 90); err == nil {
+		t.Fatal("first boot must surface the engine failure")
+	}
+	if got := codexUnifiedCount(t, repo); got != 1 {
+		t.Fatalf("crashed engine committed its row: got %d", got)
+	}
+	if _, found, err := loadAutoImportMarker(ctx, repo.DB()); err != nil || found {
+		t.Fatalf("no marker after crash: found=%v err=%v", found, err)
+	}
+	if _, hasAttempt, err := loadAttemptPre(ctx, repo.DB()); err != nil || !hasAttempt {
+		t.Fatalf("attempt pre-snapshot must survive the crash: has=%v err=%v", hasAttempt, err)
+	}
+
+	// Second boot: real engine (dedup skips the already-committed row);
+	// the marker's ranges must still cover it via the ORIGINAL pre ids.
+	runCodexMigrate = orig
+	if err := autoImportCodex(ctx, repo.DB(), repo, 90); err != nil {
+		t.Fatal(err)
+	}
+	m, found, err := loadAutoImportMarker(ctx, repo.DB())
+	if err != nil || !found {
+		t.Fatalf("marker expected after resume: found=%v err=%v", found, err)
+	}
+	if _, hasAttempt, err := loadAttemptPre(ctx, repo.DB()); err != nil || hasAttempt {
+		t.Fatalf("attempt must be cleared with the marker: has=%v err=%v", hasAttempt, err)
+	}
+	ranges, err := loadAutoImportRanges(ctx, repo.DB(), m.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var covered bool
+	var rid int64
+	if err := repo.DB().QueryRow("SELECT id FROM api_requests WHERE service_name='codex' AND session_id='crash-conv'").Scan(&rid); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range ranges {
+		if r.table == "api_requests" && rid >= r.minID && rid <= r.maxID {
+			covered = true
+		}
+	}
+	if !covered {
+		t.Fatalf("row committed by the crashed engine (id=%d) must be inside the resume ranges: %+v", rid, ranges)
+	}
+	// And the purge built from those ranges removes it (archive untouched).
+	if err := autoPurgeImported(ctx, repo.DB(), repo, m); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexUnifiedCount(t, repo); got != 0 {
+		t.Fatalf("purge after resume must delete both runs' rows: got %d", got)
+	}
+}
+
+// T8: the 0-new-rows fast path must NOT fire while an attempt is pending,
+// even when the crashed run already imported every api row.
+func TestAutoImport_FastPathSuppressedDuringAttempt(t *testing.T) {
+	repo := newAutoTestDB(t)
+	ctx := context.Background()
+	seedArchive(t, repo, "fast-conv", time.Now().Add(-48*time.Hour))
+
+	orig := runCodexMigrate
+	defer func() { runCodexMigrate = orig }()
+
+	// Boot 1: real engine imports everything, then crashes pre-marker.
+	runCodexMigrate = func(ctx context.Context, database *sql.DB, retentionDays int) (dbmerge.Result, error) {
+		res, err := dbmerge.MigrateCodexToAll(ctx, database, dbmerge.Options{
+			Location:      time.Local,
+			RetentionDays: retentionDays,
+		})
+		if err != nil {
+			return res, err
+		}
+		return res, fmt.Errorf("crash")
+	}
+	if err := autoImportCodex(ctx, repo.DB(), repo, 90); err == nil {
+		t.Fatal("boot 1 fails")
+	}
+
+	// Boot 2: real engine restored. With 0 new api rows the fast path WOULD record a
+	// 0-range marker if it fired; instead the resume path must call the
+	// engine and produce ranges covering the crashed run's row.
+	runCodexMigrate = orig
+	if err := autoImportCodex(ctx, repo.DB(), repo, 90); err != nil {
+		t.Fatal(err)
+	}
+	m, found, err := loadAutoImportMarker(ctx, repo.DB())
+	if err != nil || !found {
+		t.Fatalf("marker expected: found=%v err=%v", found, err)
+	}
+	ranges, _ := loadAutoImportRanges(ctx, repo.DB(), m.id)
+	var rid int64
+	if err := repo.DB().QueryRow("SELECT id FROM api_requests WHERE service_name='codex' AND session_id='fast-conv'").Scan(&rid); err != nil {
+		t.Fatal(err)
+	}
+	covered := false
+	for _, r := range ranges {
+		if r.table == "api_requests" && rid >= r.minID && rid <= r.maxID {
+			covered = true
+		}
+	}
+	if !covered {
+		t.Fatalf("fast path must not strand the crashed run's row (id=%d): ranges=%+v", rid, ranges)
 	}
 }

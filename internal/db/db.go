@@ -423,10 +423,10 @@ func runMigrations(db *sql.DB) error {
 	_, err = db.Exec(`
 		DROP VIEW IF EXISTS claude_pool_requests;
 		CREATE VIEW claude_pool_requests AS
-			SELECT * FROM api_requests WHERE service_name != 'codex';
+			SELECT * FROM api_requests WHERE service_name IS NULL OR service_name != 'codex';
 		DROP VIEW IF EXISTS claude_pool_agg;
 		CREATE VIEW claude_pool_agg AS
-			SELECT * FROM daily_model_agg WHERE service_name != 'codex';
+			SELECT * FROM daily_model_agg WHERE service_name IS NULL OR service_name != 'codex';
 	`)
 	if err != nil {
 		return fmt.Errorf("pool views: %w", err)
@@ -583,7 +583,7 @@ func runMigrations(db *sql.DB) error {
 		return fmt.Errorf("create empty-service_name index: %w", err)
 	}
 	if res, err := db.Exec(fmt.Sprintf(
-		`UPDATE api_requests SET service_name = '%s' WHERE service_name = ''`, DefaultServiceName)); err != nil {
+		`UPDATE api_requests SET service_name = '%s' WHERE service_name = '' OR service_name IS NULL`, DefaultServiceName)); err != nil {
 		return fmt.Errorf("backfill empty service_name: %w", err)
 	} else if n, _ := res.RowsAffected(); n > 0 {
 		if _, err := db.Exec(`DELETE FROM daily_model_agg`); err != nil {

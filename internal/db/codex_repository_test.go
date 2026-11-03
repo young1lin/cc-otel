@@ -584,7 +584,10 @@ func TestCodexQueries_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dashboard: %v", err)
 	}
-	if dash.RequestCount != 2 || dash.TotalInputTokens != 1600 {
+	if dash.RequestCount != 2 || dash.TotalInputTokens != 1600+400 {
+		// total_input_tokens folds the FULL input side (input + cache_read +
+		// cache_creation), matching GetDashboardForRange — the same KPI card
+		// renders both endpoints (R1 review A5-2).
 		t.Fatalf("dashboard wrong: %+v", dash)
 	}
 	if dash.TotalCacheReadTokens != 400 || dash.CacheHitRate != 0.2 {

@@ -61,6 +61,16 @@ type aggRebuilder interface {
 	RebuildDailyAggregates(context.Context) error
 }
 
+// runCodexMigrate is the engine entry used by autoImportCodex. A package
+// variable so the crash-resume tests can simulate an engine that commits
+// batches and then dies — the state machine must recover its purge ranges.
+var runCodexMigrate = func(ctx context.Context, database *sql.DB, retentionDays int) (dbmerge.Result, error) {
+	return dbmerge.MigrateCodexToAll(ctx, database, dbmerge.Options{
+		Location:      time.Local,
+		RetentionDays: retentionDays,
+	})
+}
+
 // autoImportCodex runs the auto-import/purge state machine for one boot.
 func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, retentionDays int) error {
 	if err := ensureAutoImportTables(ctx, database); err != nil {
@@ -72,7 +82,7 @@ func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, r
 		return fmt.Errorf("load marker: %w", err)
 	}
 	if found {
-		if !marker.purged && time.Now().Unix() >= marker.importedAt+codexAutoPurgeDays*86400 {
+		if !marker.purged && dayStart(time.Now()) >= dayStart(time.Unix(marker.importedAt, 0))+codexAutoPurgeDays*86400 { // local-midnight alignment, matching the migration sanity check (R1 A5-5)
 			return autoPurgeImported(ctx, database, repo, marker)
 		}
 		return nil // imported recently (or already purged): nothing to do
@@ -85,47 +95,66 @@ func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, r
 	if total == 0 {
 		return nil // no legacy history: no marker, nothing ever to purge
 	}
-	// Already migrated deliberately (the one-click button ran before this
-	// daemon upgrade)? Record the marker WITHOUT re-running the engine: a
-	// re-run on a retention-pruned install would resurrect ~65k pruned
-	// sub-event rows that the next retention sweep deletes again (R5
-	// rollback finding). The api-request identity check is exact; when it
-	// reports zero new rows the archive is fully represented in the pool.
-	preview, err := dbmerge.InspectCodexToAll(ctx, database)
+
+	// A previous boot started the engine but never finished (crash between
+	// a committed batch and the marker write). Resume against the STORED pre
+	// ids: the engine dedups what already landed, imports the remainder, and
+	// the resulting (pre, post] ranges cover every row any attempt committed.
+	attemptPre, hasAttempt, err := loadAttemptPre(ctx, database)
 	if err != nil {
-		return fmt.Errorf("archive precheck: %w", err)
-	}
-	apiNew := int64(0)
-	for _, counts := range preview {
-		if counts.SourceTable == "codex_api_requests" {
-			apiNew = counts.NewRows
-		}
-	}
-	if apiNew == 0 {
-		if err := recordAutoImport(ctx, database, time.Now().Unix(), 0, nil); err != nil {
-			return fmt.Errorf("record marker: %w", err)
-		}
-		log.Printf("codex auto-import: archive already migrated (0 new api rows); marker recorded without re-import")
-		return nil
+		return fmt.Errorf("load attempt: %w", err)
 	}
 
-	// Snapshot per-target max ids, import, snapshot again: with the servers
-	// not yet bound the daemon is the only writer, so (pre, post] is exactly
-	// what this import added.
 	pre := map[string]int64{}
-	for _, plan := range codexAutoPlan {
-		pre[plan.dst], err = maxRowID(ctx, database, plan.dst)
+	if !hasAttempt {
+		// Already migrated deliberately (the one-click button ran before this
+		// daemon upgrade)? Record the marker WITHOUT re-running the engine: a
+		// re-run on a retention-pruned install would resurrect ~65k pruned
+		// sub-event rows that the next retention sweep deletes again (R5
+		// rollback finding). Valid ONLY while no attempt ever started — after
+		// a crashed import the fast path would strand committed rows outside
+		// every range and they would never be purged.
+		preview, err := dbmerge.InspectCodexToAll(ctx, database)
 		if err != nil {
-			return fmt.Errorf("snapshot max id %s: %w", plan.dst, err)
+			return fmt.Errorf("archive precheck: %w", err)
 		}
+		apiNew := int64(0)
+		for _, counts := range preview {
+			if counts.SourceTable == "codex_api_requests" {
+				apiNew = counts.NewRows
+			}
+		}
+		if apiNew == 0 {
+			if err := recordAutoImport(ctx, database, time.Now().Unix(), 0, nil); err != nil {
+				return fmt.Errorf("record marker: %w", err)
+			}
+			log.Printf("codex auto-import: archive already migrated (0 new api rows); marker recorded without re-import")
+			return nil
+		}
+
+		// Snapshot per-target max ids BEFORE the engine runs and persist them
+		// immediately: with the servers not yet bound the daemon is the only
+		// writer, so (pre, post] is exactly what this import added.
+		for _, plan := range codexAutoPlan {
+			pre[plan.dst], err = maxRowID(ctx, database, plan.dst)
+			if err != nil {
+				return fmt.Errorf("snapshot max id %s: %w", plan.dst, err)
+			}
+		}
+		if err := recordAttemptPre(ctx, database, pre); err != nil {
+			return fmt.Errorf("persist attempt snapshot: %w", err)
+		}
+	} else {
+		pre = attemptPre
+		log.Printf("codex auto-import: resuming interrupted attempt (pre-snapshot from previous boot)")
 	}
 
-	res, err := dbmerge.MigrateCodexToAll(ctx, database, dbmerge.Options{
-		Location:      time.Local,
-		RetentionDays: retentionDays,
-	})
+	res, err := runCodexMigrate(ctx, database, retentionDays)
 	if err != nil {
-		return fmt.Errorf("archive import failed after %d row(s) (will retry next boot): %w", res.InsertedRows, err)
+		// Attempt rows stay on disk: the next boot resumes with the original
+		// pre snapshot, so rows committed by this failed run remain inside the
+		// eventual (pre, post] purge ranges.
+		return fmt.Errorf("archive import failed after %d row(s) (will resume next boot): %w", res.InsertedRows, err)
 	}
 
 	var ranges []autoImportRange
@@ -201,6 +230,18 @@ func ensureAutoImportTables(ctx context.Context, database *sql.DB) error {
 			max_id INTEGER NOT NULL
 		);
 	`)
+	// One boot's persistent pre-snapshot. Recorded BEFORE the engine runs;
+	// any crash between the first committed batch and the final marker write
+	// leaves these rows behind, and the next boot resumes against the ORIGINAL
+	// pre ids instead of a fresh snapshot — so (pre, post] covers every row
+	// the interrupted import(s) committed, across any number of retries.
+	// Cleared in the same transaction that writes the final marker.
+	_, err = database.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS codex_auto_import_attempt (
+			table_name TEXT PRIMARY KEY,
+			pre_max_id INTEGER NOT NULL DEFAULT 0
+		);
+	`)
 	return err
 }
 
@@ -238,12 +279,56 @@ func loadAutoImportRanges(ctx context.Context, database *sql.DB, importID int64)
 	return out, rows.Err()
 }
 
+func loadAttemptPre(ctx context.Context, database *sql.DB) (map[string]int64, bool, error) {
+	rows, err := database.QueryContext(ctx, "SELECT table_name, pre_max_id FROM codex_auto_import_attempt")
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var name string
+		var id int64
+		if err := rows.Scan(&name, &id); err != nil {
+			return nil, false, err
+		}
+		out[name] = id
+	}
+	return out, len(out) > 0, rows.Err()
+}
+
+func recordAttemptPre(ctx context.Context, database *sql.DB, pre map[string]int64) error {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM codex_auto_import_attempt"); err != nil {
+		return err
+	}
+	for _, plan := range codexAutoPlan {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO codex_auto_import_attempt (table_name, pre_max_id) VALUES (?, ?)",
+			plan.dst, pre[plan.dst]); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func recordAutoImport(ctx context.Context, database *sql.DB, importedAt int64, inserted int64, ranges []autoImportRange) error {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	// The attempt rows and the marker must flip in ONE transaction: a marker
+	// without a cleared attempt would make the next boot re-run the engine
+	// against a finished import, and an attempt surviving its marker would
+	// shadow the fast path forever.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM codex_auto_import_attempt"); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx,
 		"INSERT INTO codex_auto_import (imported_at, purged, inserted_rows) VALUES (?, 0, ?)",
 		importedAt, inserted)
@@ -290,4 +375,11 @@ func maxRowID(ctx context.Context, database *sql.DB, table string) (int64, error
 // isNoTableErr reports whether err is SQLite's "no such table".
 func isNoTableErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
+// dayStart truncates t to its local calendar midnight (the same day
+// alignment the migration sanity check uses).
+func dayStart(t time.Time) int64 {
+	y, m, d := t.Local().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location()).Unix()
 }
