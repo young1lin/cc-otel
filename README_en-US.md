@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm plugin (recommended): `dsh plugin --profile web add @young1lin/dsh-cc-otel`; or `DSH_TELEMETRY_*` env vars / `cordis.patch.yml` | [below](#deepseek-harness-dsh) |
 
 - Every client shares the same cc-otel instance; the request log's **Source column** labels each row.
-- Codex's legacy archive (`codex_*` tables) merges into the unified pool via the one-click migration; live reports are normalized into `api_requests` (`service_name='codex'`) at ingest. The dashboard keeps **two source tabs**: **All Clients** renders the Claude-family clients (Claude Code / OpenCode etc., Codex excluded), while **Codex** reads the unified pool's `service_name='codex'` rows (migrated history + live). The `?source=claude|codex` URL parameter remains the official deep-link mechanism for switching tabs.
+- Codex's legacy archive (`codex_*` tables) merges into the unified pool via the one-click migration; live reports are normalized into `api_requests` (`service_name='codex'`) at ingest. The dashboard is **ONE unified view**: KPIs, charts, Sessions, Request Log, Clients, Hour of Day and Rate cover **every client** (Codex included), with the Request Log **Source column** and the Clients panel attributing rows by `service.name`. The legacy `?source=` URL parameter is meaningless now and is silently rewritten away.
 - Debugging a new client: `go run ./tools/otlp_dump` (both transports, prints without storing; for AI SDK spans it also prints the `would_store_api_request` cc-otel would derive).
 
 ## Install
@@ -261,11 +261,11 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-Start Codex and use normally. Open the dashboard (`http://localhost:8899`) and switch between the **All Clients / Codex** tabs at the top: Codex usage (migrated history + live) lives on the **Codex** tab; the All Clients tab covers the Claude-family clients only. The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into the unified pool's `cost_usd`, so the Cost KPI matches the Claude rows.
+Start Codex and use normally. Open the dashboard (`http://localhost:8899`) — Codex usage (migrated history + live) renders alongside Claude Code and opencode on the same page: the Request Log **Source column** labels the rows `codex`, and the Clients panel gets a codex row. The `environment = "dev"` line above is reported as the OTLP Resource attribute `env`; cc-otel stores it in the same column as Claude Code's `user.id`, so the request-log **User column** tells `dev` / `company` / `staging` / `prod` environments apart. **Codex does not report `cost_usd`** — cc-otel computes it locally from the per-token price table and writes the result into the unified pool's `cost_usd`, so the Cost KPI matches the Claude rows.
 
 ### opencode
 
-opencode is built on the Vercel AI SDK, which reports token usage on GenAI **spans** rather than log events. cc-otel reshapes the usage span into the standard `api_request` shape, so opencode data lands in the **All Clients** tab's unified view; the request log's Source column reads `opencode`.
+opencode is built on the Vercel AI SDK, which reports token usage on GenAI **spans** rather than log events. cc-otel reshapes the usage span into the standard `api_request` shape, so opencode data lands in the unified view; the request log's Source column reads `opencode`.
 
 opencode speaks **OTLP/HTTP (`:4318`)** — pointing it at `:4317` will not work. Two steps:
 
@@ -482,7 +482,7 @@ Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model
 |-------|-------------|
 | **Daily Detail** | Per-day / per-hour tables; Intraday per-bucket bar chart (5 / 10 / 15 / 30 / 60 min, up to 7 days); the **Hour of Day** subtab folds the whole range into 24 hour buckets with client / model pivot dropdowns (any span) |
 | **Sessions** | Per-session Cost / Token aggregates |
-| **Clients** | Per-`service.name` totals: token composition, requests, cost, hit rate, active span, share bar (visible on the All Clients tab; Codex usage lives on the Codex tab — this table counts Claude-family clients only) |
+| **Clients** | Per-`service.name` totals: token composition, requests, cost, hit rate, active span, share bar (always visible; covers every client including Codex) |
 | **Request Log** | Per-model duration and **Out tok/s (avg / weighted)** summary; per-request list with TTFT; pagination bar with page-number jump |
 | **Rate** | Per-model **Token Rate over Time** line chart; Weighted / Avg, Output / Total tok/s, 5 / 15 / 30 / 60 min buckets; click legend to solo one model (**All models** to restore) |
 

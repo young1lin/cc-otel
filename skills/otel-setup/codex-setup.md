@@ -26,7 +26,7 @@ Location varies by OS:
 ## Verify
 
 1. Start a Codex CLI session and make a request
-2. Open `http://localhost:8899` and switch to the **Codex** tab (top of the page; deep link `?source=codex`) — migrated history + live usage appear there. The All Clients tab covers Claude-family clients only. Legacy history needs the one-click migration first: the "Merge Codex history" button in the DB-import dialog
+2. Open `http://localhost:8899` — Codex usage appears in the unified view right away (Source column marks `codex`; the Clients panel gets a codex row). Legacy history needs the one-click migration first: the "Merge Codex history" button in the DB-import dialog
 3. Check that token counts appear in the dashboard
 
 ## Differences from Claude Code

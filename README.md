@@ -69,7 +69,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 | **DeepSeek Harness** | OTLP/HTTP `:4318` | npm 插件（推荐）：`dsh plugin --profile web add @young1lin/dsh-cc-otel`；或 `DSH_TELEMETRY_*` 环境变量 / `cordis.patch.yml` 手工接入 | [下文](#deepseek-harness-dsh-接入) |
 
 - 所有客户端共用同一个 cc-otel 实例，数据统一落到仪表盘；请求日志的 **Source 列**逐行标注来源。
-- Codex 的历史存档（`codex_*` 表）通过一键迁移并入统一池；新上报在接收侧直接归一化写入 `api_requests`（`service_name='codex'`）。仪表盘保留 **双标签页**：**All Clients** 标签渲染 Claude 系客户端（Claude Code / OpenCode 等，不含 Codex），**Codex** 标签读取统一池中 `service_name='codex'` 的行（含迁移历史 + 新上报）。URL 参数 `?source=claude|codex` 仍是官方深链机制，用于直达对应标签。
+- Codex 的历史存档（`codex_*` 表）通过一键迁移并入统一池；新上报在接收侧直接归一化写入 `api_requests`（`service_name='codex'`）。仪表盘是**单一统一视图**：KPI、图表、Sessions、Request Log、Clients、Hour of Day、Rate 全部覆盖**所有客户端**（Codex 含在内），Request Log 的 **Source 列**与 Clients 面板按 `service.name` 标注来源。旧的 `?source=` URL 参数已无意义，访问时会被静默改写为普通 URL。
 - 新客户端接入调试：`go run ./tools/otlp_dump`（双传输、只打印不落库，AI SDK span 还会打印 cc-otel 将派生的 `would_store_api_request`）。
 
 ## 安装
@@ -259,11 +259,11 @@ trace-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 metrics-exporter.otlp-grpc.endpoint = "http://localhost:4317"
 ```
 
-启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899`)，顶部切换 **All Clients / Codex** 标签：Codex 用量（含迁移历史与新上报）在 **Codex** 标签展示；All Clients 标签只含 Claude 系客户端。上面的 `environment = "dev"` 会作为 OTLP Resource 属性 `env` 上报，cc-otel 将其写入与 Claude Code `user.id` 相同的字段——Request Log 的 **User 列**由此区分 `dev` / `company` / `staging` / `prod` 环境。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入统一池的 `cost_usd`，Cost KPI 与 Claude 行等同。
+启动 Codex，正常使用即可。打开 dashboard (`http://localhost:8899`)，Codex 的用量（含迁移历史与新上报）与 Claude Code、OpenCode 同页展示——Request Log 的 **Source 列**标注 `codex`，Clients 面板有 codex 一行。上面的 `environment = "dev"` 会作为 OTLP Resource 属性 `env` 上报，cc-otel 将其写入与 Claude Code `user.id` 相同的字段——Request Log 的 **User 列**由此区分 `dev` / `company` / `staging` / `prod` 环境。**Codex 不上报 `cost_usd`**——cc-otel 会用本地价目表按 token 数自动算出费用并写入统一池的 `cost_usd`，Cost KPI 与 Claude 行等同。
 
 ### opencode 接入
 
-opencode 基于 Vercel AI SDK，用量上报在 GenAI **span** 上而非日志事件。cc-otel 会把 usage span 重塑成标准 `api_request` 形态，数据进入 **All Clients** 标签的统一视图，请求日志 Source 列显示 `opencode`。
+opencode 基于 Vercel AI SDK，用量上报在 GenAI **span** 上而非日志事件。cc-otel 会把 usage span 重塑成标准 `api_request` 形态，数据进入统一视图，请求日志 Source 列显示 `opencode`。
 
 opencode 说 **OTLP/HTTP（`:4318`）**，指到 `:4317` 不通。两步配置：
 
@@ -480,7 +480,7 @@ bind_host: 0.0.0.0
 |------|------|
 | **Daily Detail** | 按日 / 按小时明细；Intraday 按桶柱状图（5 / 10 / 15 / 30 / 60 分钟，最长 7 天）；**Hour of Day** 子视图把整段区间折叠成 24 个小时桶，客户端 / 模型下拉切换透视（任意跨度可用） |
 | **Sessions** | 按会话聚合 Cost / Token |
-| **Clients** | 按 `service.name` 的客户端汇总表：Token 构成、请求数、成本、命中率、活跃区间、占比条（All Clients 标签可见；Codex 用量在 Codex 标签，此表仅统计 Claude 系客户端） |
+| **Clients** | 按 `service.name` 的客户端汇总表：Token 构成、请求数、成本、命中率、活跃区间、占比条（始终可见，覆盖含 Codex 在内的全部客户端） |
 | **Request Log** | 按模型耗时与 **Out tok/s（平均 / 加权）** 汇总；单条请求列表含 TTFT；分页条支持页码直达 |
 | **Rate** | 各模型 **Token Rate over Time** 折线图；Weighted / Avg、Output / Total tok/s、5 / 15 / 30 / 60 min 桶；点击图例可 solo 单模型（**All models** 恢复） |
 
