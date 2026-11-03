@@ -69,6 +69,15 @@ var ignoredRegistry = map[string][]string{
 	"codex_events":           cols("id timestamp session_id conversation_id event_name event_kind model duration_ms error_message raw_attrs_json"),
 	"gemini_api_requests":    cols("id timestamp session_id model input_tokens output_tokens cache_read_tokens thoughts_tokens tool_tokens total_tokens duration_ms cost_usd http_status_code prompt_id event_name service_name service_version"),
 	"gemini_daily_model_agg": cols("date model total_requests input_tokens output_tokens cache_read_tokens thoughts_tokens tool_tokens total_tokens cost_usd duration_ms_sum"),
+	// Auto-import marker tables created unconditionally by this daemon at
+	// boot (autoimport.go). Snapshots of a database produced by the merged
+	// build carry all three; without this registration the generic import
+	// path rejects SAME-VERSION backups as unsupported_schema - and when the
+	// file also has codex_* archive rows it silently degrades to codexOnly,
+	// skipping every unified row (R2 review A1-F1).
+	"codex_auto_import":         cols("id imported_at purged inserted_rows"),
+	"codex_auto_import_attempt": cols("table_name pre_max_id"),
+	"codex_auto_import_ranges":  cols("import_id table_name min_id max_id"),
 }
 
 func ignoredColumns(name string) ([]string, bool) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -67,6 +68,14 @@ func (h *Handler) ImportInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	maxFile := manager.maxFileBytes
+	// Bound the whole multipart read: a client that stops feeding the body
+	// stalls io.Copy/NextPart forever — goroutine + file handle pinned, and
+	// on Windows the pinned handle even blocks sweep's delete (R2 A3-F1).
+	// 2GB at a pessimistic 1MB/s needs ~35 minutes; the sweep's 30-minute
+	// uploadStuck expiry is the backstop below that (R2 A3-F4).
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetReadDeadline(time.Now().Add(35 * time.Minute))
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFile+maxMultipartOverhead)
 	reader, err := r.MultipartReader()
 	if err != nil {

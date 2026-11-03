@@ -404,15 +404,20 @@ func cmdServe() {
 	// pool, recorded with exact row-id ranges and purged 30 days later. Runs
 	// BEFORE the servers bind so the daemon is the single writer while the
 	// ranges are captured; failures log and continue (retried next boot).
-	if err := autoImportCodex(ctx, database, repo, cfg.RetentionDays); err != nil {
+	// Hard 30-minute cap, matching the HTTP-side migration ceiling: a huge
+	// archive on a slow disk must not make the daemon look dead at startup
+	// with no listener bound (R2 review A3-F2).
+	autoCtx, autoCancel := context.WithTimeout(ctx, 30*time.Minute)
+	if err := autoImportCodex(autoCtx, database, repo, cfg.RetentionDays); err != nil {
 		log.Printf("codex auto-import: %v", err)
 	}
+	autoCancel()
 
 	// Bootstrap daily_model_agg from existing api_requests if agg table is empty.
 	if needsRebuild, err := repo.NeedsAggRebuild(ctx); err != nil {
 		log.Printf("agg rebuild check error: %v", err)
 	} else if needsRebuild {
-		log.Println("daily_model_agg is empty; rebuilding from api_requests...")
+		log.Println("daily_model_agg is empty or older than the detail data; rebuilding full-range from api_requests...")
 		if err := repo.RebuildDailyAggregates(ctx); err != nil {
 			log.Printf("agg rebuild error: %v", err)
 		} else {
@@ -475,7 +480,7 @@ func cmdServe() {
 	otelReceiver := receiver.New(repo, cfg, broker, priceReg)
 	otelReceiver.Register(grpcSrv)
 
-	grpcLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.OTELPort))
+	grpcLis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.BindHost, cfg.OTELPort))
 	if err != nil {
 		log.Fatalf("failed to listen on gRPC port %d: %v", cfg.OTELPort, err)
 	}
@@ -508,7 +513,7 @@ func cmdServe() {
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		}
-		otlpLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.OTLPHTTPPort))
+		otlpLis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.BindHost, cfg.OTLPHTTPPort))
 		if err != nil {
 			log.Printf("OTLP/HTTP receiver DISABLED — cannot bind :%d: %v", cfg.OTLPHTTPPort, err)
 		} else {
@@ -543,8 +548,8 @@ func cmdServe() {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	webSrv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.WebPort),
-		Handler: loggingMiddleware(api.GzipMiddleware(mux)),
+		Addr:    fmt.Sprintf("%s:%d", cfg.BindHost, cfg.WebPort),
+		Handler: api.HostAllowlistGuard(cfg.BindHost)(loggingMiddleware(api.GzipMiddleware(mux))),
 		// SSE streams (dashboard refresh) hold connections open for hours,
 		// so IdleTimeout must exceed the SSE heartbeat cadence; WriteTimeout
 		// must cover a full SSE lifetime window between writes, hence generous.

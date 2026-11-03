@@ -276,6 +276,36 @@ func sameHost(originURL, requestHost string) bool {
 	return originutil.SameHost(originURL, requestHost)
 }
 
+// HostAllowlistGuard blocks DNS-rebinding: sameOriginGuard compares Origin
+// against Host, but a rebinding attack controls BOTH values (Host=evil.com,
+// Origin=http://evil.com → SameHost true → guard passes, and the response is
+// same-origin readable so telemetry detail can be exfiltrated). Validating
+// Host against the loopback allowlist closes that hole while the daemon is
+// bound to loopback (the default). Non-loopback bind_host (LAN mode) skips
+// the check: LAN clients legitimately use arbitrary hostnames/IPs (R2
+// review A2-F2).
+func HostAllowlistGuard(bindHost string) func(http.Handler) http.Handler {
+	loopback := map[string]bool{
+		"127.0.0.1": true, "localhost": true, "::1": true, "[::1]": true,
+	}
+	enabled := bindHost == "" || loopback[bindHost]
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if enabled {
+				host := r.Host
+				if i := strings.LastIndex(host, ":"); i > strings.LastIndex(host, "]") {
+					host = host[:i] // strip :port, keep [::1] brackets intact
+				}
+				if !loopback[host] && !loopback[strings.ToLower(host)] {
+					http.Error(w, "host not allowed", http.StatusForbidden)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // Register wires all API and static-file routes onto the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/api/health", http.HandlerFunc(h.Health))

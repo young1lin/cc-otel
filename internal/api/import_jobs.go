@@ -558,7 +558,7 @@ func (m *importManager) sweep(startup bool) error {
 			// sweep is the only thing that can free the single slot — otherwise
 			// every later upload 409s import_busy until restart (R1 A2-1).
 			uploadStuck := m.job.Phase == dbmerge.PhaseUploading && m.job.State == importInspecting &&
-				now.Unix() >= m.job.CreatedAt+int64((10*time.Minute)/time.Second)
+				now.Unix() >= m.job.CreatedAt+int64((30*time.Minute)/time.Second)
 			expired := uploadStuck ||
 				(m.job.State == importFailed && now.Unix() >= m.job.UpdatedAt+int64(time.Hour/time.Second)) ||
 				(m.job.State == importReady && now.Unix() >= m.job.UpdatedAt+int64((24*time.Hour)/time.Second))

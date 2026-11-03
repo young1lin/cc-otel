@@ -186,6 +186,24 @@ func autoPurgeImported(ctx context.Context, database *sql.DB, repo aggRebuilder,
 	if err != nil {
 		return fmt.Errorf("load ranges: %w", err)
 	}
+	// Defense in depth: table names read back from the ranges table are
+	// spliced into DELETE statements — only the closed plan set may pass
+	// (R2 review A1-F2). And a wall-clock jump FORWARD past the 30-day
+	// boundary (manual clock set, RTC fault, VM restore) must not fire the
+	// purge early: importedAt in the future means the clock moved, not that
+	// a month passed (R2 review A5-F3).
+	allowed := map[string]bool{}
+	for _, plan := range codexAutoPlan {
+		allowed[plan.dst] = true
+	}
+	if marker.importedAt > time.Now().Unix() {
+		return fmt.Errorf("marker imported_at %d is in the future (clock jumped?); purge deferred", marker.importedAt)
+	}
+	for _, r := range ranges {
+		if !allowed[r.table] {
+			return fmt.Errorf("purge range references unexpected table %q; refusing", r.table)
+		}
+	}
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return err

@@ -85,6 +85,14 @@ func Run(ctx context.Context, db *sql.DB, reg pricing.Registry, opts Options, ap
 	if len(tables) == 0 {
 		tables = []string{"api_requests", "codex_api_requests"}
 	}
+	// The table names are spliced into SQL text; keep Run itself fail-closed
+	// so no future caller can widen the surface by passing a request-derived
+	// value (R2 review A1-F3).
+	for _, t := range tables {
+		if t != "api_requests" && t != "codex_api_requests" {
+			return out, fmt.Errorf("recompute: table %q is not allowed", t)
+		}
+	}
 	for _, t := range tables {
 		total, err := countRows(ctx, db, t, opts.From, opts.To)
 		if err != nil {
@@ -251,26 +259,42 @@ func scanTable(ctx context.Context, db *sql.DB, reg pricing.Registry, table stri
 	return summary, rows.Err()
 }
 
-// applyChanges UPDATEs cost_usd one row at a time within a single transaction.
+// applyChanges UPDATEs cost_usd one row at a time, in CHUNKED
+// transactions. A single big tx over a freshly imported table can hold the
+// write lock for tens of seconds while live OTLP inserts exhaust their
+// short BUSY_SNAPSHOT retries and drop telemetry (R2 review A3-F3);
+// 5k-row chunks match the migration batch granularity. Each chunk commits
+// atomically; a retry continues from the next chunk because rows already
+// at their new cost produce no change entry on a re-scan.
 func applyChanges(ctx context.Context, db *sql.DB, table string, changes []rowChange) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`UPDATE %s SET cost_usd = ? WHERE id = ?`, table))
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, c := range changes {
-		if _, err := stmt.ExecContext(ctx, c.newUnits, c.id); err != nil {
-			return fmt.Errorf("update id=%d: %w", c.id, err)
+	const chunk = 5000
+	for start := 0; start < len(changes); start += chunk {
+		end := start + chunk
+		if end > len(changes) {
+			end = len(changes)
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`UPDATE %s SET cost_usd = ? WHERE id = ?`, table))
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		for _, c := range changes[start:end] {
+			if _, err := stmt.ExecContext(ctx, c.newUnits, c.id); err != nil {
+				stmt.Close()
+				tx.Rollback()
+				return fmt.Errorf("update id=%d: %w", c.id, err)
+			}
+		}
+		stmt.Close()
+		if err := tx.Commit(); err != nil {
+			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // rebuildAgg recomputes the daily model aggregate via full rebuild.

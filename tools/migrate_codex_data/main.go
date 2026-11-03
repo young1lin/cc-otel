@@ -32,6 +32,20 @@ func main() {
 	}
 	defer database.Close()
 
+	// AllClient-merge guard: on a database that already ran the unified
+	// migration this legacy tool would rewrite the FROZEN codex_* archive
+	// while the unified pool and its ledger keep assuming the archive never
+	// changes (R2 review A5-F2). Refuse instead of corrupting invariants.
+	var frozen int
+	if err := database.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM codex_auto_import) OR EXISTS(SELECT 1 FROM import_ledger WHERE source_db LIKE '%codex%')`).Scan(&frozen); err == nil && frozen == 1 {
+		log.Fatalf("refusing to run: this database has already been unified with the codex archive " +
+			"(auto-import marker or codex ledger entries present); the codex_* tables are frozen. " +
+			"Use the in-app Codex migration or boot auto-import instead.")
+	} else if err != nil {
+		log.Printf("note: frozen-state probe failed (%v); continuing on a pre-merge database", err)
+	}
+
 	if _, err := database.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
 		log.Fatalf("set busy_timeout: %v", err)
 	}

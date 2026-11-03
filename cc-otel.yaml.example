@@ -4,6 +4,14 @@
 
 # OTLP gRPC receiver port
 # Claude Code sends telemetry to this port.
+# Interface the daemon binds (all three listeners: gRPC, OTLP/HTTP, web).
+# Default 127.0.0.1 — the daemon has no authentication, so loopback-only is
+# the safe default. Set 0.0.0.0 explicitly for LAN access (the Host-header
+# allowlist is then disabled); understand the exposure first: every mutating
+# endpoint (DB upload, one-click Codex migration, pricing rewrite) becomes
+# reachable from the network.
+bind_host: 127.0.0.1
+
 # Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:<otel_port> in Claude Code env.
 otel_port: 4317
 

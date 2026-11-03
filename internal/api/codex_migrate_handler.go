@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sync"
@@ -74,6 +75,30 @@ func (h *Handler) retentionDays() int {
 		return 0
 	}
 	return h.cfg.RetentionDays
+}
+
+// publicCodexMigrateError maps a migration failure to a short, generic
+// message; internal details (paths, SQL errors) stay in the server log only.
+func publicCodexMigrateError(err error) string {
+	var mergeErr *dbmerge.MergeError
+	if errors.As(err, &mergeErr) {
+		switch mergeErr.Code {
+		case dbmerge.ErrInvalidSQLite:
+			return "the archive database is not valid SQLite"
+		case dbmerge.ErrIntegrityCheck:
+			return "the archive database failed its integrity check"
+		case dbmerge.ErrUnsupportedSchema:
+			return "the archive database schema is not supported"
+		case dbmerge.ErrVerification:
+			return "migrated data could not be verified"
+		case dbmerge.ErrImport:
+			return "the migration failed partway; committed batches are kept"
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "the migration timed out; committed batches are kept"
+	}
+	return "the migration failed; committed batches are kept"
 }
 
 func (h *Handler) CodexMigrate(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +179,11 @@ func (h *Handler) runCodexMigration() {
 			// idempotent-safe; surface what actually landed.
 			job.lastResult = result
 		}
-		job.err = err.Error()
+		// Sanitize for the client (the full error stays in the log line
+		// below): raw err.Error() can leak quick_check output, lock errors,
+		// table names and filesystem paths — the file-import path already
+		// sanitizes the same way via publicImportError (R2 review A4-F1).
+		job.err = publicCodexMigrateError(err)
 		job.mu.Unlock()
 		log.Printf("codex migration: FAILED: %v (batches committed before the failure are durable)", err)
 		// Partial commits may have changed the pool: refresh dashboards.

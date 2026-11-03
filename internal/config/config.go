@@ -13,6 +13,7 @@ import (
 
 // Config holds all runtime configuration for cc-otel, loaded from YAML with env overrides.
 type Config struct {
+	BindHost      string                `yaml:"bind_host"`
 	OTELPort      int                   `yaml:"otel_port"`
 	WebPort       int                   `yaml:"web_port"`
 	OTLPHTTPPort  int                   `yaml:"otlp_http_port"`
@@ -242,11 +243,20 @@ func expandTilde(path string) string {
 	return path
 }
 
+// DefaultBindHost is the loopback default for bind_host. The daemon runs
+// with zero authentication: an omitted bind_host must NOT fall back to the
+// wildcard address — 0.0.0.0 would expose every mutating endpoint (2GB DB
+// upload, one-click migration, pricing rewrite) to the whole LAN with no
+// auth (R2 review A2-F1/A5-F1). Set bind_host: 0.0.0.0 explicitly for LAN
+// access.
+const DefaultBindHost = "127.0.0.1"
+
 // Load reads the YAML config file at path, applies tilde expansion, then overrides with
 // environment variables (CC_OTEL_OTEL_PORT, CC_OTEL_WEB_PORT, CC_OTEL_DB_PATH).
 // Returns defaults if the file does not exist.
 func Load(path string) (*Config, error) {
 	cfg := &Config{
+		BindHost:          DefaultBindHost,
 		OTELPort:          4317,
 		WebPort:           8899,
 		OTLPHTTPPort:      DefaultOTLPHTTPPort(),
@@ -297,6 +307,9 @@ func Load(path string) (*Config, error) {
 // review F1/F3, wording corrected in the R4 docs pass: only otlp_http_port
 // 0 disables by design).
 func (c *Config) validate() error {
+	if strings.TrimSpace(c.BindHost) == "" {
+		c.BindHost = DefaultBindHost
+	}
 	if strings.TrimSpace(c.DBPath) == ":memory:" {
 		return fmt.Errorf("config: db_path ':memory:' is not supported — point db_path at a real file")
 	}
