@@ -594,6 +594,7 @@ func (r *Repository) UpdateCodexRequestTTFT(
 			SELECT id FROM api_requests
 			WHERE session_id = ? AND model = ? AND service_name = ?
 			  AND (ttft_ms = 0 OR ttft_ms IS NULL)
+			  AND (error_message = '' OR error_message IS NULL)
 			  AND timestamp >= ?
 			ORDER BY id DESC LIMIT 1
 		)`,
@@ -631,6 +632,7 @@ func (r *Repository) UpdateCodexTurnTTFT(
 			WHERE conversation_id = ? AND model = ? AND service_name = ?
 			  AND event_name = 'codex.api_request'
 			  AND (ttft_ms = 0 OR ttft_ms IS NULL)
+			  AND (error_message = '' OR error_message IS NULL)
 			  AND timestamp <= ?
 			  AND timestamp >= ?
 			ORDER BY timestamp DESC, id DESC LIMIT 1
