@@ -384,15 +384,30 @@ func (r *Repository) NeedsAggRebuild(ctx context.Context) (bool, error) {
 		`SELECT NOT EXISTS(SELECT 1 FROM daily_model_agg)`).Scan(&aggEmpty); err != nil {
 		return false, err
 	}
-	if !aggEmpty {
-		return false, nil
-	}
 	var reqExists bool
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM api_requests)`).Scan(&reqExists); err != nil {
 		return false, err
 	}
-	return reqExists, nil
+	if aggEmpty {
+		return reqExists, nil
+	}
+	if !reqExists {
+		return false, nil
+	}
+	// Coverage-gap self-heal: api_requests is deliberately never
+	// retention-pruned while daily_model_agg used to be, so a database that
+	// ever ran an older build can have detail rows OLDER than the oldest agg
+	// row — the All time range then silently loses those months (live-caught:
+	// detail from 2026-04, agg starting at the 90-day cutoff). Rebuild so the
+	// aggregate always covers the detail's full span.
+	var aggMin, reqMin string
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT (SELECT MIN(date) FROM daily_model_agg),
+		       (SELECT date(MIN(timestamp), 'unixepoch', 'localtime') FROM api_requests)`).Scan(&aggMin, &reqMin); err != nil {
+		return false, err
+	}
+	return reqMin != "" && (aggMin == "" || aggMin > reqMin), nil
 }
 
 // RebuildDailyAggregates drops and rebuilds daily_model_agg from api_requests.
@@ -1653,14 +1668,14 @@ func (r *Repository) Cleanup(ctx context.Context, beforeUnix int64) (int64, erro
 	ilN, _ := ilRes.RowsAffected()
 	total += ilN
 
-	// Date-string based table
-	beforeDate := time.Unix(beforeUnix, 0).Local().Format("2006-01-02")
-	res, err := r.db.ExecContext(ctx, `DELETE FROM daily_model_agg WHERE date < ?`, beforeDate)
-	if err != nil {
-		return total, fmt.Errorf("cleanup daily_model_agg: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	total += n
+	// daily_model_agg is deliberately NOT retention-pruned (anymore):
+	// api_requests — its only source — is never pruned either, so pruning the
+	// aggregate left All time showing a 90-day window while the detail kept
+	// months more (live-caught 2026-11: agg started at the cutoff, detail at
+	// 2026-04, four months silently missing from every All time view). The
+	// table holds at most a few rows per model per day, so keeping it forever
+	// costs nothing meaningful. NeedsAggRebuild self-heals databases whose agg
+	// was already pruned by an older build.
 
 	r.db.ExecContext(ctx, "PRAGMA incremental_vacuum")
 	return total, nil

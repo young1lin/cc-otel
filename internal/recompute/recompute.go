@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/young1lin/cc-otel/internal/pricing"
 )
@@ -28,11 +27,12 @@ type Options struct {
 	From   int64    // unix seconds, inclusive; 0 = no lower bound
 	To     int64    // unix seconds, exclusive; 0 = no upper bound
 
-	// RetentionDays scopes rebuildAgg to the retention window (0 = all-time).
-	// The rebuild's parent tables are never retention-pruned, so an unscoped
-	// rebuild RESURRECTED agg rows the startup Cleanup had deleted — dashboards
-	// showed out-of-retention data until the next restart re-pruned them
-	// (R4 integrity F4). Scoped rebuilds delete+rebuild only in-window dates.
+	// RetentionDays is UNUSED by the agg rebuild now. daily_model_agg is no
+	// longer retention-pruned (Cleanup keeps it forever, matching its
+	// never-pruned parent api_requests), so the rebuild is always full-range:
+	// INSERT only produces dates that still exist in the detail, which makes
+	// resurrection impossible while guaranteeing All time sees the detail's
+	// full span. The field stays for API compatibility of internal callers.
 	RetentionDays int
 }
 
@@ -116,7 +116,7 @@ func Run(ctx context.Context, db *sql.DB, reg pricing.Registry, opts Options, ap
 		// for agg drift (R3 error-recovery finding: a 0-change apply skipped
 		// the rebuild, leaving a stale daily_model_agg forever with no way to
 		// repair it from the UI). rebuildAgg is idempotent and cheap.
-		if err := rebuildAgg(ctx, db, t, opts.RetentionDays); err != nil {
+		if err := rebuildAgg(ctx, db, t); err != nil {
 			return out, fmt.Errorf("%s rebuild agg: %w", t, err)
 		}
 	}
@@ -275,7 +275,7 @@ func applyChanges(ctx context.Context, db *sql.DB, table string, changes []rowCh
 // The DELETE + INSERT run in one transaction so a crash or ctx cancel between
 // them cannot leave the aggregate empty (which would zero the dashboard).
 // Mirrors Repository.RebuildDailyAggregates (internal/db/repository.go).
-func rebuildAgg(ctx context.Context, db *sql.DB, parent string, retentionDays int) error {
+func rebuildAgg(ctx context.Context, db *sql.DB, parent string) error {
 	aggTable := ""
 	switch parent {
 	case "api_requests":
@@ -286,22 +286,13 @@ func rebuildAgg(ctx context.Context, db *sql.DB, parent string, retentionDays in
 		return fmt.Errorf("unknown parent table %q", parent)
 	}
 
-	// Retention scope: same day-alignment rule as Cleanup and the migration
-	// sanity check — local midnight of (now − N days), applied to BOTH the
-	// DELETE and the INSERT so the rebuild cannot resurrect pruned days.
+	// Full-range rebuild: the agg always mirrors the detail table exactly.
+	// Retention no longer scopes it — daily_model_agg is kept forever together
+	// with its never-pruned parents, and INSERT only materializes dates that
+	// still exist in the detail, so pruned detail can never come back.
 	deleteSQL := fmt.Sprintf(`DELETE FROM %s`, aggTable)
-	var deleteArgs []any
 	whereClause := ""
 	var whereArgs []any
-	if retentionDays > 0 {
-		now := time.Now()
-		cutoff := now.AddDate(0, 0, -retentionDays)
-		cutoff = time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, now.Location())
-		deleteSQL = fmt.Sprintf(`DELETE FROM %s WHERE date >= ?`, aggTable)
-		deleteArgs = append(deleteArgs, cutoff.Format("2006-01-02"))
-		whereClause = " WHERE timestamp >= ?"
-		whereArgs = append(whereArgs, cutoff.Unix())
-	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -309,7 +300,7 @@ func rebuildAgg(ctx context.Context, db *sql.DB, parent string, retentionDays in
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, deleteSQL, deleteArgs...); err != nil {
+	if _, err := tx.ExecContext(ctx, deleteSQL); err != nil {
 		return fmt.Errorf("clear %s: %w", aggTable, err)
 	}
 
@@ -368,7 +359,7 @@ func extraAggSelects(parent string) string {
 }
 
 // groupAggService extends the GROUP BY with the service dimension for the
-// unified pool. Without it every service would collapse onto service_name=''
+// unified pool. Without it every service would collapse onto service_name=”
 // and the per-client breakdown (Claude Code / OpenCode / Codex) would be lost.
 func groupAggService(parent string) string {
 	if parent == "api_requests" {

@@ -143,7 +143,7 @@ func TestRun_CodexSubtractsCacheRead(t *testing.T) {
 // the startup Cleanup had deleted — dashboards showed out-of-retention data
 // until the next restart re-pruned. With RetentionDays the rebuild must
 // delete+rebuild only in-window dates.
-func TestRun_ScopedRebuildDoesNotResurrectPrunedAgg(t *testing.T) {
+func TestRun_FullRangeRebuildMirrorsDetail(t *testing.T) {
 	db := newDB(t)
 	fresh := time.Now().Add(-1 * time.Hour)
 	old := time.Now().AddDate(0, 0, -200)
@@ -159,18 +159,22 @@ func TestRun_ScopedRebuildDoesNotResurrectPrunedAgg(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := Run(context.Background(), db, reg, Options{RetentionDays: 90}, true, nil); err != nil {
-		t.Fatalf("scoped recompute run: %v", err)
+		t.Fatalf("recompute run: %v", err)
 	}
 
+	// The agg rebuild is full-range: every day present in the detail gets an
+	// agg row (the 200-day-old day included — All time must show it), and
+	// RetentionDays no longer scopes anything. Days whose detail was actually
+	// deleted can never reappear because INSERT reads only live detail.
 	var n int
 	mustScan(t, db, `SELECT COUNT(*) FROM daily_model_agg`, &n)
-	if n != 1 {
-		t.Fatalf("scoped rebuild produced %d agg rows, want 1 (only the in-window day)", n)
+	if n != 2 {
+		t.Fatalf("full-range rebuild produced %d agg rows, want 2 (both detail days)", n)
 	}
 	var reqs int
-	mustScan(t, db, `SELECT request_count FROM daily_model_agg`, &reqs)
-	if reqs != 1 {
-		t.Fatalf("agg request_count = %d, want 1 (the 200-day-old row must stay pruned)", reqs)
+	mustScan(t, db, `SELECT SUM(request_count) FROM daily_model_agg`, &reqs)
+	if reqs != 2 {
+		t.Fatalf("agg request_count total = %d, want 2", reqs)
 	}
 }
 

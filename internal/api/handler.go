@@ -805,7 +805,7 @@ func (h *Handler) runRecompute() {
 		h.recompute.changed = p.Changed
 		h.recompute.mu.Unlock()
 	}
-	res, err := recompute.Run(ctx, h.repo.DB(), h.pricer, recompute.Options{RetentionDays: h.retentionDays()}, true, progress)
+	res, err := recompute.Run(ctx, h.repo.DB(), h.pricer, recompute.Options{}, true, progress)
 	h.recompute.mu.Lock()
 	h.recompute.running = false
 	h.recompute.finishedAt = time.Now().Unix()

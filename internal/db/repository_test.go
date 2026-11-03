@@ -609,7 +609,7 @@ func TestRebuildDailyAggregates(t *testing.T) {
 	}
 }
 
-func TestCleanupRemovesAgg(t *testing.T) {
+func TestCleanupKeepsDailyAgg(t *testing.T) {
 	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
 	database, err := Init(cfg)
 	if err != nil {
@@ -644,10 +644,78 @@ func TestCleanupRemovesAgg(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// daily_model_agg must survive retention cleanup together with its
+	// never-pruned parent api_requests — pruning it made All time silently
+	// lose months (live-caught 2026-11). Both days stay aggregated.
 	var aggCount int
 	database.QueryRow("SELECT COUNT(*) FROM daily_model_agg").Scan(&aggCount)
-	if aggCount != 1 {
-		t.Errorf("expected 1 agg row remaining, got %d", aggCount)
+	if aggCount != 2 {
+		t.Errorf("expected both agg days kept (agg is never pruned), got %d", aggCount)
+	}
+}
+
+// TestNeedsAggRebuildCoverageGap pins the boot self-heal for databases whose
+// daily_model_agg was pruned by an older build while api_requests kept the
+// full history (live-caught 2026-11: detail from April, agg starting at the
+// 90-day cutoff — All time silently lost four months). When the oldest agg
+// day is newer than the oldest detail day, NeedsAggRebuild must fire so the
+// startup path rebuilds the aggregate over the detail's full span.
+func TestNeedsAggRebuildCoverageGap(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	repo := NewRepository(database)
+	ctx := context.Background()
+
+	now := time.Now()
+	_, _ = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp:   now.AddDate(0, 0, -200),
+		Model:       "claude-opus-4-6",
+		InputTokens: 100,
+		CostUSD:     0.01,
+		RequestID:   "old-req",
+	})
+	_, _ = repo.InsertRequest(ctx, &APIRequest{
+		Timestamp:   now,
+		Model:       "claude-opus-4-6",
+		InputTokens: 200,
+		CostUSD:     0.02,
+		RequestID:   "recent-req",
+	})
+
+	// Simulate the pruned-agg state an older build leaves behind: drop the
+	// oldest agg day only.
+	oldDay := now.AddDate(0, 0, -200).Format("2006-01-02")
+	if _, err := database.Exec("DELETE FROM daily_model_agg WHERE date = ?", oldDay); err != nil {
+		t.Fatal(err)
+	}
+
+	need, err := repo.NeedsAggRebuild(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !need {
+		t.Fatal("agg older-day gap must trigger a rebuild")
+	}
+
+	if err := repo.RebuildDailyAggregates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	need, err = repo.NeedsAggRebuild(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if need {
+		t.Fatal("after a full rebuild the coverage gap must be gone")
+	}
+	var aggMin string
+	database.QueryRow("SELECT MIN(date) FROM daily_model_agg").Scan(&aggMin)
+	if aggMin != oldDay {
+		t.Fatalf("agg must cover the oldest detail day %s, got %s", oldDay, aggMin)
 	}
 }
 
