@@ -28,6 +28,7 @@
 - **OTLP/HTTP 接收器跨源防护**（R5）：浏览器跨源 POST（简单 content-type 也可驱动）现被 Origin 校验拒绝 403；真实导出端从不携带 Origin，零兼容性影响（originutil 单一实现，与仪表盘守卫共享端口感知比较）。
 - **405 补 `Allow` 头**（RFC 9110）：`/api/pricing`、`/api/pricing/recompute`、`/api/pricing/suggest`。
 - **文档纠偏**：raw 表写入方向纠正（`raw_otlp_events` 收 codex 未建模事件并受 TTL；`codex_raw_otlp_events` 为冻结存档、无写入者）、retention_days 注释不再误列 `api_requests`、“AllClient 页”幻影指针全部改为 DB 导入对话框中的实际按钮。
+- **Codex TTFT 补齐**：`codex.turn_ttft`（回合级首输出时延）现在直接建模——completion 的 `ttft_ms` 是 Option（非流式/瞬时响应缺省，实测 30,735 行仅 27% 有值），turn 事件对同（conversation, model）事件时间前最新的零 TTFT 锚点行做只填不清回填；权威 completion 带 ttft 时仍以后者为准（四种时序钉 TestCodexE2E_TurnTTFTFillsAnchor）。
 - **重复锚点重投 ErrTxDone**（R5 rollback P1）：`insertCodexRowInTx` 在重复分支内部 commit，调用方再 commit 一次导致 `sql.ErrTxDone` —— 例行的至少一次投递重发返回 500。helper 现永不 commit（钉 TestCodexE2E_DuplicateAnchorRedeliveryStaysOK：三次相同锚点 200/200/200）。
 - **bin→global 合并 schema 升级接线**（R5 rollback P1）：`import_global` 现在导入前调用 `ensureTargetSchema`，AllClient 导出可并入仍为 pre-AllClient schema 的生产 global，不再因缺列中途失败。reation，旧公式显著高估）。
 

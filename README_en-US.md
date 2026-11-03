@@ -195,8 +195,9 @@ An embedded gRPC server implementing the official OTLP `LogsService`, `MetricsSe
 
 - Each `claude_code.api_request` log event carries the full detail of one API call (model, tokens, cost, duration, `session.id`, `user.id`, etc. as resource + record attributes) and is written to the `api_requests` table.
 - `claude_code.token.usage`, `claude_code.cost.usage` and other metrics are intentionally **not persisted** (redundant with the `api_request` log); the gRPC call is still accepted so clients don't error out.
-- Trace spans are mined for `ttft_ms` and back-filled into the matching unified-pool `api_requests` rows.
-- `raw_otlp_events` receives **un-modeled codex event** payloads under a TTL (`turn_ttft`, `sandbox_outcome`, `startup_phase`, ... — the default archive branch); the one-click migration also copies the historical `codex_raw_otlp_events` rows into it (equally TTL-bound). `codex_raw_otlp_events` itself is the frozen pre-merge archive with **no writer** — only the migration reads it. Both keep schema compatibility with existing backfill tools.
+- Trace spans are mined for `ttft_ms` and back-filled into the matching unified-pool `api_requests` rows; codex's `turn_ttft` event feeds the same column (below).
+- `codex.turn_ttft` (turn-level time-to-first-output) is modeled directly: it **fills** `ttft_ms` on the newest zero-TTFT anchor of the same (conversation, model) at or before the event time — the completion's `ttft_ms` attr is an Option (absent for non-streamed/instant responses), so this event is often the only TTFT signal a turn produces; an authoritative completion ttft still wins when present.
+- `raw_otlp_events` receives **un-modeled codex event** payloads under a TTL (`sandbox_outcome`, `startup_phase`, ... — the default archive branch); the one-click migration also copies the historical `codex_raw_otlp_events` rows into it (equally TTL-bound). `codex_raw_otlp_events` itself is the frozen pre-merge archive with **no writer** — only the migration reads it. Both keep schema compatibility with existing backfill tools.
 
 **2. Store (`internal/db/`)**
 

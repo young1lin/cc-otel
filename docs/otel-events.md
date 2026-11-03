@@ -283,6 +283,7 @@ Timing boundaries (authoritative):
 - Request start is `request_event_observed_time - request_event.duration_ms`.
 - Full duration is `response.completed_observed_time - request_start`.
 - Direct completion `ttft_ms` overwrites a positive WebSocket fallback.
+- `codex.turn_ttft` (turn-level first output) fills `ttft_ms` only when it is still zero — newest zero-TTFT anchor of the same (conversation, model) at or before the event time; the completion's `ttft_ms` attr is an Option, so this event is often the only TTFT signal a turn produces.
 - WebSocket timing targets the tracked row ID first, then session/model within ten minutes.
 - Tracker lookup is non-destructive; successful structured completion removes it, database failure retains it, and abandoned state expires after 30 minutes.
 - Tool execution duration stays in `codex_tool_result_events` and is never added to model-call duration.
@@ -294,6 +295,7 @@ Timing boundaries (authoritative):
 | `codex.user_prompt` | `codex_user_prompt_events` | User prompt metadata/content when emitted |
 | `codex.tool_decision` | `codex_tool_decision_events` | Tool approval/decision |
 | `codex.tool_result` | `codex_tool_result_events` | Tool execution result |
+| `codex.turn_ttft` | `api_requests.ttft_ms` (fill) | Turn-level TTFT; fills zero-TTFT anchors (see timing rules above) |
 | other Codex logs | `raw_otlp_events` | Diagnostic fallback events archived (TTL-bound) |
 | raw OTLP logs | `raw_otlp_events` (pre-merge: `codex_raw_otlp_events`, frozen) | Debug/audit copy |
 

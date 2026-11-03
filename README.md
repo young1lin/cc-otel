@@ -194,8 +194,8 @@ Claude Code 内置 OTEL SDK，通过 **OTLP**（OpenTelemetry Protocol，标准�
 
 - 每个 `claude_code.api_request` 日志事件携带一次 API 调用的完整信息（model、tokens、cost、duration、session.id、user.id 等 resource + record attributes），被落库到 `api_requests` 表。
 - `claude_code.token.usage`、`claude_code.cost.usage` 等 Metrics 接收时被显式跳过持久化（与 `api_request` log 数据冗余），仅用于不让客户端报错。
-- Trace span 用于抽取 `ttft_ms` 并回填到统一池 `api_requests` 的对应列。
-- `raw_otlp_events` 按 TTL 写入**未建模的 codex 事件**原文（`turn_ttft`、`sandbox_outcome`、`startup_phase` 等，来自默认归档分支）；合并迁移还会把 `codex_raw_otlp_events` 的历史行复制进来（同样受 TTL 约束）。`codex_raw_otlp_events` 是合并前的冻结存档，**无任何写入者**，仅由迁移读取。两者 schema 兼容已有 backfill 工具。
+- Trace span 用于抽取 `ttft_ms` 并回填到统一池 `api_requests` 的对应列；codex 的 `turn_ttft` 事件走同样的列（见下）。
+- `codex.turn_ttft`（回合级首输出时延）直接建模：对同（conversation, model）事件时间之前最新的零 TTFT 锚点行做**只填不清**的 `ttft_ms` 回填 —— completion 自带的 `ttft_ms` 是 Option（非流式/瞬时响应缺省），该事件常常是唯一的 TTFT 来源；权威 completion 带 ttft 时仍以后者为准。还会把 `codex_raw_otlp_events` 的历史行复制进来（同样受 TTL 约束）。`codex_raw_otlp_events` 是合并前的冻结存档，**无任何写入者**，仅由迁移读取。两者 schema 兼容已有 backfill 工具。
 
 **2. 存储（`internal/db/`）**
 

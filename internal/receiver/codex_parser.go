@@ -712,9 +712,28 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 		}
 		return false
 
+	case "codex.turn_ttft":
+		// Turn-level TTFT (turn_timing.rs): duration from turn start to the
+		// first output signal. The completion's ttft_ms attr is Option and is
+		// absent for non-streamed/instant responses, so this event is often
+		// the only TTFT a turn produces. Fill-only join onto the newest
+		// zero-TTFT anchor of the same (conversation, model) at or before the
+		// event time — see UpdateCodexTurnTTFT for the ordering argument.
+		if err := repo.UpdateCodexTurnTTFT(
+			ctx, attrs["conversation.id"], attrs["model"],
+			ts, parseAttrInt(attrs, "duration_ms"),
+		); err != nil {
+			log.Printf("failed to fill codex ttft from turn_ttft (conv=%s): %v", attrs["conversation.id"], err)
+			if stats != nil {
+				stats.fail()
+			}
+			return false
+		}
+		return true
+
 	default:
 		// Accounting safety net: codex emits many events cc-otel does not
-		// model (turn_ttft, auth_recovery, sandbox_outcome, guardian_review,
+		// model (auth_recovery, sandbox_outcome, guardian_review,
 		// skill_invocation, ...). Archive them raw so a future widening of the
 		// model can backfill without losing data. sse_event kinds other than
 		// response.completed stay excluded: they are per-poll noise by design.

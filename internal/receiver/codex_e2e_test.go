@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net"
 	"testing"
@@ -756,6 +757,131 @@ func TestCodexE2E_DuplicateAnchorRedeliveryStaysOK(t *testing.T) {
 	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE conversation_id='conv-dupanchor'`).Scan(&rows)
 	if rows != 1 {
 		t.Fatalf("duplicate anchors must dedupe to 1 row, got %d", rows)
+	}
+}
+
+
+// TestCodexE2E_TurnTTFTFillsAnchor pins the codex.turn_ttft mapping: the
+// dedicated turn-level event (often the ONLY ttft signal — the completion's
+// ttft_ms is Option) fills the newest zero-TTFT anchor for the same
+// (conversation, model) at or before the event time. Also pins the four
+// orderings: turn-first + ttft-less completion (kept), turn-first +
+// authoritative completion ttft (overwrites), completion-first (fill-only
+// skips a non-zero row), and no-anchor (no row minted).
+func TestCodexE2E_TurnTTFTFillsAnchor(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+
+	srv := grpc.NewServer()
+	rcv := New(repo, fakeResolver{}, api.NewBroker(), nil)
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	attr := func(k, v string) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	export := func(records ...*logspb.LogRecord) {
+		t.Helper()
+		if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+			Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
+			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
+		}}}); err != nil {
+			t.Fatalf("export: %v", err)
+		}
+	}
+	base := time.Now().Add(-10 * time.Second)
+	anchor := func(conv string, at time.Time) *logspb.LogRecord {
+		return &logspb.LogRecord{TimeUnixNano: uint64(at.UnixNano()), Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", conv),
+			attr("model", "glm-5.3"),
+		}}
+	}
+	turnTTFT := func(conv string, at time.Time, ms int) *logspb.LogRecord {
+		return &logspb.LogRecord{TimeUnixNano: uint64(at.UnixNano()), Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.turn_ttft"),
+			attr("conversation.id", conv),
+			attr("model", "glm-5.3"),
+			attr("duration_ms", fmt.Sprintf("%d", ms)),
+		}}
+	}
+	completion := func(conv string, at time.Time, ttft int64) *logspb.LogRecord {
+		attrs := []*commontpb.KeyValue{
+			attr("event.name", "codex.sse_event"),
+			attr("event.kind", "response.completed"),
+			attr("conversation.id", conv),
+			attr("model", "glm-5.3"),
+			attr("input_token_count", "100"),
+			attr("output_token_count", "40"),
+			attr("cached_token_count", "0"),
+			attr("reasoning_token_count", "0"),
+			attr("tool_token_count", "140"),
+		}
+		if ttft > 0 {
+			attrs = append(attrs, attr("ttft_ms", fmt.Sprintf("%d", ttft)))
+		}
+		return &logspb.LogRecord{TimeUnixNano: uint64(at.UnixNano()), Attributes: attrs}
+	}
+
+	// Ordering 1: anchor, turn_ttft mid-stream, ttft-less completion → keep 3773.
+	export(anchor("conv-ttft-a", base))
+	export(turnTTFT("conv-ttft-a", base.Add(3773*time.Millisecond), 3773))
+	export(completion("conv-ttft-a", base.Add(5*time.Second), 0))
+	var ttft int64
+	repo.DB().QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE conversation_id='conv-ttft-a'`).Scan(&ttft)
+	if ttft != 3773 {
+		t.Fatalf("ttft-less completion must keep the turn-ttft fill: got %d, want 3773", ttft)
+	}
+
+	// Ordering 2: turn_ttft first, authoritative completion ttft overwrites.
+	export(anchor("conv-ttft-b", base))
+	export(turnTTFT("conv-ttft-b", base.Add(2*time.Second), 2000))
+	export(completion("conv-ttft-b", base.Add(5*time.Second), 3800))
+	repo.DB().QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE conversation_id='conv-ttft-b'`).Scan(&ttft)
+	if ttft != 3800 {
+		t.Fatalf("authoritative completion ttft must win: got %d, want 3800", ttft)
+	}
+
+	// Ordering 3: completion already set ttft → turn_ttft is fill-only, no-op.
+	export(anchor("conv-ttft-c", base))
+	export(completion("conv-ttft-c", base.Add(5*time.Second), 1500))
+	export(turnTTFT("conv-ttft-c", base.Add(2*time.Second), 2000))
+	repo.DB().QueryRowContext(ctx, `SELECT ttft_ms FROM api_requests WHERE conversation_id='conv-ttft-c'`).Scan(&ttft)
+	if ttft != 1500 {
+		t.Fatalf("existing positive ttft must be left untouched: got %d, want 1500", ttft)
+	}
+
+	// Ordering 4: turn_ttft with no anchor mints nothing.
+	export(turnTTFT("conv-ttft-none", base.Add(time.Second), 900))
+	var n int
+	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM api_requests WHERE conversation_id='conv-ttft-none'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("turn_ttft without an anchor must not mint rows: got %d", n)
+	}
+
+	// No raw archive rows for the now-modeled event.
+	var archived int
+	repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM raw_otlp_events WHERE event_type='codex.turn_ttft'`).Scan(&archived)
+	if archived != 0 {
+		t.Fatalf("turn_ttft is modeled now and must not be archived: got %d rows", archived)
 	}
 }
 

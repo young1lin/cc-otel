@@ -10,6 +10,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ### Fixed
 
+- **Codex TTFT backfill**: the dedicated `codex.turn_ttft` event (turn-level time to first output) is now modeled — the completion's `ttft_ms` attr is an Option (absent for non-streamed/instant responses; measured 27% of 30,735 rows carry it), so the turn event fills `ttft_ms` on the newest zero-TTFT anchor of the same (conversation, model) at or before the event time, fill-only; an authoritative completion ttft still wins (all four orderings pinned by TestCodexE2E_TurnTTFTFillsAnchor).
 - **Duplicate-anchor redelivery ErrTxDone** (R5 rollback P1): insertCodexRowInTx committed inside the duplicate branch, so the caller's own commit raised sql.ErrTxDone and routine at-least-once redelivery answered 500. The helper never commits now (pinned by TestCodexE2E_DuplicateAnchorRedeliveryStaysOK: three identical anchors 200/200/200).
 - **bin→global merge schema-ensure wiring** (R5 rollback P1): import_global now calls ensureTargetSchema before importing, so an AllClient bin export merges into a still pre-AllClient production global instead of failing mid-merge on a missing column.
 

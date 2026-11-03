@@ -569,6 +569,45 @@ func (r *Repository) UpdateCodexRequestTTFT(
 	return err
 }
 
+// UpdateCodexTurnTTFT fills ttft_ms from Codex's dedicated turn-level
+// codex.turn_ttft event (turn_timing.rs record_turn_ttft: duration from turn
+// start to the FIRST output signal of any kind). The completion's ttft_ms
+// attr is Option — absent for non-streamed/instant responses — so this event
+// is often the ONLY ttft signal a turn produces. Target selection: the newest
+// zero/null-TTFT codex anchor (event_name='codex.api_request') for
+// (conversation_id, model) whose timestamp is at or before the event time —
+// in a tool-loop turn only the FIRST request's anchor can precede the first
+// output, so the join cannot steal a later request. Fill-only: an existing
+// positive ttft (websocket reconstruction or an earlier authoritative
+// completion) is left untouched, and a later authoritative completion with
+// ttft_ms > 0 still overwrites via the finalize path's CASE-WHEN.
+func (r *Repository) UpdateCodexTurnTTFT(
+	ctx context.Context,
+	conversationID, model string,
+	ts time.Time,
+	ttftMs int64,
+) error {
+	if conversationID == "" || model == "" || ttftMs <= 0 {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE api_requests
+		SET ttft_ms = ?
+		WHERE id = (
+			SELECT id FROM api_requests
+			WHERE conversation_id = ? AND model = ? AND service_name = ?
+			  AND event_name = 'codex.api_request'
+			  AND (ttft_ms = 0 OR ttft_ms IS NULL)
+			  AND timestamp <= ?
+			  AND timestamp >= ?
+			ORDER BY timestamp DESC, id DESC LIMIT 1
+		)`,
+		ttftMs, conversationID, model, CodexServiceName,
+		ts.Unix(), ts.Unix()-3600,
+	)
+	return err
+}
+
 // InsertCodexRawEvent inserts the raw OTLP payload into the shared
 // raw_otlp_events table (identical schema to the legacy codex one).
 func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, timestampUnix int64, rawJSON string) error {
