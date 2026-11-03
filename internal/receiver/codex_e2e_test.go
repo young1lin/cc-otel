@@ -699,7 +699,6 @@ func TestDSHE2E_HostileLedgerClamped(t *testing.T) {
 	}
 }
 
-
 // TestCodexE2E_DuplicateAnchorRedeliveryStaysOK pins the R5 rollback P1 fix:
 // insertCodexRowInTx used to COMMIT inside the duplicate-request_id branch,
 // so the caller's own tx.Commit failed with sql.ErrTxDone and a routine
@@ -746,7 +745,7 @@ func TestCodexE2E_DuplicateAnchorRedeliveryStaysOK(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
-			Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
+			Resource:  &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
 			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{anchor}}},
 		}}}); err != nil {
 			t.Fatalf("redelivery %d must not fail (ErrTxDone regression): %v", i+1, err)
@@ -759,7 +758,6 @@ func TestCodexE2E_DuplicateAnchorRedeliveryStaysOK(t *testing.T) {
 		t.Fatalf("duplicate anchors must dedupe to 1 row, got %d", rows)
 	}
 }
-
 
 // TestCodexE2E_TurnTTFTFillsAnchor pins the codex.turn_ttft mapping: the
 // dedicated turn-level event (often the ONLY ttft signal — the completion's
@@ -801,7 +799,7 @@ func TestCodexE2E_TurnTTFTFillsAnchor(t *testing.T) {
 	export := func(records ...*logspb.LogRecord) {
 		t.Helper()
 		if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
-			Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
+			Resource:  &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
 			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
 		}}}); err != nil {
 			t.Fatalf("export: %v", err)
@@ -885,7 +883,6 @@ func TestCodexE2E_TurnTTFTFillsAnchor(t *testing.T) {
 	}
 }
 
-
 // TestCodexE2E_TurnTTFTBeforeAnchorIsStashedAndRetried pins the live-caught
 // race: OTLP export flushes are not order-preserving, so codex.turn_ttft
 // can reach the receiver BEFORE its anchor row is committed. The one-shot
@@ -925,7 +922,7 @@ func TestCodexE2E_TurnTTFTBeforeAnchorIsStashedAndRetried(t *testing.T) {
 	export := func(records ...*logspb.LogRecord) {
 		t.Helper()
 		if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
-			Resource: &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
+			Resource:  &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
 			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
 		}}}); err != nil {
 			t.Fatalf("export: %v", err)
@@ -980,3 +977,112 @@ func TestCodexE2E_TurnTTFTBeforeAnchorIsStashedAndRetried(t *testing.T) {
 type fakeResolver struct{}
 
 func (fakeResolver) ResolveActualModel(s string) string { return s }
+
+// TestCodexE2E_MultiTurnConversationTTFTNoCrossTalk pins live-verified
+// multi-turn behaviour (one conversation resumed through five turns plus
+// three fresh conversations: 8/8 rows ttft>0, per-turn values distinct).
+// Within ONE conversation each turn's codex.turn_ttft must land on THAT
+// turn's anchor row — the newest zero-ttft anchor at-or-before the event
+// is that turn's own row, never an earlier (already filled) turn's row.
+func TestCodexE2E_MultiTurnConversationTTFTNoCrossTalk(t *testing.T) {
+	d, err := db.Init(&config.Config{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo := db.NewRepository(d)
+
+	srv := grpc.NewServer()
+	rcv := New(repo, fakeResolver{}, api.NewBroker(), nil)
+	rcv.Register(srv)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cli := collogspb.NewLogsServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	attr := func(k, v string) *commontpb.KeyValue {
+		return &commontpb.KeyValue{Key: k, Value: &commontpb.AnyValue{Value: &commontpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	export := func(records ...*logspb.LogRecord) {
+		t.Helper()
+		if _, err := cli.Export(ctx, &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+			Resource:  &resourcepb.Resource{Attributes: []*commontpb.KeyValue{attr("service.name", "codex-cli")}},
+			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: records}},
+		}}}); err != nil {
+			t.Fatalf("export: %v", err)
+		}
+	}
+	base := time.Now().Add(-5 * time.Minute)
+	conv := "conv-multiturn"
+
+	// Three resumed turns of one conversation in protocol order per turn:
+	// anchor -> turn_ttft -> ttft-less completion. Distinct ttft values per
+	// turn prove no cross-talk (a mis-joined row would carry another turn's
+	// value or stay 0).
+	turns := []struct {
+		offset time.Duration
+		ttft   int
+	}{
+		{0, 1100},
+		{90 * time.Second, 2200},
+		{3 * time.Minute, 3300},
+	}
+	for i, tn := range turns {
+		at := base.Add(tn.offset)
+		export(&logspb.LogRecord{TimeUnixNano: uint64(at.UnixNano()), Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.api_request"),
+			attr("conversation.id", conv),
+			attr("model", "glm-5.3"),
+		}})
+		export(&logspb.LogRecord{TimeUnixNano: uint64(at.Add(time.Duration(i+1) * time.Second).UnixNano()), Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.turn_ttft"),
+			attr("conversation.id", conv),
+			attr("model", "glm-5.3"),
+			attr("duration_ms", fmt.Sprintf("%d", tn.ttft)),
+		}})
+		export(&logspb.LogRecord{TimeUnixNano: uint64(at.Add(8 * time.Second).UnixNano()), Attributes: []*commontpb.KeyValue{
+			attr("event.name", "codex.sse_event"),
+			attr("event.kind", "response.completed"),
+			attr("conversation.id", conv),
+			attr("model", "glm-5.3"),
+			attr("input_token_count", "100"),
+			attr("output_token_count", "40"),
+			attr("cached_token_count", "0"),
+			attr("reasoning_token_count", "0"),
+			attr("tool_token_count", "140"),
+		}})
+	}
+
+	rows, err := repo.DB().QueryContext(ctx,
+		`SELECT ttft_ms FROM api_requests WHERE conversation_id=? ORDER BY id`, conv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var ttft int64
+		rows.Scan(&ttft)
+		got = append(got, ttft)
+	}
+	want := []int64{1100, 2200, 3300}
+	if len(got) != len(want) {
+		t.Fatalf("one row per turn expected: got %d (%v)", len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("turn %d ttft = %d, want %d (cross-turn leak?)", i+1, got[i], want[i])
+		}
+	}
+}
