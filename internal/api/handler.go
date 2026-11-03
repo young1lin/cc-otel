@@ -3,6 +3,7 @@ package api
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -306,6 +307,39 @@ func HostAllowlistGuard(bindHost string) func(http.Handler) http.Handler {
 	}
 }
 
+// staticETag hashes the embedded asset at path ("/"-rooted as served) and
+// returns a strong ETag. Memoized: the embed tree is immutable per process,
+// so each file is read and hashed once. Empty for directories/misses — the
+// file server handles those.
+var staticETags sync.Map
+
+func staticETag(urlPath string) string {
+	if urlPath == "" || strings.HasSuffix(urlPath, "/") {
+		return ""
+	}
+	if v, ok := staticETags.Load(urlPath); ok {
+		s, _ := v.(string)
+		return s
+	}
+	sub, err := fs.Sub(web.FS(), "static")
+	if err != nil {
+		return ""
+	}
+	f, err := sub.Open(strings.TrimPrefix(urlPath, "/"))
+	if err != nil {
+		staticETags.Store(urlPath, "")
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	etag := fmt.Sprintf("\"%x\"", h.Sum(nil)[:16])
+	staticETags.Store(urlPath, etag)
+	return etag
+}
+
 // Register wires all API and static-file routes onto the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/api/health", http.HandlerFunc(h.Health))
@@ -350,10 +384,20 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// rebuilding, set CC_OTEL_STATIC_DIR to the static folder (e.g. internal/web/static).
 	// Assets carry no content hash in their names, so browsers must revalidate
 	// on every load — a cached app.js otherwise pins a UI to an old build after
-	// a daemon upgrade (no-cache still allows disk cache + 304s).
+	// a daemon upgrade. embed.FS has zero ModTime, so http.FileServer emits NO
+	// Last-Modified/ETag and every refresh re-downloads ~1.3MB (~500KB wire)
+	// plus a server-side gzip of the 1MB echarts bundle (R4 review A5-F1).
+	// A content-hash ETag gives revalidation teeth: If-None-Match → 304.
 	wrapStatic := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-cache")
+			if etag := staticETag(r.URL.Path); etag != "" {
+				w.Header().Set("ETag", etag)
+				if r.Header.Get("If-None-Match") == etag {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+			}
 			h.ServeHTTP(w, r)
 		})
 	}
@@ -799,10 +843,29 @@ func (h *Handler) PricingRecompute(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": "pricing registry or db not available"})
 			return
 		}
+		// Recompute is the third heavy writer (apply batches + a full-table
+		// agg rebuild tx). Gate it against import and codex-migrate under
+		// writerBusMu so at most one heavy writer runs at a time (R4 review
+		// A2-F2); otherwise the single-transaction agg rebuild competes with
+		// migration batches for the 5s busy_timeout window.
+		h.writerBusMu.Lock()
 		h.recompute.mu.Lock()
 		if h.recompute.running {
 			h.recompute.mu.Unlock()
+			h.writerBusMu.Unlock()
 			json.NewEncoder(w).Encode(h.recompute.snapshot()) // already running — no-op
+			return
+		}
+		busy := h.imports != nil && h.imports.HasActiveJob()
+		if !busy {
+			h.codexMigrate.mu.Lock()
+			busy = h.codexMigrate.running
+			h.codexMigrate.mu.Unlock()
+		}
+		if busy {
+			h.recompute.mu.Unlock()
+			h.writerBusMu.Unlock()
+			writeAPIError(w, http.StatusConflict, "writer_busy", "An import or Codex migration is running; retry the recompute when it finishes", nil)
 			return
 		}
 		h.recompute.running = true
@@ -813,6 +876,7 @@ func (h *Handler) PricingRecompute(w http.ResponseWriter, r *http.Request) {
 		h.recompute.err = ""
 		h.recompute.lastResult = nil
 		h.recompute.mu.Unlock()
+		h.writerBusMu.Unlock()
 
 		go h.runRecompute()
 		json.NewEncoder(w).Encode(h.recompute.snapshot())

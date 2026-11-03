@@ -238,11 +238,12 @@ function activePanelName() {
 }
 
 function refreshPanel(panel = activePanelName()) {
-    if (panel === 'daily') refreshDailyPanel();
-    else if (panel === 'sessions') loadSessions();
-    else if (panel === 'requests') loadRequests();
-    else if (panel === 'rate') loadRate();
-    else if (panel === 'clients') loadClients();
+    if (panel === 'daily') return refreshDailyPanel() ?? Promise.resolve();
+    else if (panel === 'sessions') return loadSessions();
+    else if (panel === 'requests') return loadRequests();
+    else if (panel === 'rate') return loadRate() ?? Promise.resolve();
+    else if (panel === 'clients') return loadClients() ?? Promise.resolve();
+    return Promise.resolve();
 }
 
 function loadAll() {
@@ -250,11 +251,10 @@ function loadAll() {
     // hidden and therefore will not start a replacement request until opened.
     invalidateRequestContext();
     updateDailyViewControls();
-    loadDashboard();
-    loadChart();
-    // Hidden panels are refreshed when activated. Loading only the visible one
-    // avoids needless races and guarantees its query matches current UI state.
-    refreshPanel();
+    // Awaiting the full round lets the SSE refresh guard (sse.js) coalesce
+    // overlapping rounds instead of piling slow queries server-side
+    // (R4 review A5-F2).
+    return Promise.allSettled([loadDashboard(), loadChart(), refreshPanel()]);
 }
 
 function selectCalendarDate(date) {

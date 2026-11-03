@@ -32,9 +32,12 @@ func Init(cfg *config.Config) (*sql.DB, error) {
 	}
 	db.Exec("PRAGMA journal_mode=WAL")
 
-	// ANALYZE: refresh query-planner stats so the new composite indexes get picked.
-	// Cheap on small DBs; skip failures silently (e.g., empty DB on first boot).
-	db.Exec("ANALYZE")
+	// Planner stats: PRAGMA optimize runs a bounded analysis (skips when
+	// sqlite_stat1 is fresh — 1ms vs a full ANALYZE's 1.4s on the 535MB
+	// bin DB, which was 85-95% of every boot; R4 review A4-F1). It still
+	// analyzes after schema/index changes because they bump the schema
+	// cookie. Skip failures silently (e.g., empty DB on first boot).
+	db.Exec("PRAGMA optimize")
 
 	db.SetMaxOpenConns(4) // Allow concurrent readers; SQLite internal locking serializes writes
 	return db, nil

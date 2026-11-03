@@ -60,9 +60,21 @@ type aggRebuilder interface {
 // variable so the crash-resume tests can simulate an engine that commits
 // batches and then dies — the state machine must recover its purge ranges.
 var runCodexMigrate = func(ctx context.Context, database *sql.DB, retentionDays int) (dbmerge.Result, error) {
+	lastLog := time.Now()
 	return dbmerge.MigrateCodexToAll(ctx, database, dbmerge.Options{
 		Location:      time.Local,
 		RetentionDays: retentionDays,
+		// Boot auto-import runs BEFORE the listeners bind: on a large archive
+		// the import can take 15s+ with zero log output, which looks exactly
+		// like a hung daemon to an operator (R4 review A4-F2). Emit a line at
+		// most every 2s so progress is visible while staying quiet.
+		Progress: func(p dbmerge.Progress) {
+			if time.Since(lastLog) < 2*time.Second {
+				return
+			}
+			lastLog = time.Now()
+			log.Printf("codex auto-import: progress table=%s processed=%d/%d inserted=%d duplicates=%d (%.0f%%)", p.CurrentTable, p.ProcessedRows, p.TotalRows, p.InsertedRows, p.DuplicateRows, p.Percent)
+		},
 	})
 }
 
@@ -86,7 +98,7 @@ func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, r
 		// are invisible on the Codex tab until a manual one-click migration
 		// runs. Surface the risk instead of skipping silently.
 		var archiveNew int
-		_ = database.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_api_requests WHERE id > (SELECT COALESCE(MAX(max_id),0) FROM codex_auto_import_ranges WHERE table_name='api_requests')").Scan(&archiveNew)
+		_ = database.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_api_requests WHERE timestamp > ?", marker.importedAt).Scan(&archiveNew)
 		if archiveNew > 0 {
 			log.Printf("codex auto-import: WARNING: %d archive row(s) newer than the imported ranges exist (rollback window or manual archive edits?) — run the in-app Codex migration to pick them up", archiveNew)
 		}

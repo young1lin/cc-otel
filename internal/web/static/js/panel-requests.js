@@ -83,7 +83,16 @@ function renderDurationStatsTable() {
     </tr>`).join('');
 }
 
-export async function loadDurationStats(from, to, model) {
+// Durations aggregate over the WHOLE range (independent of paging), so
+// re-fetching on every page turn re-runs a full-table GROUP BY (~700ms on
+// All Time; R4 review A5-F3). Memoize on the inputs that actually change
+// the result: range × model × source.
+let durationsKey = '';
+
+export async function loadDurationStats(from, to, model, { force = false } = {}) {
+    const key = `${state.source}|${from}|${to}|${model}`;
+    if (!force && key === durationsKey) return;
+    durationsKey = key;
     const tbody = document.getElementById('duration-stats-tbody');
     if (!tbody) return;
     const isCurrent = beginLatestRequest('request-durations');
@@ -107,14 +116,17 @@ export async function loadDurationStats(from, to, model) {
     }
 }
 
-export async function loadRequests() {
+export async function loadRequests({ skipDurations = false } = {}) {
     const isCurrent = beginLatestRequest('request-log');
     const { from, to } = rangeToFromTo(state.currentRange);
     const { page, pageSize } = paging.requests;
     const sourceAtStart = state.source;
     try {
         const model = document.getElementById('model-filter').value;
-        loadDurationStats(from, to, model);
+        // Pagination passes skipDurations (the range/model/source inputs did
+        // not change, so the memo in loadDurationStats short-circuits the
+        // full-table GROUP BY); SSE and filter changes force a refetch.
+        loadDurationStats(from, to, model, { force: !skipDurations });
         const json = await loadRequestsData({ from, to, page, pageSize, model });
         if (!isCurrent() || sourceAtStart !== state.source) return;
         paging.requests.total = json.total || 0;
@@ -123,7 +135,7 @@ export async function loadRequests() {
         const tbody = document.getElementById('request-tbody');
         if (data.length === 0) {
             tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px">No data</td></tr>';
-            renderPagination('requests-pagination', paging.requests, loadRequests);
+            renderPagination('requests-pagination', paging.requests, () => loadRequests({ skipDurations: true }));
             return;
         }
         tbody.innerHTML = data.map(r => `<tr>
@@ -143,7 +155,7 @@ export async function loadRequests() {
             )}">${r.ttft_ms ? r.ttft_ms + 'ms' : '—'}</td>
             <td class="mono">${r.duration_ms ? r.duration_ms + 'ms' : '—'}</td>
         </tr>`).join('');
-        renderPagination('requests-pagination', paging.requests, loadRequests);
+        renderPagination('requests-pagination', paging.requests, () => loadRequests({ skipDurations: true }));
     } catch (e) { if (isCurrent()) console.error('requests:', e); }
 }
 

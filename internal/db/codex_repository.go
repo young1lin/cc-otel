@@ -430,7 +430,7 @@ func (r *Repository) updateCodexTokensOnce(ctx context.Context, u *CodexTokenUpd
 // InsertCodexUserPrompt inserts a Codex prompt into the shared
 // user_prompt_events table.
 func (r *Repository) InsertCodexUserPrompt(ctx context.Context, e *CodexEvent) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO user_prompt_events
 			(timestamp, session_id, user_id, prompt_id, prompt_text, prompt_length,
 			 event_sequence, terminal_type, service_name, service_version,
@@ -446,7 +446,7 @@ func (r *Repository) InsertCodexUserPrompt(ctx context.Context, e *CodexEvent) e
 // InsertCodexToolDecision inserts a Codex approval into the shared
 // tool_decision_events table.
 func (r *Repository) InsertCodexToolDecision(ctx context.Context, e *CodexEvent) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO tool_decision_events
 			(timestamp, session_id, user_id, prompt_id, event_sequence, tool_name,
 			 decision, source, terminal_type, conversation_id, call_id, service_name)
@@ -463,7 +463,7 @@ func (r *Repository) InsertCodexToolDecision(ctx context.Context, e *CodexEvent)
 // tool_result_size_bytes column; Codex-only detail (arguments_length,
 // mcp_server, tool_origin) rides in the dedicated columns.
 func (r *Repository) InsertCodexToolResult(ctx context.Context, e *CodexEvent) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO tool_result_events
 			(timestamp, session_id, user_id, prompt_id, event_sequence, tool_name,
 			 success, duration_ms, tool_result_size_bytes, decision_source, decision_type,
@@ -498,7 +498,7 @@ func (r *Repository) UpdateCodexRequestDuration(
 		return false, nil
 	}
 	if requestRowID > 0 {
-		res, err := r.db.ExecContext(ctx, `
+		res, err := r.execWithBusyRetry(ctx, `
 			UPDATE api_requests
 			SET duration_ms = ?
 			WHERE id = ? AND session_id = ? AND model = ? AND service_name = ?
@@ -525,7 +525,7 @@ func (r *Repository) UpdateCodexRequestDuration(
 	}
 
 	cutoff := ts.Unix() - 600
-	res, err := r.db.ExecContext(ctx, `
+	res, err := r.execWithBusyRetry(ctx, `
 		UPDATE api_requests
 		SET duration_ms = ?
 		WHERE id = (
@@ -560,7 +560,7 @@ func (r *Repository) UpdateCodexRequestTTFT(
 		return nil
 	}
 	if requestRowID > 0 {
-		res, err := r.db.ExecContext(ctx, `
+		res, err := r.execWithBusyRetry(ctx, `
 			UPDATE api_requests
 			SET ttft_ms = ?
 			WHERE id = ? AND session_id = ? AND model = ? AND service_name = ?
@@ -587,7 +587,7 @@ func (r *Repository) UpdateCodexRequestTTFT(
 	}
 
 	cutoff := ts.Unix() - 600
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		UPDATE api_requests
 		SET ttft_ms = ?
 		WHERE id = (
@@ -623,7 +623,7 @@ func (r *Repository) UpdateCodexTurnTTFT(
 	if conversationID == "" || model == "" || ttftMs <= 0 {
 		return false, nil
 	}
-	res, err := r.db.ExecContext(ctx, `
+	res, err := r.execWithBusyRetry(ctx, `
 		UPDATE api_requests
 		SET ttft_ms = ?
 		WHERE id = (
@@ -648,7 +648,7 @@ func (r *Repository) UpdateCodexTurnTTFT(
 // InsertCodexRawEvent inserts the raw OTLP payload into the shared
 // raw_otlp_events table (identical schema to the legacy codex one).
 func (r *Repository) InsertCodexRawEvent(ctx context.Context, eventType string, timestampUnix int64, rawJSON string) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO raw_otlp_events (timestamp, event_type, raw_json) VALUES (?, ?, ?)`,
 		timestampUnix, eventType, rawJSON,
 	)

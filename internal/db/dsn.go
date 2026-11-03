@@ -37,7 +37,11 @@ func DSN(path string) string {
 		"busy_timeout(5000)",
 		"cache_size(-65536)",
 		"mmap_size(268435456)",
-		"temp_store(MEMORY)",
+		// temp_store=FILE (R4 review A3-F2): TEMP b-trees and dbmerge staging
+		// tables would otherwise live in the wazero linear heap, which never
+		// returns memory to the OS — every large migration permanently raised
+		// the RSS floor. On-disk temp keeps the spike out of the process.
+		"temp_store(FILE)",
 		// WAL high-water control (R3 perf finding): neither PASSIVE
 		// checkpoints nor autocheckpoint ever shrink the -wal file; after a
 		// large migration it stayed frozen at 340MB forever. The limit lets a

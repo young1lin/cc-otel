@@ -6,12 +6,35 @@ let onUpdate    = () => {};
 let openPopover = () => {};
 let closePopover = () => {};
 
+// In-flight guard: without it, a ≥2 events/s stream fires onUpdate every
+// 500ms regardless of whether the previous round finished — slow endpoints
+// (durations over the full table: ~700ms) then pile up server-side (R4
+// review A5-F2). A round still running coalesces later triggers into one
+// deferred re-run.
+let refreshInFlight = false;
+let refreshPending = false;
+
 function scheduleRefresh() {
     if (state.sseRefreshTimer) return;
-    state.sseRefreshTimer = setTimeout(() => {
-        state.sseRefreshTimer = null;
-        onUpdate();
-    }, 500);
+    state.sseRefreshTimer = setTimeout(runScheduledRefresh, 500);
+}
+
+async function runScheduledRefresh() {
+    state.sseRefreshTimer = null;
+    if (refreshInFlight) {
+        refreshPending = true; // coalesce: one re-run after the current round
+        return;
+    }
+    refreshInFlight = true;
+    try {
+        await onUpdate();
+    } finally {
+        refreshInFlight = false;
+        if (refreshPending) {
+            refreshPending = false;
+            scheduleRefresh();
+        }
+    }
 }
 
 export function shouldRefreshForSSE(incomingSource, currentSource) {

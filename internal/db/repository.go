@@ -593,7 +593,7 @@ func (r *Repository) InsertRawEvent(ctx context.Context, eventType string, times
 	if now := time.Now().Unix(); timestamp > now+60 {
 		timestamp = now
 	}
-	err := r.execWithBusyRetry(ctx,
+	_, err := r.execWithBusyRetry(ctx,
 		`INSERT INTO raw_otlp_events (timestamp, event_type, raw_json) VALUES (?, ?, ?)`,
 		timestamp, eventType, rawJSON)
 	return err
@@ -606,7 +606,7 @@ func (r *Repository) EnqueuePendingTTFTSpan(ctx context.Context, requestID, sess
 	if requestID == "" && (sessionID == "" || model == "") {
 		return nil
 	}
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO pending_ttft_spans (created_unix, session_id, model, span_end_unix, ttft_ms, raw_json, processed, request_id)
 		VALUES (?, ?, ?, ?, ?, ?, 0, ?)
 	`, time.Now().Unix(), sessionID, model, spanEndUnix, ttftMs, rawJSON, requestID)
@@ -618,7 +618,7 @@ func (r *Repository) BackfillTTFTByRequestID(ctx context.Context, requestID stri
 	if r == nil || r.db == nil || requestID == "" || ttftMs <= 0 {
 		return false, nil
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE request_id = ? AND ttft_ms = 0`, ttftMs, requestID)
+	res, err := r.execWithBusyRetry(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE request_id = ? AND ttft_ms = 0`, ttftMs, requestID)
 	if err != nil {
 		return false, err
 	}
@@ -654,7 +654,7 @@ func (r *Repository) BackfillTTFTNearest(ctx context.Context, sessionID, promptI
 		return false, err
 	}
 
-	res, err := r.db.ExecContext(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE id = ? AND ttft_ms = 0`, ttftMs, id)
+	res, err := r.execWithBusyRetry(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE id = ? AND ttft_ms = 0`, ttftMs, id)
 	if err != nil {
 		return false, err
 	}
@@ -691,7 +691,7 @@ func (r *Repository) BackfillTTFTNearestLoose(ctx context.Context, sessionID, mo
 		return false, err
 	}
 
-	res, err := r.db.ExecContext(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE id = ? AND ttft_ms = 0`, ttftMs, id)
+	res, err := r.execWithBusyRetry(ctx, `UPDATE api_requests SET ttft_ms = ? WHERE id = ? AND ttft_ms = 0`, ttftMs, id)
 	if err != nil {
 		return false, err
 	}
@@ -705,7 +705,7 @@ func (r *Repository) InsertEvent(ctx context.Context, e *Event) error {
 	if e.Success > 0 {
 		successInt = 1
 	}
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO events
 			(timestamp, session_id, user_id, prompt_id, prompt_length,
 			 event_name, event_sequence, model, input_tokens, output_tokens,
@@ -730,7 +730,7 @@ func (r *Repository) InsertEvent(ctx context.Context, e *Event) error {
 
 // InsertUserPrompt stores a user_prompt event into the dedicated table.
 func (r *Repository) InsertUserPrompt(ctx context.Context, e *Event) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO user_prompt_events
 			(timestamp, session_id, user_id, prompt_id, prompt_text, prompt_length, event_sequence,
 			 terminal_type, service_name, service_version, host_arch, os_type, os_version)
@@ -744,7 +744,7 @@ func (r *Repository) InsertUserPrompt(ctx context.Context, e *Event) error {
 
 // InsertToolDecision stores a tool_decision event into the dedicated table.
 func (r *Repository) InsertToolDecision(ctx context.Context, e *Event) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO tool_decision_events
 			(timestamp, session_id, user_id, prompt_id, event_sequence,
 			 tool_name, decision, source, terminal_type)
@@ -762,7 +762,7 @@ func (r *Repository) InsertToolResult(ctx context.Context, e *Event) error {
 	if e.Success > 0 {
 		successInt = 1
 	}
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO tool_result_events
 			(timestamp, session_id, user_id, prompt_id, event_sequence,
 			 tool_name, success, duration_ms, tool_result_size_bytes,
@@ -778,7 +778,7 @@ func (r *Repository) InsertToolResult(ctx context.Context, e *Event) error {
 
 // InsertAPIError stores an api_error event into the dedicated table.
 func (r *Repository) InsertAPIError(ctx context.Context, e *Event) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO api_error_events
 			(timestamp, session_id, user_id, prompt_id, event_sequence,
 			 model, duration_ms, terminal_type,
@@ -796,7 +796,7 @@ func (r *Repository) InsertAPIError(ctx context.Context, e *Event) error {
 
 // InsertMetricPoint stores one OTLP sum metric data point (all Claude Code metrics use sum).
 func (r *Repository) InsertMetricPoint(ctx context.Context, timestampUnix int64, metricName string, value float64, sessionID, userID, terminalType, model, attrType string) error {
-	err := r.execWithBusyRetry(ctx, `
+	_, err := r.execWithBusyRetry(ctx, `
 		INSERT INTO otel_metric_points (timestamp, metric_name, value, session_id, user_id, terminal_type, model, attr_type)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		timestampUnix, metricName, value, sessionID, userID, terminalType, model, attrType,
@@ -1726,15 +1726,15 @@ func (r *Repository) CleanupRaw(ctx context.Context, beforeUnix int64) (int64, e
 // under BEGIN IMMEDIATE can exhaust busy_timeout, and the sub-event tables
 // have no idempotent key — but a statement that failed with BUSY never
 // committed, so replaying it cannot double-insert (R1 review A3-3).
-func (r *Repository) execWithBusyRetry(ctx context.Context, query string, args ...any) error {
+func (r *Repository) execWithBusyRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	for attempt := 0; ; attempt++ {
-		_, err := r.db.ExecContext(ctx, query, args...)
+		res, err := r.db.ExecContext(ctx, query, args...)
 		if err == nil || attempt >= 3 || !isBusyErr(err) {
-			return err
+			return res, err
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(time.Duration(25<<attempt) * time.Millisecond):
 		}
 	}
