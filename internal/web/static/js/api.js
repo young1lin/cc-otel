@@ -59,8 +59,8 @@ export const loadStatusData = () => fetchJSON('/api/status');
 export const loadDashboardData = (from, to) =>
     fetchJSON(apiPath('dashboard') + qs({ from, to }));
 
-// Per-client (service_name) token accounting and hour-of-day buckets — both
-// read the non-Codex pool only; the Codex tab never mirrors them.
+// Per-client (service_name) token accounting and hour-of-day buckets —
+// both serve the FULL unified pool (Codex rows included).
 export const loadClientsData = ({ from, to }) =>
     fetchJSON('/api/clients' + qs({ from, to }));
 
@@ -73,9 +73,9 @@ export const loadDailyData = ({ from, to, page = 1, pageSize = 20, granularity =
 export const loadCalendarData = ({ from, to }) =>
     fetchJSON(apiPath('calendar') + qs({ from, to }));
 
-// No loadHourlyData: /api/hourly has no /api/codex mirror (the Codex tab
-// hides the Hour-of-Day sub-tab), and the export had no callers even on
-// main. Removed in R5 review (A5-F6).
+// No loadHourlyData: /api/hourly never had a /api/codex mirror and the
+// export had no callers even on main. Removed in R5 review (A5-F6);
+// Hour-of-Day loads through loadHoursData below.
 
 export const loadIntradayData = ({ from, to, bucket = 30, model = '' } = {}) =>
     fetchJSON(apiPath('intraday') + qs({ from, to, bucket, model }));
