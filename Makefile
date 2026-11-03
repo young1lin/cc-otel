@@ -35,6 +35,7 @@ build:
 
 test:
 	go test ./... -v
+	node internal/web/static/tests/run-all.mjs
 
 coverage:
 	go test ./... -coverprofile=coverage.out

@@ -1,5 +1,6 @@
 // Clients panel: per-client (service_name) token & cost accounting for the
-// selected range, backed by /api/clients (api_requests GROUP BY service_name —
+// selected range, backed by /api/clients (claude_pool_requests GROUP BY
+// service_name — the view EXCLUDES codex, which renders on its own tab;
 // all-time, unaffected by retention pruning of the agg). This is the
 // "who consumed what" view the KPI row aggregates
 // away. Badge rendering mirrors panel-requests.js formatSource so a client

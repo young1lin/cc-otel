@@ -42,6 +42,22 @@ var codexToAllPlans = []codexTablePlan{
 	{"codex_raw_otlp_events", "raw_otlp_events"},
 }
 
+// TablePair is one (source archive table → unified target table) mapping.
+type TablePair struct{ Source, Target string }
+
+// CodexToAllPlans exports the single source of truth for the codex→unified
+// table mapping. Boot auto-import derives its row counting, pre-snapshots
+// and purge whitelists from this list — a second copy would silently skip
+// any table the engine adds later (rows imported but never purged, or
+// ranges never snapshotted at all; R3 review A1-F1/A2-F6).
+func CodexToAllPlans() []TablePair {
+	out := make([]TablePair, len(codexToAllPlans))
+	for i, p := range codexToAllPlans {
+		out[i] = TablePair{Source: p.source, Target: p.target}
+	}
+	return out
+}
+
 // codexToAllSource streams the archive tables from the live DB, transforming
 // every row into its unified-table shape. It implements RowSource so the
 // standard Import pipeline (batching, staging, dedup, ledger, agg deltas)
@@ -244,7 +260,7 @@ func (s *codexToAllSource) Scan(ctx context.Context, yield func(Row) error) erro
 				); err != nil {
 					return Row{}, err
 				}
-				input := v.Input - v.CacheRead - v.CacheCreate
+				input := db.UncachedInput(v.Input, v.CacheRead, v.CacheCreate)
 				if input < 0 {
 					input = 0
 				}

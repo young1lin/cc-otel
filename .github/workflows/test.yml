@@ -29,6 +29,9 @@ jobs:
           # the per-package timeout (v0.1.0 tag flake, 2026-08-16).
           CC_OTEL_TEST_NOSYNC: "1"
 
+      - name: Web tests
+        run: node internal/web/static/tests/run-all.mjs
+
       - name: Test (race)
         if: matrix.os != 'windows-latest'
         run: CGO_ENABLED=1 go test ./... -race -timeout 15m

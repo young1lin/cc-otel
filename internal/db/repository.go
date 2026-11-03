@@ -12,7 +12,10 @@ import (
 	"github.com/ncruces/go-sqlite3"
 )
 
-const costScale = 100000 // 1 USD = 100000 units, 0.00001 precision
+// CostScale is the cost unit scale: 1 USD = 100000 int64 units (0.00001
+// precision). Exported so recompute and any future writer share one
+// constant (R3 review A1-F3).
+const CostScale = 100000
 
 // APIRequest represents a single Claude Code API request record stored in the database.
 type APIRequest struct {
@@ -331,7 +334,7 @@ func (r *Repository) DB() *sql.DB {
 }
 
 func costToInt64(usd float64) int64 {
-	return int64(math.Round(usd * costScale))
+	return int64(math.Round(usd * CostScale))
 }
 
 // dateExprForGranularity returns a whitelisted SQL date expression for the given granularity.
@@ -363,7 +366,7 @@ func localDateRangeToUnix(from, to string) (int64, int64, error) {
 }
 
 func costToFloat64(units int64) float64 {
-	return float64(units) / costScale
+	return float64(units) / CostScale
 }
 
 // aggDateExpr returns the SQL expression to group daily_model_agg.date by granularity.

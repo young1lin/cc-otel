@@ -15,9 +15,11 @@ function scheduleRefresh() {
 }
 
 export function shouldRefreshForSSE(incomingSource, currentSource) {
-    // Since the AllClient merge there is a single dashboard page: every
-    // source tag ("claude" — which now also covers Codex rows — or "all")
-    // refreshes it. Parameters stay for signature compatibility.
+    // Single dashboard page since the merge. The All Clients tab renders the
+    // claude_pool views (codex excluded, own tab); 'claude' events can still
+    // shift Codex-tab data only via the shared pool aggregates, so the
+    // Claude tag keeps refreshing everything. Parameters stay for signature
+    // compatibility.
     return incomingSource === 'all' || incomingSource === 'claude' || incomingSource === currentSource;
 }
 

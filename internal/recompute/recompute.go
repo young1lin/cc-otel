@@ -14,12 +14,14 @@ import (
 	"math"
 	"strings"
 
+	dbutil "github.com/young1lin/cc-otel/internal/db"
 	"github.com/young1lin/cc-otel/internal/pricing"
 )
 
-// CostScale matches internal/db/repository.go: cost is stored as int64
-// 0.00001-USD units (1 USD = 100000).
-const CostScale = 100000.0
+// CostScale re-exports db.CostScale (cost is stored as int64 0.00001-USD
+// units; 1 USD = 100000). One constant, two packages, no drift (R3 review
+// A1-F3).
+const CostScale = dbutil.CostScale
 
 // Options selects which tables and timestamp range to recompute.
 type Options struct {
@@ -221,7 +223,7 @@ func scanTable(ctx context.Context, db *sql.DB, reg pricing.Registry, table stri
 		// input - cacheRead - cacheCreate, clamped at 0).
 		uncachedInput := input
 		if table == "codex_api_requests" {
-			uncachedInput = input - cacheRead - cacheCreate
+			uncachedInput = dbutil.UncachedInput(input, cacheRead, cacheCreate)
 			if uncachedInput < 0 {
 				uncachedInput = 0
 			}

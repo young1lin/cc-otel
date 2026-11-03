@@ -990,8 +990,9 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 // Clients returns per-client (service_name) token/cost aggregates for a date
 // range — the "which client consumed what" table behind the Clients panel.
 // Range parsing mirrors Dashboard (range=all|today|week|month + from/to
-// overrides). This reads api_requests — the never-pruned unified pool that
-// now includes migrated and live Codex rows (service_name='codex').
+// overrides). This reads the claude_pool_requests view (api_requests minus
+// service_name='codex' — Codex renders on its own tab; view DDL in db.go is
+// the single source of truth for that boundary).
 func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 	if rejectInvalidDateParams(w, r) {
 		return

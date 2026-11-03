@@ -136,20 +136,6 @@ func satAdd(a, b int64) int64 {
 	return a + b
 }
 
-func satSub(a, b int64) int64 {
-	if b == math.MinInt64 {
-		return math.MaxInt64
-	}
-	return satAdd(a, -b)
-}
-
-func satClampLow(v, floor int64) int64 {
-	if v < floor {
-		return floor
-	}
-	return v
-}
-
 func codexLogObservedUnixNanos(lr *logspb.LogRecord) int64 {
 	if lr == nil {
 		return 0
@@ -433,14 +419,15 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 	if lr == nil || repo == nil {
 		return false
 	}
-	// Since the AllClient merge, Codex rows live in the shared pool that the
-	// "All Clients" tab renders, so refreshes broadcast the same tag the
-	// Claude path uses.
+	// Codex rows live in the shared pool since the merge. The All Clients
+	// tab renders claude_pool views that exclude codex, so a Codex event
+	// cannot dirty that tab — but the shared aggregates can shift, so keep
+	// broadcasting the tags consumers subscribe to.
 	notify := func() {
 		if notifier != nil {
-			// Codex rows live in the shared pool since AllClient: refresh the
-			// "claude"-tagged All Clients page AND any legacy "codex"-tagged
-			// EventSource consumer (broker.go documents both tags).
+			// Refresh the Codex tab ("codex" tag) AND the "claude"-tagged
+			// All Clients page (shared agg tables; broker.go documents both
+			// tags).
 			notifier.NotifySource("claude")
 			notifier.NotifySource("codex")
 		}
@@ -602,7 +589,7 @@ func dispatchCodexLog(ctx context.Context, repo *db.Repository, lr *logspb.LogRe
 			if upd.InputTokens > 0 {
 				// Saturating subtraction: hostile values (input=1, caches=MaxInt64)
 				// must not wrap positive and defeat the clamp.
-				upd.InputTokens = satClampLow(satSub(satSub(upd.InputTokens, upd.CacheReadTokens), upd.CacheCreationTokens), 0)
+				upd.InputTokens = db.UncachedInput(upd.InputTokens, upd.CacheReadTokens, upd.CacheCreationTokens)
 			}
 			// Compute cost from the local pricing table — Codex never reports
 			// cost_usd, and this path is never the authoritative Claude Code +

@@ -33,16 +33,11 @@ import (
 // written on failure, so the next boot retries the import.
 const codexAutoPurgeDays = 30
 
-// codexAutoPlan mirrors dbmerge's codexToAllPlans (source archive table →
-// unified target table). Kept local so the id-range bookkeeping cannot drift
-// silently from the engine's plan list.
-var codexAutoPlan = []struct{ src, dst string }{
-	{"codex_api_requests", "api_requests"},
-	{"codex_user_prompt_events", "user_prompt_events"},
-	{"codex_tool_decision_events", "tool_decision_events"},
-	{"codex_tool_result_events", "tool_result_events"},
-	{"codex_raw_otlp_events", "raw_otlp_events"},
-}
+// codexAutoPlan derives the (source archive table → unified target table)
+// mapping from dbmerge's single exported list. A local copy here would
+// silently drift when the engine adds a mapping: rows imported but never
+// purged, or ranges never snapshotted (R3 review A1-F1).
+var codexAutoPlan = dbmerge.CodexToAllPlans()
 
 type autoImportMarker struct {
 	id          int64
@@ -84,6 +79,16 @@ func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, r
 	if found {
 		if !marker.purged && dayStart(time.Now()) >= dayStart(time.Unix(marker.importedAt, 0))+codexAutoPurgeDays*86400 { // local-midnight alignment, matching the migration sanity check (R1 A5-5)
 			return autoPurgeImported(ctx, database, repo, marker)
+		}
+		// Rollback contract (R3 review A5-F3): if the daemon was downgraded to
+		// a pre-merge binary, that binary wrote NEW rows into the codex_*
+		// archive while the marker here says "already imported" — those rows
+		// are invisible on the Codex tab until a manual one-click migration
+		// runs. Surface the risk instead of skipping silently.
+		var archiveNew int
+		_ = database.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_api_requests WHERE id > (SELECT COALESCE(MAX(max_id),0) FROM codex_auto_import_ranges WHERE table_name='api_requests')").Scan(&archiveNew)
+		if archiveNew > 0 {
+			log.Printf("codex auto-import: WARNING: %d archive row(s) newer than the imported ranges exist (rollback window or manual archive edits?) — run the in-app Codex migration to pick them up", archiveNew)
 		}
 		return nil // imported recently (or already purged): nothing to do
 	}
@@ -136,9 +141,9 @@ func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, r
 		// immediately: with the servers not yet bound the daemon is the only
 		// writer, so (pre, post] is exactly what this import added.
 		for _, plan := range codexAutoPlan {
-			pre[plan.dst], err = maxRowID(ctx, database, plan.dst)
+			pre[plan.Target], err = maxRowID(ctx, database, plan.Target)
 			if err != nil {
-				return fmt.Errorf("snapshot max id %s: %w", plan.dst, err)
+				return fmt.Errorf("snapshot max id %s: %w", plan.Target, err)
 			}
 		}
 		if err := recordAttemptPre(ctx, database, pre); err != nil {
@@ -159,12 +164,12 @@ func autoImportCodex(ctx context.Context, database *sql.DB, repo aggRebuilder, r
 
 	var ranges []autoImportRange
 	for _, plan := range codexAutoPlan {
-		post, err := maxRowID(ctx, database, plan.dst)
+		post, err := maxRowID(ctx, database, plan.Target)
 		if err != nil {
-			return fmt.Errorf("snapshot max id %s: %w", plan.dst, err)
+			return fmt.Errorf("snapshot max id %s: %w", plan.Target, err)
 		}
-		if post > pre[plan.dst] {
-			ranges = append(ranges, autoImportRange{table: plan.dst, minID: pre[plan.dst] + 1, maxID: post})
+		if post > pre[plan.Target] {
+			ranges = append(ranges, autoImportRange{table: plan.Target, minID: pre[plan.Target] + 1, maxID: post})
 		}
 	}
 	if err := recordAutoImport(ctx, database, time.Now().Unix(), res.InsertedRows, ranges); err != nil {
@@ -194,7 +199,7 @@ func autoPurgeImported(ctx context.Context, database *sql.DB, repo aggRebuilder,
 	// a month passed (R2 review A5-F3).
 	allowed := map[string]bool{}
 	for _, plan := range codexAutoPlan {
-		allowed[plan.dst] = true
+		allowed[plan.Target] = true
 	}
 	if marker.importedAt > time.Now().Unix() {
 		return fmt.Errorf("marker imported_at %d is in the future (clock jumped?); purge deferred", marker.importedAt)
@@ -211,7 +216,19 @@ func autoPurgeImported(ctx context.Context, database *sql.DB, repo aggRebuilder,
 	defer tx.Rollback()
 	var deleted int64
 	for _, r := range ranges {
-		res, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE id BETWEEN ? AND ?", r.table), r.minID, r.maxID)
+		// The purge must NEVER take live rows. Ranges are recorded under a
+		// single-writer assumption (import runs before listeners bind); if that
+		// invariant is ever broken — two daemon instances sharing a DB, or the
+		// import moved after bind — live traffic rows can land inside a
+		// (min,max] range. The service guard makes that scenario fail safe:
+		// only rows tagged codex are deletable, so Claude/live rows in the
+		// range survive even when the bookkeeping is wrong (R3 review A5-F1).
+		query := fmt.Sprintf("DELETE FROM %s WHERE id BETWEEN ? AND ?", r.table)
+		switch r.table {
+		case "api_requests":
+			query += " AND service_name = 'codex'"
+		}
+		res, err := tx.ExecContext(ctx, query, r.minID, r.maxID)
 		if err != nil {
 			return fmt.Errorf("purge %s [%d,%d]: %w", r.table, r.minID, r.maxID, err)
 		}
@@ -327,7 +344,7 @@ func recordAttemptPre(ctx context.Context, database *sql.DB, pre map[string]int6
 	for _, plan := range codexAutoPlan {
 		if _, err := tx.ExecContext(ctx,
 			"INSERT INTO codex_auto_import_attempt (table_name, pre_max_id) VALUES (?, ?)",
-			plan.dst, pre[plan.dst]); err != nil {
+			plan.Target, pre[plan.Target]); err != nil {
 			return err
 		}
 	}
@@ -371,7 +388,7 @@ func countArchiveRows(ctx context.Context, database *sql.DB) (int64, error) {
 	var total int64
 	for _, plan := range codexAutoPlan {
 		var n int64
-		err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+plan.src).Scan(&n)
+		err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+plan.Source).Scan(&n)
 		if err != nil {
 			// A missing source table means no history for that stream.
 			if isNoTableErr(err) {

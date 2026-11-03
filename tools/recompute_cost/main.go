@@ -52,6 +52,19 @@ func main() {
 		log.Fatalf("invalid --table %q (want api_requests | codex_api_requests | both)", *table)
 	}
 
+	// Freeze probe (R3 review A2-F7): on a database unified with the codex
+	// archive, repricing codex_api_requests rewrites the FROZEN archive while
+	// the unified pool keeps old prices — later manual re-migrations would
+	// then insert mismatched costs. Refuse like migrate_codex_data does.
+	probe, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?mode=ro", filepath.ToSlash(filepath.Clean(*dbPath))))
+	if err == nil {
+		var frozen int
+		if err := probe.QueryRow(`SELECT EXISTS(SELECT 1 FROM codex_auto_import) OR EXISTS(SELECT 1 FROM import_ledger WHERE source_db LIKE '%codex%')`).Scan(&frozen); err == nil && frozen == 1 && *table != "api_requests" {
+			log.Fatalf("refusing to recompute codex_api_requests: this database has been unified with the codex archive (frozen). Reprice api_requests only.")
+		}
+		probe.Close()
+	}
+
 	fromUnix, toUnix, err := parseDateRange(*from, *to)
 	if err != nil {
 		log.Fatalf("date range: %v", err)
