@@ -132,8 +132,8 @@ function syncSourceTabsUI() {
     });
 
     // Rate and Clients are backed only by the non-Codex pool. Never present
-    those curves as Codex data; if the source changes while either is open,
-    move to Daily Detail before the source-specific refresh runs.
+    // those curves as Codex data; if the source changes while either is open,
+    // move to Daily Detail before the source-specific refresh runs.
     const hideForCodex = state.source === 'codex';
     for (const name of ['rate', 'clients']) {
         const btn = document.querySelector('.panel-btn[data-panel="' + name + '"]');
