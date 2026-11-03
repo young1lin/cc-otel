@@ -105,6 +105,69 @@ function openPopover(backdropEl, anchorEl) {
     modalEl.style.maxHeight = `calc(100vh - ${Math.round(top + pad)}px)`;
 }
 
+
+// ── Source tabs (All Clients | Codex) ──────────────────────────────────────
+// Original pre-merge design, restored: "All Clients" is the non-Codex pool
+// (claude-code, opencode, DSH, …); the Codex tab mirrors /api/codex/* which
+// reads the unified pool filtered to service_name='codex' — migrated history
+// plus live turns in one view.
+function applySourceFromURL() {
+    const sp = new URLSearchParams(location.search);
+    const src = sp.get('source');
+    if (src === 'codex' || src === 'claude') state.source = src;
+    else state.source = 'claude';
+}
+
+function syncSourceTabsUI() {
+    document.querySelectorAll('.source-tab').forEach(btn => {
+        btn.classList.toggle('is-active', btn.dataset.source === state.source);
+    });
+    document.querySelectorAll('.col-cache-create').forEach(el => {
+        el.style.display = '';
+    });
+    document.querySelectorAll('.th-group').forEach(el => {
+        if (el.textContent.trim() === 'Input') {
+            el.setAttribute('colspan', '3');
+        }
+    });
+
+    // Rate and Clients are backed only by the non-Codex pool. Never present
+    those curves as Codex data; if the source changes while either is open,
+    move to Daily Detail before the source-specific refresh runs.
+    const hideForCodex = state.source === 'codex';
+    for (const name of ['rate', 'clients']) {
+        const btn = document.querySelector('.panel-btn[data-panel="' + name + '"]');
+        if (btn) {
+            btn.hidden = hideForCodex;
+            btn.style.display = hideForCodex ? 'none' : '';
+        }
+    }
+    if (hideForCodex && (
+        document.getElementById('panel-rate')?.classList.contains('active') ||
+        document.getElementById('panel-clients')?.classList.contains('active')
+    )) {
+        activatePanel('daily', { notify: false });
+    }
+}
+
+function initSourceTabs() {
+    document.querySelectorAll('.source-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const next = btn.dataset.source;
+            if (next === state.source) return;
+            state.source = next;
+            const url = new URL(location.href);
+            if (next === 'claude') url.searchParams.delete('source');
+            else url.searchParams.set('source', next);
+            history.pushState(null, '', url.toString());
+            syncSourceTabsUI();
+            loadModelFilter({ preserveCurrent: false });
+            resetPages();
+            loadAll();
+        });
+    });
+}
+
 function closePopover(backdropEl) {
     if (!backdropEl) return;
     backdropEl.style.display = 'none';
@@ -279,6 +342,9 @@ initDatabaseImport({
 });
 initCustomRangePicker();
 initCodexMigrate({ openPopover, closePopover, onMigrated: () => loadAll() });
+applySourceFromURL();
+syncSourceTabsUI();
+initSourceTabs();
 applyStateFromURL();
 loadModelFilter();
 loadAll();
@@ -288,7 +354,11 @@ initSSE({
 });
 startDayRolloverWatcher();
 window.addEventListener('popstate', () => {
+    const oldSource = state.source;
+    applySourceFromURL();
+    syncSourceTabsUI();
     applyStateFromURL();
+    if (oldSource !== state.source) loadModelFilter({ preserveCurrent: false });
     loadAll();
 });
 
