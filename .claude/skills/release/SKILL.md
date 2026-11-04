@@ -177,8 +177,9 @@ Copy-Item bin\cc-otel-new.exe "$dir\cc-otel.exe" -Force
 - Mirrors 200: /api/codex/{dashboard,daily,calendar,sessions,requests,durations,models,intraday}.
 - Envelope: ?from=2026-99-99 -> 400 with {"error":{"code":"invalid_date"}}.
 - Static: ETag present, If-None-Match -> 304 (headers are case-insensitive — DP-04).
-- Live traffic lands: run one Codex round (.codex-zhipu -> :4317) and confirm the
-  row appears with ttft > 0 and ttft <= duration (DP-06 invariant).
+- Live traffic lands: run one Codex round (your local CODEX_HOME pointing at
+  :4317) and confirm the row appears with ttft > 0 and ttft <= duration (DP-06
+  invariant).
 - Number reconciliation vs the pre-upgrade baseline.
 
 ### 3.4 Rollback
