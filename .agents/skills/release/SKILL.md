@@ -1,105 +1,204 @@
-# Skill: cc-otel 版本发布 (release)
+---
+name: release
+description: >
+  The sole entry point for releasing cc-otel — both the public npm/GitHub release
+  (tag push -> goreleaser -> npm Trusted Publishing) and the production-instance
+  rollout (~/.cc-otel binary upgrade: rehearsal -> hash-verified swap -> smoke
+  matrix -> rollback). When the user says "release / 发版 / deploy prod / patch /
+  publish vX.Y.Z", run this skill end to end; do NOT push tags or swap production
+  binaries directly. Bare triggers like "deploy 一下" without qualifiers still
+  enter here — the skill decides which track applies. Triggers: release, 发版,
+  publish, tag release, deploy production, patch release, can we release.
+---
 
-发布 cc-otel 新版本时必须完整走本清单。目标:**每次发布的内容可核对、文档同步、版本号有据、发布说明讲清楚做了什么/为什么/怎么实现**。
+# Release (lifecycle)
 
-## 0. 发布机制(背景,不要改)
+Two tracks, both owned by this skill:
+- **Track A — public release**: tag -> GitHub Actions -> goreleaser -> npm.
+- **Track B — production rollout**: upgrading the running ~/.cc-otel instance.
 
-- 打 `vX.Y.Z` tag 并 push → `.github/workflows/publish.yml`:goreleaser(`.goreleaser.yml`,ldflags 注入 `main.version`)构建全平台产物并创建 GitHub Release;随后 npm Trusted Publishing 发布 `@young1lin/dsh-cc-otel` 与平台二进制包(无 token)。
-- 预发布 tag(如 `v1.2.3-rc.1`)发到 npm `next` dist-tag,不会覆盖 `latest`。
-- CI 单测在 `.github/workflows/test.yml`(go test + race;前端 node 测试本地跑)。
+## 0. Release mechanics (background, do not change)
 
-## 1. 发布前检查(每次必做,缺一不可)
+- Pushing a vX.Y.Z tag triggers .github/workflows/publish.yml: goreleaser
+  (.goreleaser.yml, version injected via ldflags main.version) builds all
+  platform artifacts and creates the GitHub Release; npm Trusted Publishing then
+  publishes @young1lin/dsh-cc-otel plus platform binary packages (no token).
+- Prerelease tags (v1.2.3-rc.1) publish to the npm next dist-tag, never over latest.
+- CI unit tests run in .github/workflows/test.yml (go test + race; web tests run locally).
 
-### 1.1 本次内容是否已包含
+## 1. Pre-release checklist (every time, no skips)
 
-- `git status --short` 干净、`git log` 里能逐条对应本次要发布的功能/修复。
-- `go test ./... -count=1`(可加 `CC_OTEL_TEST_NOSYNC=1`)全绿。
-- 前端测试:`node --test internal/web/static/tests/*.test.mjs` 全绿。
-- `go build ./...` 成功;dev 实例冒烟(推荐):`bin/cc-otel.exe` 起在 `:18899`,逐个点开本次改动涉及的面板/接口。
+### 1.1 Content sanity
 
-### 1.1b 本次包含 UI 改动时(强制)
+- git status --short clean; git log accounts for every feature/fix being released.
+- go test ./... -count=1 green (optionally CC_OTEL_TEST_NOSYNC=1).
+- Web suite: node --test internal/web/static/tests/*.test.mjs green.
+- go build ./... succeeds; dev-instance smoke recommended: bin/cc-otel.exe
+  on :18899, open the panels/endpoints this change touched.
 
-- **先完整读 `.claude/harness/FRONTEND_TASTE.md`**(项目权威视觉规范)与 `.claude/CLAUDE.md` 的 Frontend Development Rules / Web UI Data and Display Rules。
-- 三条图表铁律,改图表代码前后都要确认:`stack`(堆叠柱)禁止、`trigger: 'axis'` 禁止、`emphasis: { focus: 'series' }` 禁止;柱粒度最小是 时间 × 模型。
-- Input 口径:Input = Uncached + Cache Read + Cache Create(三列都要),Output 不算 Input;表头/tooltip/KPI 三处定义一致。
-- 验证标准:前端测试全绿 + 相关 Go 测试 + 重建重启 dev 实例(14317/18899)+ 带缓存参数打开页面;**无浏览器工具时至少用 API 核对 JSON 与显示逻辑,并明确说明未截图**。
-- 改动过 CSS 或根模块要递增 `index.html` 的 `?v=` 版本号,并同步 `tests/intraday-markup.test.mjs` 里钉死的版本断言。
+### 1.1b UI changes are included (mandatory)
 
-### 1.2 CHANGELOG 中英文
+- Read .claude/harness/FRONTEND_TASTE.md completely first, plus CLAUDE.md's
+  Frontend Development Rules / Web UI Data and Display Rules.
+- The three chart commandments, before AND after touching chart code: no
+  stack: 'total', no trigger: 'axis', no emphasis: { focus: 'series' };
+  minimum bar granularity is time x model.
+- Input semantics: Input = Uncached + Cache Read + Cache Create (all three),
+  Output is not Input; header/tooltip/KPI agree everywhere.
+- Verification standard: web tests green + relevant Go tests + rebuild/restart the
+  dev instance (14317/18899) + open the page with cache-busting; without a browser
+  tool, at least verify JSON vs display logic via API and say plainly that no
+  screenshot was taken.
+- CSS or root-module changes bump ?v= in index.html AND the pinned assertion in
+  tests/intraday-markup.test.mjs.
 
-- `CHANGELOG.md` 与 `CHANGELOG_EN.md` **都要有本次条目且语义一致**。
-- 把 `## [Unreleased]` 改成 `## [vX.Y.Z] - YYYY-MM-DD`;若没有 Unreleased 段则新建。
-- 条目必须写清:**做了什么 / 为什么 / 怎么实现**(关键取舍、涉及文件、行为变化),不是一句话带过。
+### 1.2 CHANGELOG, both languages
 
-### 1.3 README 中英文
+- CHANGELOG.md and CHANGELOG_EN.md both carry the entry with identical semantics.
+- Rename "## [Unreleased]" to "## [vX.Y.Z] - YYYY-MM-DD" (create the section if absent).
+- Entries answer: what / why / how (key tradeoffs, files, behavior changes) — not one-liners.
 
-- 逐项核对:新增功能是否进了 `## 功能`/`## Features`;新增面板是否进了 `## Web UI → 面板`/`### Panels`;新增配置项或环境变量是否进了 `## 配置文件`/`## Configuration` 的表格与 `cc-otel.yaml.example`。
-- `README.md`(中文)与 `README_en-US.md`(英文)同步修改,不要只改一份。
-- 若 UI 截图已明显过时可提醒作者更新 `assets/images/`。
+### 1.3 README, both languages
 
-### 1.4 版本号(默认 patch)
+- New features in the Features section; new panels in the Panels section; new
+  config keys/env vars in the Configuration tables AND cc-otel.yaml.example.
+- README.md and README_en-US.md updated together, never just one.
+- Offer to refresh stale UI screenshots.
 
-| 情况 | 动作 |
-|------|------|
-| 只有 bug 修复 / 内部优化(无新能力) | **patch**(`0.2.0 → 0.2.1`,默认) |
-| 新增向后兼容的功能(新面板 / 新 API / 新配置项) | **minor**(`0.1.x → 0.2.0`) |
-| 破坏性变更(配置 schema / API 行为 / DB 结构不兼容) | **major**(`0.x → 1.0.0`),需在 CHANGELOG 写迁移指引 |
+### 1.4 Version number (patch by default)
 
-- 版本只存在于 git tag 与 CHANGELOG 标题(二进制由 goreleaser ldflags 注入),不要在源码里硬编码版本号。
+| Situation | Action |
+|---|---|
+| Bug fixes / internal polish only | patch (0.2.0 -> 0.2.1; default) |
+| New backward-compatible capability (panel/API/config) | minor (0.1.x -> 0.2.0) |
+| Breaking change (config schema / API behavior / incompatible DB) | major, with migration notes in CHANGELOG |
 
-### 1.5 价格种子刷新(release 时重跑)
+The version lives only in the git tag and CHANGELOG headings (goreleaser injects it);
+never hardcode it in source.
 
-- `go run ./tools/dump_pricing_snapshot` 从 BerriAI/litellm 重新生成 `internal/pricing/embed/seed.json`(离线兜底价格);生成后跑 `go test ./internal/pricing/`。Claude 条目按惯例**故意缺席**,不要手工补。网络不通时允许跳过并在发布说明里注明「seed 未刷新」,现有 seed 继续作为兜底。
+### 1.5 Pricing seed refresh (rerun at release)
 
-### 1.6 隐私检查(公开仓库,推送前必做)
+- go run ./tools/dump_pricing_snapshot regenerates
+  internal/pricing/embed/seed.json (offline fallback prices) from
+  BerriAI/litellm; then go test ./internal/pricing/. Claude entries are
+  intentionally absent — do not add them by hand. If offline, skip it and note
+  "seed not refreshed" in the release notes; the existing seed remains the fallback.
 
-- `git diff <上一个tag>..HEAD` 扫描:个人路径(`C:\Users\...`)、密钥(`sk-`/`api[_-]?key`/`password`/`Bearer`)、真实用量数据(自己的 token 数 / 成本数字)。
-- 确认 `.gitignore` 覆盖 `bin/`、`*.db`、`*.exe`、`*.bak`、`cc-otel.yaml`、`.env`;`git ls-files bin/` 必须为空。
-- 提交信息里不得包含上述内容。
+### 1.6 Privacy check (public repo — mandatory before pushing)
 
-## 1.7 npm Trusted Publishing(易踩坑,v0.1.4 三次失败换来的)
+- Scan git diff <previous-tag>..HEAD for: personal paths (C:\Users\...),
+  secrets (sk- / api[_-]?key / password / Bearer), real personal usage
+  numbers (your token counts / costs).
+- Confirm .gitignore covers bin/, *.db, *.exe, *.bak, cc-otel.yaml, .env;
+  git ls-files bin/ must be empty.
+- Commit messages are subject to the same scan. (#L1: a .cursor/ rules file once
+  leaked and required a filter-repo history rewrite + force push.)
 
-发布链路:goreleaser(资产)→ npm job(`scripts/build-npm.mjs` 组 7 个包 → `npm publish`)。认证是 OIDC 信任发布,没有 NPM_TOKEN。三个必要条件缺一不可:
+### 1.7 npm Trusted Publishing pitfalls (bought with three v0.1.4 failures)
 
-1. **npmjs 侧每包注册 Trusted Publisher**(一次性,只能账号本人在 npmjs.com 操作):包 Settings → Trusted publishing → GitHub Actions → 填 `young1lin` / `cc-otel` / `publish.yml`,不勾 environment。**workflow 文件名必须与 npmjs 登记的完全一致**(OIDC claim 按文件名匹配;2026-11 曾因 release.yml vs publish.yml 不一致再挂一次)。**未注册时的报错是误导性的**:npm 拿 OIDC token 去 `/-/npm/v1/oidc/token/exchange/package/<name>` 换 token,失败会静默放弃,最终报 `ENEEDAUTH`(像没登录)或 `404 PUT`(像包不存在)——看到这两个错先查这里,不要去改 CI。
-2. **CI 侧剥掉 setup-node 注入的 token**:setup-node 会往 runner `.npmrc` 写 `_authToken=${NODE_AUTH_TOKEN}`,有 token 在 npm 就不做 OIDC 交换 → 404。发布步骤里已内置 `unset NODE_AUTH_TOKEN` + `sed -i '/_authToken/d'`,别删。
-3. **`npm publish --provenance`**:provenance 生成会取 OIDC token(信任发布搭同一趟车)。工作流已带,别删。
+Pipeline: goreleaser (assets) -> npm job (scripts/build-npm.mjs grouping 7
+packages -> npm publish). Auth is OIDC trusted publishing; there is no NPM_TOKEN.
 
-诊断顺序:Actions 里 npm job 挂 → 看错误码:404 PUT = 条件2被破坏;ENEEDAUTH = 交换失败(多半条件1或 workflow 文件名不一致);`E409 Cannot publish over previously staged version` = **瞬态**,前一次 PUT 的版本还在 registry 侧落位中,等 10-30 分钟 rerun 即可,工作流的幂等跳过保证收敛,不要改版本号;goreleaser 挂 asset 已存在 = 旧 release 未删,先 DELETE release 再重跑。重跑注意 rerun 用 tag 所指 commit 的工作流,改完 workflow 要 `git tag -f` + 删 release 重触发;若 goreleaser 已绿、只 rerun npm,则**不能**先删 release(npm job 第一步要从 release 下载资产)。
+1. Register a Trusted Publisher per package on npmjs (one-time, only the
+   account owner can do it): package Settings -> Trusted publishing -> GitHub repo/workflow/filename.
+2. Strip setup-node's injected token in CI: setup-node writes
+   _authToken=$NODE_AUTH_TOKEN into the runner .npmrc; the workflow removes
+   it — keep that step.
+3. npm publish --provenance: provenance consumes the OIDC token (same ride).
+   Already in the workflow; do not remove.
 
-## 2. 发布步骤
+Diagnosis order when the npm job fails: 404 PUT = condition 2 broken; ENEEDAUTH =
+exchange failed (usually condition 1 or a workflow filename mismatch);
+E409 "Cannot publish over" = version already published.
+
+## 2. Release steps (Track A)
 
 ```powershell
-# 1) 1.x 全部通过后,提交 release 准备(CHANGELOG 定版 + README 更新)
+# 1) After 1.x all pass, commit the release prep (CHANGELOG finalized + README updates)
 git add CHANGELOG.md CHANGELOG_EN.md README.md README_en-US.md
 git commit -m "chore(release): prepare vX.Y.Z"
 
-# 2) 打 tag(版本号按 1.4 的表决定)
+# 2) Tag (version decided by 1.4)
 git tag vX.Y.Z
 
-# 3) 推送(这会触发公开发布:goreleaser + npm)
+# 3) Push (this triggers the public release: goreleaser + npm)
 git push origin main --tags
 
-# 4) 观察直到完成
-#    https://github.com/young1lin/cc-otel/actions  Release 工作流变绿
-#    Release 页面出现 vX.Y.Z 附件;npm view @young1lin/dsh-cc-otel version
+# 4) Watch until done
+#    https://github.com/young1lin/cc-otel/actions  Release workflow green
+#    Release page shows vX.Y.Z assets; npm view @young1lin/dsh-cc-otel version
 ```
 
-## 3. 发布后
+## 3. Production rollout (Track B — the ~/.cc-otel upgrade runbook)
 
-- `npm view @young1lin/cc-otel-windows-x64@X.Y.Z` 等平台包版本确认。
-- 本机升级全局实例(**铁律:agent 不得停全局 daemon,由用户执行**):
-  ```powershell
-  ~\.cc-otel\cc-otel.exe stop
-  # 用 Release 下载或本地构建的二进制替换 ~\.cc-otel/cc-otel.exe
-  ~\.cc-otel\cc-otel.exe start
-  ```
-- 如需用最新全局数据做集成验证:在线快照 `go run ./tools/snapshot_db ~/.cc-otel/cc-otel.db bin/cc-otel.db.snap`,停 bin daemon → 清 `bin/cc-otel.db*`(先确认绝对路径)→ 换文件 → 重启。
+The iron rule forbids stopping the production daemon **to copy its DB** (use
+VACUUM INTO snapshots, see .claude/rules/db-copy-no-stop.md). A **user-directed
+binary upgrade** may stop it briefly — and then only in this exact order.
 
-## 4. 发布说明质量标准(写给未来的人)
+Incident anchor **#R1** (DP-02): copying over a running exe fails *silently* on
+Windows; the daemon then restarts on the old binary and /api/status.version
+comes back empty. Order and hash verification below exist because of it.
 
-每条 CHANGELOG 至少回答:
-1. **做了什么**:用户可见的变化。
-2. **为什么**:动机 / 修的什么问题(可附复现要点)。
-3. **怎么实现**:关键技术点(取舍、数据来源、涉及端点/表/文件)。
-4. **升级注意**:是否需要迁移、旧数据是否兼容、新配置默认值。
+### 3.1 Rehearse on a snapshot first (never gamble on production)
+
+```powershell
+# online snapshot; production keeps running
+go run ./tools/snapshot_db "$env:USERPROFILE\.cc-otel\cc-otel.db" bin\prod-rehearsal.db.snap
+# temp config on rehearsal ports (25317/25318/25899), rename .snap -> .db
+# foreground instance (PID-file trap: DP-09 — 'start' would refuse)
+./bin/cc-otel.exe serve -config bin/prod-rehearsal.yaml   # background job
+```
+
+Measure and record: **boot-to-ready seconds** (poll /api/status), **peak working
+set MB** (sample during boot), and **number reconciliation** (requests/cost before
+vs after migration; deltas must be explainable — e.g. +30,730 autoimported archive
+rows). Budget: boot < 60s and peak < 300MB for a ~500MB DB; exceeding either =
+investigate before touching production.
+
+### 3.2 Build and swap (stop -> copy -> hash-verify -> start)
+
+```powershell
+go build -ldflags '-s -w -X main.version=vX.Y.Z' -o bin/cc-otel-new.exe ./cmd/cc-otel/
+$dir = "$env:USERPROFILE\.cc-otel"
+Copy-Item "$dir\cc-otel.exe" "$dir\cc-otel.exe.bak-prev" -Force   # rollback copy
+& "$dir\cc-otel.exe" stop        # STOP first — #R1
+Copy-Item bin\cc-otel-new.exe "$dir\cc-otel.exe" -Force
+# hash compare source vs destination — never skip
+(Get-FileHash bin\cc-otel-new.exe -Algorithm SHA256).Hash -eq
+  (Get-FileHash "$dir\cc-otel.exe" -Algorithm SHA256).Hash
+& "$dir\cc-otel.exe" start
+```
+
+### 3.3 Smoke matrix (all green or roll back)
+
+- GET /api/status -> version matches, db_ok true; **empty version = wrong binary (#R1)**.
+- Base endpoints 200: dashboard, daily, calendar, sessions, requests, durations,
+  models, hours, rate, clients.
+- Mirrors 200: /api/codex/{dashboard,daily,calendar,sessions,requests,durations,models,intraday}.
+- Envelope: ?from=2026-99-99 -> 400 with {"error":{"code":"invalid_date"}}.
+- Static: ETag present, If-None-Match -> 304 (headers are case-insensitive — DP-04).
+- Live traffic lands: run one Codex round (.codex-zhipu -> :4317) and confirm the
+  row appears with ttft > 0 and ttft <= duration (DP-06 invariant).
+- Number reconciliation vs the pre-upgrade baseline.
+
+### 3.4 Rollback
+
+Stop; restore cc-otel.exe.bak-prev; start; re-run the smoke matrix. The DB
+schema is additive-only (ensureColumn + view rebuild), so a rollback of the binary
+with the migrated DB is safe — new columns simply sit unused. For data-level
+disasters, restore from the rehearsal snapshot taken in 3.1.
+
+### 3.5 Post-rollout
+
+- Clean rehearsal artifacts (bin/prod-rehearsal.*).
+- Track A reminder: if the tag was created locally but only main was pushed,
+  push the tag itself (git push origin vX.Y.Z) — a missing tag push once left
+  the public release behind the running production binary.
+
+## 4. Release-note quality bar (written for future readers)
+
+Every CHANGELOG entry answers:
+1. **What**: the user-visible change.
+2. **Why**: motivation / the bug fixed (reproduction cues when useful).
+3. **How**: key technical points (tradeoffs, data sources, endpoints/tables/files).
+4. **Upgrade notes**: migrations needed, old-data compatibility, new config defaults.
