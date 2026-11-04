@@ -51,6 +51,8 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 - **图表切换** -- Tokens、Cost、Requests 视图
 - **会话追踪** -- 按会话聚合费用和 Token
 - **客户端汇总（Clients）** -- 按 OTLP `service.name` 统计各客户端的 Token / 成本 / 请求数 / 命中率（直读永不清理的 `api_requests` 台账，历史全量）
+
+![Clients 面板 -- 统一视图下的全部客户端](./assets/images/clients.png)
 - **Hour of Day 时间段透视** -- 整个区间折叠成 24 个「几点钟」桶，客户端 × 模型双维度下钻：锁模型看「谁在烧」、锁客户端看「在烧什么」、都锁看单序列明细
 - **分页跳页** -- 长表格（Request Log 等）输入页码直达任意页
 - **Token 速率图（Rate）** -- 按模型查看 Out/Total tok/s 随时间变化（加权 / 平均、5–60 min 桶；最长 7 天）

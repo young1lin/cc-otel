@@ -13,6 +13,7 @@
 - **Agent 生命周期技能套件**：`.claude/skills/`（junction 同步可见于 `.agents/skills/`）新增六个英文技能，全部针对本仓库定制——design（需求分诊 + spec 落盘 `docs/internal/design/` + 用户批准门）、implement（按 spec 逐 Task 执行 + 编码守卫）、document（双语文档/记忆门禁）、pre-commit（禁提交路径 + 隐私扫描 + 构建测试门禁，通过后代执行提交）、code-review（本仓 12 类缺陷模式库 DP-01..12、8 个热点不变式、机械检查表）、release（npm/GitHub 发布清单 + 生产实例升级 runbook：彩排 → 哈希校验替换 → 冒烟矩阵 → 回滚）。缺陷模式与热点全部来自本仓库真实事故，每条带 commit 锚点。
 - **`.agents` 镜像布局**：`AGENTS.md` 硬链 `.claude/CLAUDE.md`，`rules/`、`skills/`、`harness/` 逐项 junction——任何认 `.agents` 约定的 agent 工具读到同一份规则。
 - **仓库卫生**：gitignore 收紧（本地 settings、临时计划、评审材料不入场）。
+- **文档**：新增 Clients 面板截图（`assets/images/clients.png`，统一视图下的全部客户端），双语 README 已引用。
 
 ## [v0.1.5] - 2026-11-03
 

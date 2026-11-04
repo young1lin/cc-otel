@@ -51,6 +51,8 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 - **Chart switching** -- Tokens, Cost, Requests views
 - **Session tracking** -- per-session cost and token aggregation
 - **Clients panel** -- per-client (OTLP `service.name`) tokens / cost / requests / hit rate, read from the never-pruned `api_requests` ledger for full history
+
+![Clients panel -- every client in the unified view](./assets/images/clients.png)
 - **Hour of Day pivot** -- the whole range folded into 24 hour-of-day buckets with client x model drill-down: pin a model to see who burned it, pin a client to see what it burned, pin both for a single-series detail
 - **Pagination jump** -- type a page number to land anywhere in long tables (Request Log etc.)
 - **Token rate chart (Rate)** -- per-model Out/Total tok/s over time (weighted / average, 5–60 min buckets; up to 7 days)

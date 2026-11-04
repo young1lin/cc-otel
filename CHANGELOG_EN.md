@@ -13,6 +13,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 - **Agent lifecycle skill suite**: six English skills under `.claude/skills/` (junction-visible at `.agents/skills/`), all custom-built for this repo — design (requirement triage + specs land in `docs/internal/design/` + user approval gate), implement (task-by-task execution under coding guards), document (bilingual doc/memory parity gates), pre-commit (forbidden-path + privacy + build/test gates, then executes the commit itself), code-review (12 repo-specific defect patterns DP-01..12, 8 hotspot invariants, mechanical checklist), release (npm/GitHub checklist plus the production rollout runbook: rehearsal -> hash-verified swap -> smoke matrix -> rollback). Every pattern and hotspot cites the incident it came from.
 - **`.agents` mirror layout**: `AGENTS.md` hardlinks `.claude/CLAUDE.md`; `rules/`, `skills/`, `harness/` are per-entry junctions — any agent tool honoring the `.agents` convention reads the same rules.
 - **Repository hygiene**: tightened gitignore (local settings, throwaway plans, and review material stay out).
+- **Docs**: added the Clients panel screenshot (`assets/images/clients.png`, every client in the unified view), referenced from both READMEs.
 
 ## [v0.1.5] - 2026-11-03
 
