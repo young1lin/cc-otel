@@ -42,8 +42,7 @@ cc-otel-linux
 .claude/docs/
 !.claude/
 !.claude/CLAUDE.md
-# .agents is a junction to .claude (agent-tool convention); never track its duplicate view
-.agents/
+# .agents is a junction to .claude (agent-tool convention); only its docs/ subtree stays untracked
 .agents/docs/
 tools/dev/screenshots/
 docs/superpowers/
