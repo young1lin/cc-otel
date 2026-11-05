@@ -6,6 +6,13 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## [v0.1.7] - 2026-11-05
+
+### Fixed
+
+- **Usage Calendar All Time layout**: `calendarLayoutMode` always received the range argument but never used it, choosing a layout by week count alone — with under 18 weeks of history, All Time fell into 'medium' (22px centered cells, plus a horizontal scrollbar on narrow screens). `range=all` now unconditionally uses 'long' (13px compact cells, left-aligned); fixed windows (Today / 7 Days / 30 Days / Custom) keep the original ladder. Pinned in `insights-calendar.test.mjs` with the production data shape (69 days / 11 weeks, starting 2026-08-28).
+- **Month-label overlap**: for a history starting near month-end, the first and the next month's labels sit one column apart — a 3-char label at 11px spans roughly two compact tracks, so the texts collided. `calendarMonthLabels` gains `minColGap` (default 2, the same trick as GitHub's contribution graph) and drops labels that start too close to the previous one; the wide 30px 'short' layout passes 1 and is unaffected.
+
 ## [v0.1.6] - 2026-11-04
 
 ### Changed

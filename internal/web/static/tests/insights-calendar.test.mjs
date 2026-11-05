@@ -57,7 +57,7 @@ test('buildCalendarGrid aligns dates by weekday and inserts leading padding', ()
     assert.equal(sunday.col, 1);
 });
 
-test('calendarLayoutMode separates strip, short, medium, and all-time ranges', () => {
+test('calendarLayoutMode separates strip, short, medium, and long fixed windows', () => {
     assert.equal(calendarLayoutMode(2, 7), 'strip');
     assert.equal(calendarLayoutMode(2, 10), 'strip');
     assert.equal(calendarLayoutMode(5, 30), 'short');
@@ -65,7 +65,19 @@ test('calendarLayoutMode separates strip, short, medium, and all-time ranges', (
     assert.equal(calendarLayoutMode(9, 70), 'medium');
     assert.equal(calendarLayoutMode(18, 120), 'medium');
     assert.equal(calendarLayoutMode(19, 365), 'long');
-    assert.equal(calendarLayoutMode(5, 30, 'all'), 'short');
+    // Fixed windows keep their ladder when the range key is passed.
+    assert.equal(calendarLayoutMode(2, 8, 'week'), 'strip');
+    assert.equal(calendarLayoutMode(9, 70, 'month'), 'medium');
+});
+
+test('All Time always uses the compact left-aligned layout regardless of history span', () => {
+    // Production shape 2026-08-28 → 2026-11-04 is 69 days / 11 weeks and used
+    // to fall into 'medium': big centered cells plus a horizontal scrollbar.
+    assert.equal(calendarLayoutMode(11, 69, 'all'), 'long');
+    assert.equal(calendarLayoutMode(2, 7, 'all'), 'long');
+    assert.equal(calendarLayoutMode(5, 30, 'all'), 'long');
+    assert.equal(calendarLayoutMode(9, 70, 'all'), 'long');
+    assert.equal(calendarLayoutMode(18, 120, 'all'), 'long');
     assert.equal(calendarLayoutMode(20, 365, 'all'), 'long');
 });
 
@@ -76,6 +88,29 @@ test('calendarMonthLabels marks the first visible month and month changes', () =
     assert.deepEqual(labels, [
         { col: 0, label: 'Apr' },
         { col: 2, label: 'May' },
+    ]);
+});
+
+test('calendarMonthLabels drops labels that would overlap in compact grids', () => {
+    // History starting 2026-08-28 (Fri): the grid pads back to Sun 08-23, so
+    // 'Aug' sits at col 0 and 'Sep' begins at col 1 — one track apart. At 13px
+    // (long) or 22px (medium) tracks the two 3-char labels overlap.
+    const monthEnd = buildCalendarGrid([], '2026-08-28', '2026-09-30');
+    assert.deepEqual(calendarMonthLabels(monthEnd.cells), [
+        { col: 0, label: 'Aug' },
+    ]);
+    // Wide 'short' tracks (30px) fit adjacent labels: minColGap=1 keeps them.
+    assert.deepEqual(calendarMonthLabels(monthEnd.cells, 1), [
+        { col: 0, label: 'Aug' },
+        { col: 1, label: 'Sep' },
+    ]);
+
+    // Production shape: later months stay ≥ 2 tracks apart and survive.
+    const prodShape = buildCalendarGrid([], '2026-08-28', '2026-11-04');
+    assert.deepEqual(calendarMonthLabels(prodShape.cells), [
+        { col: 0, label: 'Aug' },
+        { col: 5, label: 'Oct' },
+        { col: 10, label: 'Nov' },
     ]);
 });
 

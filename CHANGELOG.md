@@ -6,6 +6,13 @@
 
 ---
 
+## [v0.1.7] - 2026-11-05
+
+### 修复
+
+- **Usage Calendar All Time 布局**：`calendarLayoutMode` 一直接收 range 参数却从未使用，仅按周数选布局——历史不足 18 周时 All Time 落入 medium（22px 大格、居中，窄屏出现横向滚动条）。现在 `range=all` 无条件使用 long（13px 紧凑小格、左对齐）；固定窗口（Today / 7 Days / 30 Days / Custom）维持原阶梯不变。`insights-calendar.test.mjs` 以 69 天 / 11 周的生产数据形状（2026-08-28 起）钉住该行为。
+- **月份标签重叠**：月底开始的历史在紧凑格子里，首个与下个月的月份标签只相隔一列——11px 的三字符标签约两个轨距宽，视觉上互相压字。`calendarMonthLabels` 新增 `minColGap`（默认 2，GitHub 贡献图同款策略）丢弃过近的标签；30px 大格的 short 布局传 1，不受影响。
+
 ## [v0.1.6] - 2026-11-04
 
 ### 变更

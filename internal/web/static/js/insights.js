@@ -303,6 +303,12 @@ function weekdayShort(date) {
 }
 
 export function calendarLayoutMode(weekCount, spanDays = Number.POSITIVE_INFINITY, range = '') {
+    // All Time is a whole-history overview and must always use the compact,
+    // left-aligned grid, no matter how young the history is. The week-count
+    // ladder below is for fixed windows only (Today / 7 Days / 30 Days /
+    // Custom): without this guard, a fresh install (< 18 weeks of data)
+    // rendered All Time as centered medium cells with a horizontal scrollbar.
+    if (range === 'all') return 'long';
     const span = Number(spanDays);
     if (Number.isFinite(span) && span > 0 && span <= 10) return 'strip';
     const n = Number(weekCount);
@@ -311,7 +317,15 @@ export function calendarLayoutMode(weekCount, spanDays = Number.POSITIVE_INFINIT
     return 'long';
 }
 
-export function calendarMonthLabels(cells) {
+export function calendarMonthLabels(cells, minColGap = 2) {
+    // A month label ("Aug" at 11-12px) is roughly two cell tracks wide once
+    // cell size drops below ~30px. A history that starts near month-end puts
+    // the next month's label in the column right after the first one, where
+    // the two texts overlap. Drop labels that start closer than minColGap
+    // tracks to the last kept label (same trick as GitHub's contribution
+    // graph). Wide 'short' grids (30px tracks) fit adjacent labels and pass
+    // minColGap=1 from the caller.
+    const minGap = Math.max(1, Math.floor(Number(minColGap) || 1));
     const labels = [];
     let lastMonth = '';
     for (const cell of cells || []) {
@@ -319,10 +333,10 @@ export function calendarMonthLabels(cells) {
         const d = parseYMDLocal(cell.date);
         if (!d) continue;
         const month = d.toLocaleString('en-US', { month: 'short' });
-        if (!lastMonth || month !== lastMonth) {
-            labels.push({ col: cell.col, label: month });
-            lastMonth = month;
-        }
+        if (lastMonth === month) continue;
+        lastMonth = month;
+        if (labels.length && cell.col - labels[labels.length - 1].col < minGap) continue;
+        labels.push({ col: cell.col, label: month });
     }
     return labels;
 }
@@ -380,7 +394,10 @@ function renderUsageCalendar(days, from, to) {
                 .map(cell => `<span style="grid-column:${cell.col + 1}">${escapeHtml(weekdayShort(cell.date))}</span>`)
                 .join('');
         } else {
-            monthEl.innerHTML = calendarMonthLabels(grid.cells)
+            // 'short' grids have 30px tracks and fit adjacent month labels;
+            // 'medium' (22px) and 'long' (13px) tracks need one spare column.
+            const minColGap = mode === 'short' ? 1 : 2;
+            monthEl.innerHTML = calendarMonthLabels(grid.cells, minColGap)
                 .map(m => `<span style="grid-column:${m.col + 1}">${escapeHtml(m.label)}</span>`)
                 .join('');
         }
