@@ -516,11 +516,11 @@ bind_host: 0.0.0.0
 dsh plugin --profile web update @young1lin/dsh-cc-otel
 ```
 
-更新后首次启动 profile 时，运行时插件会自动把新版二进制对齐到 `~/.cc-otel/`（版本不一致时 `install` 并重启守护进程）。与 Claude Code 插件共享同一份 `~/.cc-otel/` 安装，任一渠道升级都会带动守护进程更新。
+启动 profile 时，运行时插件会把二进制**只升不降**地同步到 `~/.cc-otel/`：仅当插件捆绑版本严格更新时才 `install` 并重启守护进程；已装版本更新（例如手工部署的 dev 构建）或版本无法解析时不做任何改动并记录日志。插件每次启动还会做一次自更新检查（默认 24 小时一次）：发现 npm 上有新版 `@young1lin/dsh-cc-otel` 时自动执行本节命令（`pluginAutoUpdate: false` 改为仅提示，`updateCheckHours: 0` 关闭检查）。与 Claude Code 插件共享同一份 `~/.cc-otel/` 安装，任一渠道升级都会带动守护进程更新。
 
 ### 更新二进制
 
-`/cc-otel:setup` 会检查已安装版本并自动更新到最新。
+`/cc-otel:setup` 只在未安装时下载最新版；已安装则保持不动（`--force` 强制重装），不会降级已装的更新版本。
 
 或手动：
 

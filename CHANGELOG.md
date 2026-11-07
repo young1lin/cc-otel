@@ -6,6 +6,13 @@
 
 ---
 
+## 未发布
+
+### 修复
+
+- **dsh 插件对齐只升不降**：`@young1lin/dsh-cc-otel` 启动时把 `~/.cc-otel/` 对齐到捆绑二进制的判据，从"版本不相等就 `install`"改为方向比较（新增 `npm/dsh-cc-otel/lib/versions.js`）：仅当捆绑版本**严格更新**时才覆盖并重启守护进程；已装版本更新（如手工部署的 dev 构建）时跳过并提示；版本不可解析（`X.Y.Z` / `vX.Y.Z-N-g<sha>[-dirty]` 之外）时一律不碰。git-describe 后缀按"base tag 之后 N 提交"排序（`0.1.6 < v0.1.6-1-g… < 0.1.7`）。此前插件 @0.1.3 曾在 profile 启动时把生产 daemon"对齐"回 0.1.3（2026-11-06 事故；spec 见 `docs/internal/design/align-never-downgrade.md`）。
+- **dsh 插件主动自更新**：每次启动最多做一次 npm 检查（默认 24 小时节流，标记文件在系统临时目录），发现新版 `@young1lin/dsh-cc-otel` 时自动执行 `dsh plugin --profile <p> update @young1lin/dsh-cc-otel`，下次 boot 生效；失败只记日志，不影响遥测与守护进程。新增插件行配置：`pluginAutoUpdate`（默认开启；`false` 时仅提示不执行）与 `updateCheckHours`（默认 24；`0` 关闭检查）。
+
 ## [v0.1.8] - 2026-11-11
 
 ### 修复

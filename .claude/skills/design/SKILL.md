@@ -39,7 +39,11 @@ test plan. State the recommendation and why.
 
 ## Step 4 — spec file
 
-Write `docs/internal/design/<slug>.md`:
+Write `docs/internal/design/<slug>.md` **in English** — author the spec (and
+the matching `docs/internal/impl/<slug>.md` record) in English directly, never
+zh-CN. Chinese is reserved for the zh halves of the bilingual pairs only
+(README.md, CHANGELOG.md); quoting a zh phrase from those files as a grep
+anchor is acceptable, prose is English (user directive 2026-11-11).
 
 ```markdown
 # <slug> — <title>

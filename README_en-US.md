@@ -518,11 +518,11 @@ Click any KPI card (Cost, Input, Output, Cache Hit, Requests) to see a per-model
 dsh plugin --profile web update @young1lin/dsh-cc-otel
 ```
 
-On the next profile boot the runtime plugin version-syncs the new binary into `~/.cc-otel` (`install` + daemon restart only when versions differ). It shares the `~/.cc-otel` install with the Claude Code plugin — whichever channel upgrades last wins, and both keep working.
+On profile boot the runtime plugin version-syncs the binary into `~/.cc-otel` **upwards only**: `install` + daemon restart happens solely when the bundled version is strictly newer; a newer installed binary (e.g. a manual dev deploy) or an unparseable version is left untouched with a log line. Each boot also runs a self-update check (throttled to once per 24h by default): when a newer `@young1lin/dsh-cc-otel` exists on npm, this section's command runs automatically (`pluginAutoUpdate: false` warns instead of installing, `updateCheckHours: 0` disables the check). It shares the `~/.cc-otel` install with the Claude Code plugin — whichever channel upgrades last wins, and both keep working.
 
 ### Update Binary
 
-`/cc-otel:setup` checks the installed version against the latest GitHub release and auto-updates if needed.
+`/cc-otel:setup` downloads the latest release only when nothing is installed; an existing install is kept (use `--force` to reinstall), so it never downgrades a newer installed binary.
 
 Or manually:
 

@@ -7,14 +7,18 @@
  *      CC_OTEL_BIN  >  @young1lin/cc-otel-<platform>-<arch> (installed by
  *      pnpm through this package's optionalDependencies — the package manager
  *      picks exactly one)  >  ~/.cc-otel/cc-otel(.exe).
- * 2. When the npm binary resolves and ~/.cc-otel does not carry the same
- *    version (missing or older/newer), run `cc-otel install`: the Go side
- *    stops any running daemon, copies the binary into ~/.cc-otel, and the
- *    daemon afterwards runs from that stable path. Running from
- *    node_modules would work too, but Windows cannot replace an executable
- *    while it runs — `dsh plugin update/remove` would fail until the daemon
- *    was stopped by hand. Version-gating keeps the copy a no-op in steady
- *    state, so reboots never bounce a healthy shared daemon.
+ * 2. When the npm binary resolves and ~/.cc-otel carries no binary or an
+ *    older version, run `cc-otel install`: the Go side stops any running
+ *    daemon, copies the binary into ~/.cc-otel, and the daemon afterwards
+ *    runs from that stable path. Running from node_modules would work too,
+ *    but Windows cannot replace an executable while it runs — `dsh plugin
+ *    update/remove` would fail until the daemon was stopped by hand.
+ *    Direction matters: a strict-inequality check here once aligned
+ *    production DOWN to the bundled 0.1.3 (2026-11-06), so since v0.1.9 the
+ *    copy is upgrade-only (alignDecision in lib/versions.js).
+ * 2b. Keep the bundle itself fresh: once a day the plugin checks npm for a
+ *    newer @young1lin/dsh-cc-otel and runs the official updater when one
+ *    exists (lib/self-update.js), so "plugin older than daemon" self-heals.
  * 3. Ensure the daemon is running (`cc-otel start` is idempotent: exit 1 +
  *    "already running" is success for our purposes). The daemon is shared
  *    with the Claude Code / Codex / opencode clients, so this plugin never
@@ -36,6 +40,8 @@ import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 
 import { DEFAULT_OTLP_URL, installTelemetry } from './telemetry.js'
+import { maybeSelfUpdate } from './self-update.js'
+import { alignDecision } from './versions.js'
 
 /** Stable Cordis plugin name (the loader row id in cordis.patch.yml matches). */
 export const name = 'dsh-cc-otel'
@@ -172,7 +178,8 @@ async function ensureDaemon(logger, config) {
       const home = homeBinary()
       const npmVersion = await versionOf(npmBin)
       const homeVersion = existsSync(home) ? await versionOf(home) : undefined
-      if (npmVersion !== undefined && npmVersion !== homeVersion) {
+      const decision = alignDecision(npmVersion, homeVersion, existsSync(home))
+      if (decision === 'install') {
         // `install` stops any running daemon, copies the binary, and leaves
         // it stopped — the start below brings the new version up.
         const installed = await run(npmBin, ['install'], 120000, env)
@@ -182,6 +189,20 @@ async function ensureDaemon(logger, config) {
           logger.warn('dsh-cc-otel: cc-otel install failed: ' + (installed.stderr || installed.stdout))
           if (!existsSync(home)) daemonBin = npmBin
         }
+      } else if (decision === 'skip-stale-plugin') {
+        // Never downgrade the shared daemon: the installed binary is newer
+        // than the plugin bundle (e.g. a manual dev deploy). The old strict
+        // inequality check once rolled production back to 0.1.3 (2026-11-06).
+        logger.warn(
+          'dsh-cc-otel: installed cc-otel ' + homeVersion + ' is newer than the plugin bundle '
+          + npmVersion + ' — leaving ~/.cc-otel alone; to follow along update the plugin: '
+          + 'dsh plugin --profile <name> update @young1lin/dsh-cc-otel',
+        )
+      } else if (decision === 'skip-unmanaged-home') {
+        logger.warn(
+          'dsh-cc-otel: cannot parse installed cc-otel version "' + homeVersion + '" — '
+          + 'refusing to touch ~/.cc-otel (expected X.Y.Z or vX.Y.Z-N-g<sha>[-dirty])',
+        )
       }
       if (existsSync(home)) daemonBin = home
     }
@@ -207,12 +228,18 @@ async function ensureDaemon(logger, config) {
  * Plugin entry: the loader mounts this with the row's (usually empty) config.
  * Everything is best-effort — a telemetry helper must never fail the host.
  * @param {{ logger?: { info: Function, warn: Function }, effect: Function, on: Function }} ctx Cordis context.
- * @param {{ autoStart?: boolean, manageHomeBinary?: boolean, stopOnUnload?: boolean, telemetry?: { url?: string, enabled?: boolean } }} [config] row config.
+ * @param {{ autoStart?: boolean, manageHomeBinary?: boolean, stopOnUnload?: boolean, pluginAutoUpdate?: boolean, updateCheckHours?: number, telemetry?: { url?: string, enabled?: boolean } }} [config] row config.
  */
 export function apply(ctx, config = {}) {
   const logger = ctx.logger ?? console
   void ensureDaemon(logger, config).catch((error) => {
     logger.warn('dsh-cc-otel: ' + String(error))
+  })
+  // Self-update runs in parallel: it swaps the bundle on disk for the NEXT
+  // boot — the align step above is upgrade-only, so a stale plugin would
+  // otherwise pin the daemon below latest forever.
+  void maybeSelfUpdate(logger, config).catch((error) => {
+    logger.warn('dsh-cc-otel: self-update check failed: ' + String(error))
   })
   // Telemetry adapter: on by default — installing this package IS the choice
   // to report. CC_OTEL_OTLP_URL redirects (e.g. a dev receiver on 14318).

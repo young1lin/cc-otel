@@ -6,6 +6,13 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **dsh plugin align is upgrade-only**: the boot-time sync of `~/.cc-otel/` to the bundled binary no longer fires on mere version inequality (which once downgraded production, 2026-11-06: plugin 0.1.3 clobbered a newer manual deploy) but on a direction comparison (new `npm/dsh-cc-otel/lib/versions.js`): overwrite + daemon restart only when the bundled version is **strictly newer**; a newer installed binary (e.g. a manual dev deploy) is skipped with a hint; an unparseable version (anything beyond `X.Y.Z` / `vX.Y.Z-N-g<sha>[-dirty]`) is never touched. git-describe suffixes sort as "N commits after the base tag" (`0.1.6 < v0.1.6-1-g… < 0.1.7`). Spec: `docs/internal/design/align-never-downgrade.md`.
+- **dsh plugin self-update**: at most one npm check per boot (24h throttle by default, marker file in the system temp dir); when a newer `@young1lin/dsh-cc-otel` is published it runs `dsh plugin --profile <p> update @young1lin/dsh-cc-otel` automatically, effective next boot; failures log one line and never affect telemetry or the daemon. New plugin row config: `pluginAutoUpdate` (default on; `false` warns without installing) and `updateCheckHours` (default 24; `0` disables the check).
+
 ## [v0.1.8] - 2026-11-11
 
 ### Fixed
