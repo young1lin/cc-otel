@@ -31,15 +31,16 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
         // server 409s concurrent starts; keep the UI from dead-ending).
         // Only touch the import buttons when THAT side is idle — its own
         // render owns the busy states.
-        document.querySelectorAll('#database-import-modal #dbi-primary, #database-import-modal #dbi-secondary')
+        document.querySelectorAll('#database-import-modal #dbi-primary, #database-import-modal #dbi-secondary, #database-import-modal #cursor-import-start')
             .forEach((el) => {
-                if (el.dataset.dbiBusy !== '1') el.disabled = running;
+                if (el.dataset.dbiBusy !== '1' && el.dataset.cursorBusy !== '1') el.disabled = running;
             });
         // Mirror guard for the reverse direction: our own non-running
         // branches below must not re-enable this button while an IMPORT is
         // busy (that flicker left a clickable button that could only earn
         // the 409). Import's render clears the flag when it goes idle.
-        const importBusy = document.querySelector('#dbi-primary')?.dataset.dbiBusy === '1';
+        const importBusy = document.querySelector('#dbi-primary')?.dataset.dbiBusy === '1'
+            || document.querySelector('#cursor-import-start')?.dataset.cursorBusy === '1';
         const preview = (job && job.preview) || [];
         tbody.innerHTML = preview.length
             ? preview.map((t) => '<tr>'
@@ -117,6 +118,15 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
             if (pollActive()) schedule();
         }
     });
+    // Reopening the modal resumes the chain (nothing else re-evaluates the
+    // gate once it closed).
+    new MutationObserver(() => {
+        if (modalOpen()) {
+            clearTimeout(pollTimer);
+            refresh();
+            schedule();
+        }
+    }).observe(modal, { attributes: true, attributeFilter: ['style', 'aria-hidden'] });
     schedule();
 
     btn.addEventListener('click', async () => {
@@ -124,6 +134,9 @@ export function initCodexMigrate({ onMigrated = () => {} } = {}) {
         btn.textContent = 'Starting…';
         try {
             render(await startCodexMigrate());
+            // Same restart as cursor-import: the 202 snapshot must not be
+            // the last render (the boot chain died when the gate closed).
+            schedule();
         } catch (error) {
             console.error('codex migrate start:', error);
             statusEl.textContent = 'Could not start migration: ' + (error.message || error);

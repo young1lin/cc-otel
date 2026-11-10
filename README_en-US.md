@@ -57,6 +57,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 - **Pagination jump** -- type a page number to land anywhere in long tables (Request Log etc.)
 - **Token rate chart (Rate)** -- per-model Out/Total tok/s over time (weighted / average, 5–60 min buckets; up to 7 days)
 - **Online database import** -- merge an uploaded `.db` into the running primary DB, no downtime, additive-only
+- **Cursor billing import** -- pick Cursor usage-events CSV exports right in the import dialog; content-hash dedup makes duplicate/overlapping exports idempotent, rows attributed `service_name "cursor"`
 - **Pre-aggregation table** -- query latency < 3ms, handles millions of rows
 - **Single binary** -- `go:embed` bundles the web UI, zero runtime dependencies
 - **Cross-platform** -- Windows, macOS, Linux
@@ -407,6 +408,19 @@ Merge a `.db` file into the live primary database **without stopping the process
 Click **Import database** at the top of the Web UI and pick a `.db` file: schema precheck → preview new / duplicate rows → confirm → live progress → result. Endpoints: `/api/import{,/inspect,/start,/status}`.
 
 > Handy for merging another machine's `cc-otel.db` in — no downtime, no CLI merge tool. Single-file limit 2 GB; compatibility-only tables like `codex_events` are skipped automatically.
+
+### Cursor billing import
+
+The **Cursor usage import** card at the bottom of the same dialog (with Cursor's official 2D mark) imports Cursor usage-events CSV exports into the unified pool:
+
+- Pick one or many `.csv` files (month slices, duplicate downloads — all fine) and click **Import Cursor CSV**; zero-token rows are skipped by default, with an opt-in checkbox to keep them.
+- Each row derives a content-hash `request_id` (`cursor-<sha256[:16]>`) — overlapping months, duplicate files, and repeated imports deduplicate automatically; only missing rows land.
+- The four token columns map 1:1 onto cc-otel's semantics (Input w/o Cache Write = Uncached, Input w/ Cache Write = Cache Create, Cache Read, Output).
+- Model names land as base identities: Cursor's tier suffixes (fast / max / thinking / xhigh / high / medium / low) and the `cursor-` prefix are stripped automatically (`gpt-5.1-codex-max` → `gpt-5.1-codex`); real product names like `grok-code-fast-1` are untouched.
+- Rows are attributed `service_name "cursor"` — the Clients panel and Source column pick them up automatically; Cloud Agent rows group under a `cursor-agent-<id>` session.
+- Cost follows the Cursor export (Included / Free = $0); "↻ recompute history" never rewrites these rows.
+
+Endpoints: `GET /api/cursor/import` (status polling) / `POST /api/cursor/import` (multipart `files`, optional `keep_zero`); shares the one-writer gate with the DB import and Codex migration (409 on overlap).
 
 ## Configuration
 

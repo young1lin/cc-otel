@@ -30,10 +30,14 @@ func IsClaudeModel(model string) bool {
 // and the value cc-otel attributes to rows that arrive without one.
 const ClaudeCodeService = "claude-code"
 
+// CursorService is the service_name stamped on rows imported from Cursor's
+// usage-events CSV exports (internal/cursorimport).
+const CursorService = "cursor"
+
 // IsUpstreamAuthoritative reports whether a row's upstream-reported cost_usd
 // should be trusted as-is instead of recomputed from the local price table.
 //
-// Both halves matter, and only this exact combination is authoritative:
+// The authoritative combinations, and only these:
 //
 //   - Claude Code on a Claude model — Anthropic computes cost_usd from canonical
 //     prices and Claude Code forwards it. Recomputing could only make it worse.
@@ -43,6 +47,14 @@ const ClaudeCodeService = "claude-code"
 //   - Another client (opencode, ...) on a Claude model — no cost is reported at
 //     all, so trusting upstream pins the row at $0 forever. Recompute, which
 //     requires a Claude row in the price table (deliberately not seeded).
+//   - Cursor (any model) — NOT authoritative since 2026-11-08 (user
+//     directive): plan-included rows report $0 because the plan pool absorbed
+//     them, not because the usage was free, so the dashboard shows list-price
+//     estimates instead (importer computes them at import time; recompute
+//     backfills). The one exception lives at the call sites, not here: a
+//     cursor row whose CSV cost is POSITIVE (User API Key billing) is real
+//     money Cursor actually charged and keeps its upstream value — see
+//     cursorimport.Import and the recompute cursor guard.
 func IsUpstreamAuthoritative(serviceName, model string) bool {
 	return strings.EqualFold(strings.TrimSpace(serviceName), ClaudeCodeService) && IsClaudeModel(model)
 }

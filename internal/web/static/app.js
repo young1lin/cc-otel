@@ -35,6 +35,7 @@ import { loadRate, initPanelRate } from './js/panel-rate.js';
 import { initPanelPricing } from './js/panel-pricing.js';
 import { initDatabaseImport } from './js/import-db.js';
 import { initCodexMigrate } from './js/codex-migrate.js';
+import { initCursorImport } from './js/cursor-import.js';
 import { renderPagination } from './js/pagination.js';
 import { beginLatestRequest, invalidateRequestContext } from './js/latest-request.js';
 import { activatePanel } from './js/panel-tabs.js';
@@ -308,6 +309,7 @@ initDatabaseImport({
 });
 initCustomRangePicker();
 initCodexMigrate({ onMigrated: () => loadAll() });
+initCursorImport({ onImported: () => loadAll() });
 applySourceFromURL();
 syncSourceTabsUI();
 applyStateFromURL();

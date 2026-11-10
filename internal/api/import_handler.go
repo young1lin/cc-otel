@@ -63,6 +63,15 @@ func (h *Handler) ImportInspect(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusConflict, "migration_in_progress", "The Codex migration is running; upload after it finishes", nil)
 		return
 	}
+	// writerBusMu is held across this whole gate, so adding the Cursor check
+	// here keeps the one-writer invariant among all three background writers.
+	h.cursorImport.mu.Lock()
+	cursorRunning := h.cursorImport.running
+	h.cursorImport.mu.Unlock()
+	if cursorRunning {
+		writeAPIError(w, http.StatusConflict, "import_in_progress", "A Cursor import is running; upload after it finishes", nil)
+		return
+	}
 	manager, ok := h.importManager(w)
 	if !ok {
 		return
@@ -237,6 +246,13 @@ func (h *Handler) ImportStart(w http.ResponseWriter, r *http.Request) {
 	h.codexMigrate.mu.Unlock()
 	if migrationRunning {
 		writeAPIError(w, http.StatusConflict, "migration_in_progress", "The Codex migration is running; start the database import after it finishes", nil)
+		return
+	}
+	h.cursorImport.mu.Lock()
+	cursorRunning := h.cursorImport.running
+	h.cursorImport.mu.Unlock()
+	if cursorRunning {
+		writeAPIError(w, http.StatusConflict, "import_in_progress", "A Cursor import is running; start the database import after it finishes", nil)
 		return
 	}
 	status, err := manager.start(request.JobID)

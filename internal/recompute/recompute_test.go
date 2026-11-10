@@ -99,6 +99,38 @@ func TestRun_SkipsClaude(t *testing.T) {
 	}
 }
 
+// TestRun_CursorZeroEstimatedPaidKept: the 2026-11-08 cursor semantics. A
+// plan-included cursor row (cost 0) is estimated from the price table; a row
+// Cursor actually billed (User API Key, cost > 0) keeps its stored cost —
+// the bill beats the estimate.
+func TestRun_CursorZeroEstimatedPaidKept(t *testing.T) {
+	db := newDB(t)
+	mustExec(t, db, `INSERT INTO api_requests (id,timestamp,model,service_name,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_usd,duration_ms,session_id)
+		VALUES (1,1700000000,'gpt-x','cursor',1000000,0,0,0,0,0,'s1'),
+		(2,1700000001,'gpt-x','cursor',1000000,0,0,0,77777,0,'s2')`)
+	reg, _ := pricing.NewRegistry(context.Background(), db, &config.Config{})
+	_, err := reg.(pricing.Writer).Upsert(context.Background(), pricing.Entry{Model: "gpt-x", Input: 1e-6, Output: 1e-6})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	res, err := Run(context.Background(), db, reg, Options{}, true, nil)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Updated != 1 {
+		t.Fatalf("Updated = %d, want 1 (only the $0 row)", res.Updated)
+	}
+	var est, paid int64
+	mustScan(t, db, `SELECT cost_usd FROM api_requests WHERE id=1`, &est)
+	mustScan(t, db, `SELECT cost_usd FROM api_requests WHERE id=2`, &paid)
+	if est != 100000 {
+		t.Fatalf("estimated cursor cost = %d, want 100000 ($1 at CostScale)", est)
+	}
+	if paid != 77777 {
+		t.Fatalf("paid cursor cost rewritten: %d, want untouched 77777", paid)
+	}
+}
+
 // TestRun_CodexSubtractsCacheRead: Codex stores input_tokens inclusive of
 // cached tokens; the recompute path must subtract cache_read before pricing.
 // Setup: input=2M, cache_read=1M, model priced at Input=$1/Mtok (Output same).

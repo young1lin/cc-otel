@@ -1715,6 +1715,60 @@ td.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: 
 .dbi-migrate-status { min-height: 16px; color: var(--text-muted); font-size: 11.5px; font-family: var(--font-mono); }
 .dbi-migrate-actions { display: flex; justify-content: flex-end; }
 
+/* Cursor usage import card (scoped to its section; reuses dbi-* tokens). */
+.dbi-cursor-title { display: flex; align-items: center; gap: 7px; }
+.dbi-cursor-title strong { color: var(--text); font-size: 13px; }
+.dbi-cursor-icon { width: 17px; height: 17px; flex: none; color: var(--text-muted); }
+.dbi-cursor-files { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); line-height: 1.6; overflow-wrap: anywhere; }
+.dbi-cursor-keepzero { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11.5px; cursor: pointer; }
+.dbi-cursor-keepzero input { accent-color: var(--text); }
+
+/* Import modal source tabs: quiet segmented control, same graphite
+   language as the range tabs. Panes (.dbi-tabpane) toggle below. */
+.dbi-tabs {
+    display: flex; gap: 4px; padding: 3px; margin: 0 0 14px;
+    background: var(--surface2); border-radius: 8px;
+}
+.dbi-tab {
+    flex: 1; border: none; background: transparent; cursor: pointer;
+    color: var(--text-muted); font-size: 12px; padding: 6px 10px; border-radius: 6px;
+}
+.dbi-tab:hover { color: var(--text); }
+.dbi-tab.active { background: var(--surface3); color: var(--text); font-weight: 600; }
+
+/* Cursor tab drop zone: a secondary affordance stacked ABOVE the import
+   card — not the empty-state hero the Database tab centers on. Compact so
+   the pre-import pane fits without a stub 28px-overflow scrollbar
+   (measured 2026-11-08 at 640x700: 190px zone → 581px content vs 553px
+   viewport). The DB .dbi-drop keeps its 190px min-height. */
+#cursor-import-drop { min-height: 96px; gap: 5px; }
+#cursor-import-drop .dbi-drop-icon { font-size: 20px; }
+
+/* Cursor card: whole section is a drop zone — same dashed highlight language
+   as the DB import's .dbi-drop (outline, not border, so layout never shifts). */
+.dbi-cursor-import { border-radius: 10px; transition: background-color .12s ease; }
+.dbi-cursor-import.is-dragging {
+    outline: 1.5px dashed var(--text-muted); outline-offset: 6px;
+    background: var(--surface2);
+}
+/* Dry-run preview line: quiet mono, one line of truth before committing. */
+.dbi-cursor-preview {
+    color: var(--text-muted); font-family: var(--font-mono); font-size: 10.5px;
+    line-height: 1.5; overflow-wrap: anywhere;
+}
+/* Past imports: compact list, no default bullets/padding. */
+.dbi-cursor-history {
+    list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px;
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+/* Post-Done jump link: quiet accent text button, not a boxed control. */
+.dbi-cursor-clients-link {
+    align-self: flex-start; background: none; border: none; padding: 0;
+    color: var(--accent); font-size: 11.5px; cursor: pointer;
+}
+.dbi-cursor-clients-link:hover { text-decoration: underline; }
+
 @media (prefers-reduced-motion: reduce) {
     .dbi-progress-fill, .database-import-toggle { transition: none; }
 }
@@ -1722,5 +1776,10 @@ td.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: 
     #database-import-modal .database-import-modal { width: calc(100vw - 32px); max-height: calc(100vh - 32px); }
     .dbi-summary { grid-template-columns: 1fr; }
     .dbi-footer { flex-wrap: wrap; }
-    .dbi-primary, .dbi-secondary { flex: 1 1 140px; }
+    /* Full-width on mobile was designed for the DB footer pair and the
+       single Codex merge button ONLY. Scoped after the Cursor card added
+       two same-class buttons that inherited the stretch (2026-11-08). */
+    .dbi-footer .dbi-primary, .dbi-footer .dbi-secondary,
+    #codex-migrate-start { flex: 1 1 140px; }
+    .dbi-cursor-import .dbi-migrate-actions { flex-wrap: wrap; }
 }

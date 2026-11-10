@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=31">
+    <link rel="stylesheet" href="style.css?v=36">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -373,15 +373,21 @@
          aria-labelledby="database-import-title">
         <div class="modal-header">
             <div>
-                <div class="modal-title" id="database-import-title">Import database</div>
-                <div class="dbi-subtitle">Merge missing cc-otel data into this database</div>
+                <div class="modal-title" id="database-import-title">Import data</div>
+                <div class="dbi-subtitle">Merge cc-otel databases, Codex history, or Cursor usage exports</div>
             </div>
             <button type="button" class="modal-close" id="database-import-close"
                     title="Close" aria-label="Close">×</button>
         </div>
+        <!-- Source tabs: Database (default) / Cursor. Quiet segmented control,
+             same graphite language as the range tabs; panes toggle below. -->
+        <div class="dbi-tabs" role="tablist">
+            <button type="button" class="dbi-tab active" data-dbi-tab="db" role="tab" aria-selected="true">Database</button>
+            <button type="button" class="dbi-tab" data-dbi-tab="cursor" role="tab" aria-selected="false">Cursor</button>
+        </div>
         <div class="modal-body">
             <input id="database-import-file" type="file" accept=".db" hidden>
-
+            <div class="dbi-tabpane" id="dbi-pane-db">
             <section class="dbi-panel" data-dbi-panel="empty">
                 <button type="button" class="dbi-drop" id="dbi-drop">
                     <span class="dbi-drop-icon" aria-hidden="true">↓</span>
@@ -448,10 +454,63 @@
                     <button type="button" class="dbi-primary" id="codex-migrate-start">Merge Codex history</button>
                 </div>
             </section>
-        </div>
-        <div class="dbi-footer">
-            <button type="button" class="dbi-secondary" id="dbi-secondary">Cancel</button>
-            <button type="button" class="dbi-primary" id="dbi-primary">Choose database</button>
+            <!-- DB import action bar: lives INSIDE pane-db so it never leaks
+                 into the Cursor tab (2026-11-08 layout fix). -->
+            <div class="dbi-footer">
+                <button type="button" class="dbi-secondary" id="dbi-secondary">Cancel</button>
+                <button type="button" class="dbi-primary" id="dbi-primary">Choose database</button>
+            </div>
+            </div><!-- /dbi-pane-db -->
+
+            <div class="dbi-tabpane" id="dbi-pane-cursor" hidden>
+            <!-- Cursor usage-events CSV import. Same dedup contract as the
+                 Codex migration: content-hash request ids, so re-importing
+                 overlapping month exports only adds what is missing. -->
+            <section class="dbi-panel">
+                <button type="button" class="dbi-drop" id="cursor-import-drop">
+                    <span class="dbi-drop-icon" aria-hidden="true">↓</span>
+                    <strong>Drop Cursor usage CSVs here</strong>
+                    <span>or choose .csv exports · deduplicated · preview before import</span>
+                </button>
+            </section>
+            <section class="dbi-migrate dbi-cursor-import" id="cursor-import-card">
+                <div class="dbi-migrate-head">
+                    <div class="dbi-cursor-title">
+                        <svg class="dbi-cursor-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"/></svg>
+                        <strong>Cursor usage import</strong>
+                    </div>
+                    <span>Import Cursor usage-events CSV exports (Cursor: Settings → Usage → Export usage events).
+                    Rows land in the unified pool as <code>service_name "cursor"</code> and deduplicate by content
+                    hash — re-importing overlapping files only adds what is missing. Plan-included rows are
+                    cost-estimated at list price; billed rows keep the CSV cost.</span>
+                </div>
+                <div class="dbi-migrate-status" id="cursor-import-status" aria-live="polite"></div>
+                <!-- Import progress: the same .dbi-progress fill bar the DB
+                     import uses (user directive 2026-11-08: text line alone is
+                     not a progress bar). -->
+                <div class="dbi-progress" id="cursor-import-progress" role="progressbar"
+                     aria-valuemin="0" aria-valuemax="100" hidden>
+                    <span class="dbi-progress-fill" id="cursor-import-progress-fill"></span>
+                </div>
+                <div class="dbi-progress-meta" id="cursor-import-progress-meta" hidden>
+                    <span id="cursor-import-progress-count"></span>
+                    <span id="cursor-import-progress-percent"></span>
+                </div>
+                <div class="dbi-cursor-files" id="cursor-import-files" hidden></div>
+                <!-- Dry-run preview: what an import would add vs fold. -->
+                <div class="dbi-cursor-preview" id="cursor-import-preview" hidden></div>
+          <!-- Past imports from import_ledger; rendered by cursor-import.js, newest first. -->
+          <ul class="dbi-cursor-history" id="cursor-import-history" hidden></ul>
+                <!-- Shown only on a clean Done; jumps to the Clients panel. -->
+                <button type="button" class="dbi-cursor-clients-link" id="cursor-import-clients" hidden>View in Clients panel →</button>
+                <label class="dbi-cursor-keepzero"><input type="checkbox" id="cursor-import-keepzero"> Keep zero-token rows</label>
+                <div class="dbi-migrate-actions">
+                    <button type="button" class="dbi-secondary" id="cursor-import-choose">Choose CSV…</button>
+                    <button type="button" class="dbi-primary" id="cursor-import-start" disabled>Import Cursor CSV</button>
+                </div>
+                <input id="cursor-import-file" type="file" accept=".csv" multiple hidden>
+            </section>
+            </div><!-- /dbi-pane-cursor -->
         </div>
     </div>
 </div>
@@ -533,6 +592,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=74"></script>
+<script type="module" src="app.js?v=80"></script>
 </body>
 </html>

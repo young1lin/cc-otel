@@ -104,6 +104,28 @@ export const loadModelsData = () => fetchJSON(apiPath('models'));
 export const loadCodexMigrateStatus = () => fetchJSON('/api/codex/migrate');
 export const startCodexMigrate = () => sendJSON('/api/codex/migrate', 'POST', {});
 
+export const loadCursorImportStatus = () => fetchJSON('/api/cursor/import');
+
+// Multipart POST: the browser sets the Content-Type boundary itself, so the
+// fetch init deliberately carries no headers.
+export async function startCursorImport(formData) {
+    const res = await fetch('/api/cursor/import', { method: 'POST', body: formData });
+    if (!res.ok) {
+        throw await responseError(res);
+    }
+    return res.status === 204 ? null : res.json();
+}
+
+// Read-only preview of the same parse (what an import would add vs fold).
+// Same multipart shape as the real start, so the card reuses one FormData.
+export async function dryRunCursorImport(formData) {
+    const res = await fetch('/api/cursor/import/dry-run', { method: 'POST', body: formData });
+    if (!res.ok) {
+        throw await responseError(res);
+    }
+    return res.json();
+}
+
 // Pricing Table admin (manual entry CRUD + OpenRouter suggest + recompute).
 // The wire unit is USD/Mtok; the backend converts to/from USD/token.
 export const loadPricingPage = ({ q = '', source = '', page = 1, pageSize = 50 } = {}) =>

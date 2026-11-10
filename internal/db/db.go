@@ -39,7 +39,16 @@ func Init(cfg *config.Config) (*sql.DB, error) {
 	// cookie. Skip failures silently (e.g., empty DB on first boot).
 	db.Exec("PRAGMA optimize")
 
-	db.SetMaxOpenConns(4) // Allow concurrent readers; SQLite internal locking serializes writes
+	// In-memory SQLite exists PER CONNECTION: a pooled second connection
+	// would open on an empty database and see no tables (2026-11-08 incident:
+	// a status-poll query racing an import fanned the pool out, the import
+	// then drew the blank connection and failed "no such table"). Pin
+	// :memory: to one connection; file databases keep the reader pool.
+	if cfg.DBPath == ":memory:" {
+		db.SetMaxOpenConns(1)
+	} else {
+		db.SetMaxOpenConns(4) // Allow concurrent readers; SQLite internal locking serializes writes
+	}
 	return db, nil
 }
 

@@ -211,6 +211,17 @@ func scanTable(ctx context.Context, db *sql.DB, reg pricing.Registry, table stri
 			}
 			continue
 		}
+		// Cursor exception (mirror of cursorimport.Import): IsUpstreamAuthoritative
+		// no longer shields cursor rows, but a POSITIVE stored cost is real money
+		// Cursor charged a User API Key — the bill beats the estimate. Only the
+		// plan-included $0 rows get estimated at list price.
+		if serviceName == pricing.CursorService && oldUnits > 0 {
+			summary.skippedCl++
+			if summary.scanned%500 == 0 {
+				emit()
+			}
+			continue
+		}
 		if input == 0 && output == 0 && cacheRead == 0 && cacheCreate == 0 {
 			if summary.scanned%500 == 0 {
 				emit()

@@ -143,7 +143,8 @@ type Handler struct {
 	recompute     *recomputeJob      // singleton background recompute; never nil after NewHandler
 	shutdownCtx   context.Context    // cancels the background recompute goroutine on shutdown
 	codexMigrate  *codexMigrationJob // singleton AllClient migration job; never nil after NewHandler
-	migrateWG     sync.WaitGroup     // tracks the migration goroutine so Close can join it
+	cursorImport  *cursorImportJob   // singleton Cursor CSV import job; never nil after NewHandler
+	migrateWG     sync.WaitGroup     // tracks the background writer goroutines so Close can join them
 
 	version string // daemon build version, set via SetVersion at startup
 
@@ -175,6 +176,7 @@ func NewHandler(repo *db.Repository, broker *Broker, cfg *config.Config, configP
 		configPath:   configPath,
 		recompute:    &recomputeJob{},
 		codexMigrate: &codexMigrationJob{},
+		cursorImport: &cursorImportJob{},
 	}
 }
 
@@ -384,6 +386,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// AllClient one-click Codex migration (GET status / POST start).
 	mux.Handle("/api/codex/migrate", sameOriginGuard(http.HandlerFunc(h.CodexMigrate)))
+
+	// Cursor usage-events CSV import (GET status / POST multipart start).
+	mux.Handle("/api/cursor/import", sameOriginGuard(http.HandlerFunc(h.CursorImport)))
+	// Read-only preview of the same parse: what an import would add vs fold.
+	mux.Handle("/api/cursor/import/dry-run", sameOriginGuard(http.HandlerFunc(h.CursorImportDryRun)))
 
 	// Embedded static files reflect the tree at compile time. For local UI edits without
 	// rebuilding, set CC_OTEL_STATIC_DIR to the static folder (e.g. internal/web/static).

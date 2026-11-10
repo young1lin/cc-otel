@@ -57,6 +57,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 - **分页跳页** -- 长表格（Request Log 等）输入页码直达任意页
 - **Token 速率图（Rate）** -- 按模型查看 Out/Total tok/s 随时间变化（加权 / 平均、5–60 min 桶；最长 7 天）
 - **在线数据库导入** -- 上传 `.db` 合并进运行中的主库，不停进程、只增不改
+- **Cursor 账单导入** -- 导入弹窗内多选上传 Cursor usage-events CSV；内容哈希去重，重复 / 重叠导出幂等，行归因 `service_name "cursor"`
 - **预聚合表** -- 查询延迟 < 3ms，百万行无压力
 - **单二进制** -- `go:embed` 打包 Web UI，零运行时依赖
 - **跨平台** -- Windows、macOS、Linux
@@ -405,6 +406,19 @@ go run ./tools/recompute_cost --db ~/.cc-otel/cc-otel.db --table both --apply
 在 Web UI 顶部点击 **Import database**，选择 `.db` 文件：预检 schema → 预览新增 / 重复行 → 确认 → 实时进度 → 结果。对应接口 `/api/import{,/inspect,/start,/status}`。
 
 > 适合把另一台机器的 `cc-otel.db` 合并进来——无需停服，也无需命令行合并工具。单文件上限 2 GB；`codex_events` 等兼容专用表会自动跳过。
+
+### Cursor 账单导入
+
+同一弹窗底部的 **Cursor usage import** 卡片（配 Cursor 官方 2D 图标）把 Cursor 的 usage-events CSV 导出导入统一池：
+
+- 选择一个或多个 `.csv`（按月导出、重复下载可一起传），点击 **Import Cursor CSV**；zero-token 行默认跳过，可勾选保留。
+- 每行按内容哈希生成 `request_id`（`cursor-<sha256[:16]>`）——重叠月份、重复文件、反复导入自动去重，只补缺失行。
+- 四个 token 列与 cc-otel 语义一一对应（Input w/o Cache Write = Uncached，Input w/ Cache Write = Cache Create，Cache Read，Output）。
+- 模型名落库为基础身份：Cursor 档位后缀（fast / max / thinking / xhigh / high / medium / low）与 `cursor-` 前缀自动剥离（`gpt-5.1-codex-max` → `gpt-5.1-codex`）；`grok-code-fast-1` 等真实型号名不受影响。
+- 行归因 `service_name "cursor"`，Clients 面板与 Source 列自动区分；云 Agent 行归入 `cursor-agent-<id>` 会话。
+- 成本以 Cursor 导出为准（Included / Free = $0）；「↻ 重算历史」不会改写这些行。
+
+接口：`GET /api/cursor/import`（状态轮询）/ `POST /api/cursor/import`（multipart `files`，可选 `keep_zero`）；与数据库导入、Codex 迁移共享单写者闸（并发 409）。
 
 ## 配置文件
 

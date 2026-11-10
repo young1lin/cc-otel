@@ -261,6 +261,7 @@ export function initDatabaseImport({ openPopover, closePopover, onImported = () 
     const open = async () => {
         local.modalOpen = true;
         openPopover(modal, button);
+        setImportTab('db'); // predictable: every open starts on Database
         render(elements);
         await restore();
     };
@@ -371,6 +372,23 @@ export function initDatabaseImport({ openPopover, closePopover, onImported = () 
 
     button.addEventListener('click', open);
     document.getElementById('database-import-close')?.addEventListener('click', close);
+
+    // Source tabs (Database / Cursor). The modal is owned here, so the tab
+    // controller lives here too; the Cursor pane's own module keeps its card
+    // logic and notices pane switches through the modal MutationObserver it
+    // already runs. No cross-module API needed.
+    const tabButtons = modal.querySelectorAll('.dbi-tab');
+    const setImportTab = (name) => {
+        tabButtons.forEach((tab) => {
+            const active = tab.dataset.dbiTab === name;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        document.getElementById('dbi-pane-db')?.toggleAttribute('hidden', name !== 'db');
+        document.getElementById('dbi-pane-cursor')?.toggleAttribute('hidden', name !== 'cursor');
+    };
+    tabButtons.forEach((tab) =>
+        tab.addEventListener('click', () => setImportTab(tab.dataset.dbiTab)));
     modal.addEventListener('click', (event) => {
         if (event.target === modal) close();
     });

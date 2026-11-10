@@ -189,7 +189,11 @@ func TestIsUpstreamAuthoritative(t *testing.T) {
 		{"claude-code", "glm-4.6", false},          // reverse proxy, priced by Anthropic rates
 		{"opencode", "claude-sonnet-4-5", false},   // reports no cost — must be recomputed
 		{"codex", "gpt-5-codex", false},
-		{"", "claude-sonnet-4-5", false}, // unattributed is not Claude Code
+		{"", "claude-sonnet-4-5", false},                // unattributed is not Claude Code
+		{"cursor", "gpt-5.2", false},                    // 2026-11-08: plan-included $0 rows get estimated; paid rows guarded at call sites
+		{"cursor", "claude-4.5-sonnet-thinking", false}, // model-independent: estimate regardless of family
+		{"Cursor", "composer-1", false},                 // service match case-insensitive — still estimated
+		{"cursor-api", "gpt-5.2", false},                // near-miss service name must NOT match
 	}
 	for _, c := range cases {
 		if got := IsUpstreamAuthoritative(c.service, c.model); got != c.want {

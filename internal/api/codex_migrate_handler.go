@@ -129,6 +129,13 @@ func (h *Handler) CodexMigrate(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusConflict, "import_in_progress", "A database import is running; start the Codex migration after it finishes", nil)
 			return
 		}
+		h.cursorImport.mu.Lock()
+		cursorRunning := h.cursorImport.running
+		h.cursorImport.mu.Unlock()
+		if cursorRunning {
+			writeAPIError(w, http.StatusConflict, "import_in_progress", "A Cursor import is running; start the Codex migration after it finishes", nil)
+			return
+		}
 		job.mu.Lock()
 		if job.running {
 			job.mu.Unlock()
