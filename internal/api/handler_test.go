@@ -1071,3 +1071,71 @@ func TestSameOriginGuard(t *testing.T) {
 		t.Fatalf("GET with foreign Origin must pass (read-only, SOP hides the response) = %d, want 200", got)
 	}
 }
+
+// TestClientModelsEndpoint pins the /api/clients/models wire contract:
+// service_name required (400), invalid dates rejected (400), models returned
+// total-token DESC for the requested client only, and an unknown client
+// answering 200 with an empty array (never null, never another client rows).
+func TestClientModelsEndpoint(t *testing.T) {
+	h, repo, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	now := time.Now()
+	insert := func(id, svc, model string, in, out int64) {
+		t.Helper()
+		_, err := repo.InsertRequest(context.Background(), &db.APIRequest{
+			Timestamp: now, Model: model, ServiceName: svc, RequestID: id,
+			InputTokens: in, OutputTokens: out, CostUSD: 0.01,
+		})
+		if err != nil {
+			t.Fatalf("InsertRequest: %v", err)
+		}
+	}
+	insert("m-1", "claude-code", "glm-5.3", 100, 50)
+	insert("m-2", "claude-code", "glm-5.3", 100, 50)
+	insert("m-3", "claude-code", "claude-opus-4-6", 900, 900)
+	insert("m-4", "codex", "gpt-5.1", 5000, 5000) // other client: must not leak
+
+	get := func(url string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", url, nil)
+		w := httptest.NewRecorder()
+		h.ClientModels(w, req)
+		return w
+	}
+
+	if w := get("/api/clients/models"); w.Code != http.StatusBadRequest {
+		t.Errorf("missing service_name = %d, want 400", w.Code)
+	}
+	if w := get("/api/clients/models?service_name=claude-code&from=nope"); w.Code != http.StatusBadRequest {
+		t.Errorf("invalid from = %d, want 400", w.Code)
+	}
+
+	w := get("/api/clients/models?service_name=claude-code")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		Data []db.ClientModelSummary `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 models for claude-code, got %d: %+v", len(resp.Data), resp.Data)
+	}
+	if resp.Data[0].Model != "claude-opus-4-6" || resp.Data[0].TotalTokens != 1800 {
+		t.Errorf("desc order broken: %+v", resp.Data[0])
+	}
+	if resp.Data[1].Model != "glm-5.3" || resp.Data[1].TotalTokens != 300 || resp.Data[1].RequestCount != 2 {
+		t.Errorf("glm aggregation broken: %+v", resp.Data[1])
+	}
+
+	// Unknown client: 200 with empty array, and the body must contain "[]" not "null".
+	w2 := get("/api/clients/models?service_name=nonexistent")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("unknown client = %d, want 200", w2.Code)
+	}
+	if body := w2.Body.String(); !strings.Contains(body, "[]") || strings.Contains(body, "null") {
+		t.Errorf("unknown client must return []: %s", body)
+	}
+}

@@ -8,7 +8,7 @@
     <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
     <link rel="icon" href="favicon-48.png" type="image/png" sizes="48x48">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="style.css?v=36">
+    <link rel="stylesheet" href="style.css?v=37">
     <link rel="stylesheet" href="vendor/flatpickr.min.css">
     <script src="vendor/echarts.min.js"></script>
     <script src="vendor/flatpickr.min.js"></script>
@@ -294,7 +294,7 @@
     <div id="panel-clients" class="panel">
         <div class="chart-section-header" style="padding:2px 4px 10px">
             <span class="chart-section-title">Consumption by Client</span>
-            <span class="hourly-hint">OTLP resource <code>service.name</code> attribution · follows the range selector · <b id="clients-count">—</b> client(s) · Claude clients only (Codex lives on its own tab)</span>
+            <span class="hourly-hint">OTLP resource <code>service.name</code> attribution · follows the range selector · <b id="clients-count">—</b> client(s) · click a row for per-model drill-down</span>
             <button type="button" id="clients-refresh-btn" class="rate-btn">Refresh</button>
         </div>
         <div class="table-wrap">
@@ -592,6 +592,6 @@
     </div>
 </div>
 
-<script type="module" src="app.js?v=80"></script>
+<script type="module" src="app.js?v=81"></script>
 </body>
 </html>

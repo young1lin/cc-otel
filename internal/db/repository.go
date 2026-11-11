@@ -185,6 +185,23 @@ type ClientSummary struct {
 	LastDate            string  "json:\"last_date\""
 }
 
+// ClientModelSummary is one model aggregate inside a single client
+// (service_name) for a date range - the drill-down behind the Clients panel
+// expandable rows (/api/clients/models). Token semantics mirror ClientSummary:
+// TotalTokens = input + cache_read + cache_creation + output; CacheHitRate =
+// cache_read / input-side total.
+type ClientModelSummary struct {
+	Model               string  `json:"model"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	CostUSD             float64 `json:"cost_usd"`
+	RequestCount        int64   `json:"request_count"`
+	CacheHitRate        float64 `json:"cache_hit_rate"`
+}
+
 // DurationStat holds per-model latency and throughput stats for a time range.
 //
 // duration_ms is the end-to-end Claude API request latency reported by Claude Code:
@@ -891,6 +908,63 @@ func (r *Repository) GetClientStats(ctx context.Context, from, to string) ([]Cli
 		if err := rows.Scan(&s.ServiceName, &s.ModelCount, &s.InputTokens, &s.OutputTokens,
 			&s.CacheReadTokens, &s.CacheCreationTokens, &cost, &s.RequestCount,
 			&s.FirstDate, &s.LastDate); err != nil {
+			return nil, err
+		}
+		s.TotalTokens = s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheCreationTokens
+		s.CostUSD = costToFloat64(cost)
+		// Same cache-hit definition as the dashboard KPI (see GetDashboardForRange).
+		inputSide := s.InputTokens + s.CacheReadTokens + s.CacheCreationTokens
+		if inputSide > 0 {
+			s.CacheHitRate = float64(s.CacheReadTokens) / float64(inputSide)
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
+// GetClientModelStats returns per-model token/cost aggregates for ONE client
+// (service_name) over a date range, largest total-token model first - the
+// drill-down the Clients panel lazy-loads when a row is expanded. Semantics
+// deliberately mirror GetClientStats so the detail rows reconcile with the
+// parent row: same view (claude_pool_requests - the never-retention-pruned
+// api_requests ledger), same service_name folding of empty/NULL onto
+// DefaultServiceName, same total-token ordering and cache-hit definition. The
+// COALESCE in WHERE prevents the service_name index from being used directly,
+// but the timestamp-range scan it falls back to is the same one GetClientStats
+// already runs in the tens of milliseconds on ~250k rows.
+func (r *Repository) GetClientModelStats(ctx context.Context, serviceName, from, to string) ([]ClientModelSummary, error) {
+	fromUnix, toUnix, err := localDateRangeToUnix(from, to)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(NULLIF(model, ''), '(unknown)') AS model,
+			COUNT(*),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cost_usd), 0)
+		FROM claude_pool_requests
+		WHERE COALESCE(NULLIF(service_name, ''), ?) = ?
+			AND timestamp >= ? AND timestamp < ?
+		GROUP BY model
+		ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)
+			+ COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_creation_tokens), 0)) DESC,
+			model ASC`,
+		DefaultServiceName, serviceName, fromUnix, toUnix)
+	if err != nil {
+		return nil, fmt.Errorf("client model stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []ClientModelSummary
+	for rows.Next() {
+		var s ClientModelSummary
+		var cost int64
+		if err := rows.Scan(&s.Model, &s.RequestCount, &s.InputTokens, &s.CacheReadTokens,
+			&s.CacheCreationTokens, &s.OutputTokens, &cost); err != nil {
 			return nil, err
 		}
 		s.TotalTokens = s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheCreationTokens

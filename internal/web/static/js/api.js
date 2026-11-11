@@ -64,6 +64,12 @@ export const loadDashboardData = (from, to) =>
 export const loadClientsData = ({ from, to }) =>
     fetchJSON('/api/clients' + qs({ from, to }));
 
+// Drill-down for one client's expandable row: per-model aggregates for the
+// SAME range as the parent table (qs/URLSearchParams percent-encodes the
+// service name). Lazy-loaded on click, never prefetched.
+export const loadClientModelsData = ({ serviceName, from, to }) =>
+    fetchJSON('/api/clients/models' + qs({ service_name: serviceName, from, to }));
+
 export const loadHoursData = ({ from, to }) =>
     fetchJSON('/api/hours' + qs({ from, to }));
 

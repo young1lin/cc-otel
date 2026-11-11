@@ -827,6 +827,100 @@ func TestGetSessionRecentMinuteRate(t *testing.T) {
 // serve EVERY client, Codex included — one dashboard, Source column
 // attributes rows. The codex mirror queries keep seeing only their slice
 // (service_name='codex') for external scripts and legacy deep links.
+// TestGetClientModelStatsDrilldown pins the Clients-panel drill-down contract:
+// per-model aggregation inside ONE client, total-token DESC ordering, range
+// filtering, cross-client isolation, and the empty-service_name folding that
+// must keep the detail rows reconciling with the parent GetClientStats row.
+func TestGetClientModelStatsDrilldown(t *testing.T) {
+	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
+	database, err := Init(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo := NewRepository(database)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 5, 10, 0, 0, 0, time.Local)
+
+	ins := func(id, svc, model string, ts time.Time, in, out, cr, cc int64, cost float64) {
+		t.Helper()
+		_, err := repo.InsertRequest(ctx, &APIRequest{
+			Timestamp: ts, Model: model, ServiceName: svc, RequestID: id,
+			InputTokens: in, OutputTokens: out,
+			CacheReadTokens: cr, CacheCreationTokens: cc, CostUSD: cost,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// claude-code: glm-5.3 two requests (600 total), claude-opus one (3000 total) —
+	// opus must sort first despite fewer requests. An empty-service row folds onto
+	// DefaultServiceName and must join the same client.
+	ins("a-1", "claude-code", "glm-5.3", base, 100, 50, 200, 50, 0.01)
+	ins("a-2", "claude-code", "glm-5.3", base.Add(time.Hour), 100, 50, 0, 50, 0.01)
+	ins("a-3", "claude-code", "claude-opus-4-6", base, 1000, 500, 1000, 500, 0.05)
+	ins("a-4", "", "kimi-k2", base, 10, 10, 0, 0, 0.001)
+	// codex: identical tokens must NOT leak into the claude-code drill-down.
+	ins("x-1", "codex", "claude-opus-4-6", base, 1000, 500, 1000, 500, 0.05)
+	// outside the queried range — must be excluded.
+	ins("a-5", "claude-code", "glm-5.3", base.AddDate(0, 0, 30), 9999, 9999, 0, 0, 9)
+
+	from := base.Add(-24 * time.Hour).Format("2006-01-02")
+	to := base.Add(24 * time.Hour).Format("2006-01-02")
+
+	rows, err := repo.GetClientModelStats(ctx, "claude-code", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 models (opus, glm, kimi-folded), got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Model != "claude-opus-4-6" || rows[0].TotalTokens != 3000 {
+		t.Errorf("biggest consumer must be first: got %+v", rows[0])
+	}
+	if rows[0].RequestCount != 1 || rows[0].CostUSD != 0.05 {
+		t.Errorf("opus aggregates one in-range request only: %+v", rows[0])
+	}
+	glm := rows[1]
+	if glm.Model != "glm-5.3" || glm.TotalTokens != 600 || glm.RequestCount != 2 {
+		t.Errorf("glm aggregates its two in-range requests: %+v", glm)
+	}
+	// cache hit = cache_read / (input + cache_read + cache_creation) = 200/500.
+	if math.Abs(glm.CacheHitRate-0.4) > 1e-9 {
+		t.Errorf("glm cache hit rate: got %v want 0.4", glm.CacheHitRate)
+	}
+	if rows[2].Model != "kimi-k2" {
+		t.Errorf("empty service_name must fold onto %s: %+v", DefaultServiceName, rows[2])
+	}
+
+	// Reconciliation: the drill-down totals must equal the parent row totals.
+	parents, err := repo.GetClientStats(ctx, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parent *ClientSummary
+	for i := range parents {
+		if parents[i].ServiceName == "claude-code" {
+			parent = &parents[i]
+		}
+	}
+	if parent == nil {
+		t.Fatal("parent claude-code row missing")
+	}
+	var sumTotal, sumCost float64
+	for _, r := range rows {
+		sumTotal += float64(r.TotalTokens)
+		sumCost += r.CostUSD
+	}
+	if sumTotal != float64(parent.TotalTokens) {
+		t.Errorf("drill-down total %v != parent total %v", sumTotal, parent.TotalTokens)
+	}
+	if math.Abs(sumCost-parent.CostUSD) > 1e-9 {
+		t.Errorf("drill-down cost %v != parent cost %v", sumCost, parent.CostUSD)
+	}
+}
+
 func TestGenericQueriesIncludeCodexRows(t *testing.T) {
 	cfg := &config.Config{DBPath: t.TempDir() + "/test.db"}
 	database, err := Init(cfg)

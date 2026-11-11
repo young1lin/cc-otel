@@ -357,6 +357,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pricing/suggest", h.PricingSuggest)                                    // GET on-demand OpenRouter lookup
 	mux.HandleFunc("/api/dashboard", h.Dashboard)
 	mux.HandleFunc("/api/clients", h.Clients)
+	mux.HandleFunc("/api/clients/models", h.ClientModels)
 	mux.HandleFunc("/api/hours", h.Hours)
 	mux.HandleFunc("/api/calendar", h.Calendar)
 	mux.HandleFunc("/api/daily", h.DailyModel)
@@ -1073,9 +1074,9 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 // Clients returns per-client (service_name) token/cost aggregates for a date
 // range — the "which client consumed what" table behind the Clients panel.
 // Range parsing mirrors Dashboard (range=all|today|week|month + from/to
-// overrides). This reads the claude_pool_requests view (api_requests minus
-// service_name='codex' — Codex renders on its own tab; view DDL in db.go is
-// the single source of truth for that boundary).
+// overrides). This reads the claude_pool_requests view, which mirrors the
+// FULL unified pool (every client, Codex included; view DDL in db.go is the
+// single source of truth for that boundary).
 func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 	if rejectInvalidDateParams(w, r) {
 		return
@@ -1103,6 +1104,46 @@ func (h *Handler) Clients(w http.ResponseWriter, r *http.Request) {
 		data = []db.ClientSummary{}
 	}
 	json.NewEncoder(w).Encode(map[string][]db.ClientSummary{"data": data})
+}
+
+// ClientModels returns per-model token/cost aggregates for ONE client
+// (service_name) — the lazy-loaded drill-down behind the Clients panel
+// expandable rows. service_name is required; range parsing mirrors Clients
+// (range=all|today|week|month + from/to overrides). Reads the same
+// claude_pool_requests view as GetClientStats, so the detail rows reconcile
+// with the parent row for the identical range.
+func (h *Handler) ClientModels(w http.ResponseWriter, r *http.Request) {
+	if rejectInvalidDateParams(w, r) {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if h.repo == nil {
+		json.NewEncoder(w).Encode(map[string][]db.ClientModelSummary{"data": {}})
+		return
+	}
+	serviceName := r.URL.Query().Get("service_name")
+	if serviceName == "" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "Parameter 'service_name' is required", nil)
+		return
+	}
+	from, to := rangeToFromTo(r.URL.Query().Get("range"))
+	if v := r.URL.Query().Get("from"); v != "" && isValidDate(v) {
+		from = v
+	}
+	if v := r.URL.Query().Get("to"); v != "" && isValidDate(v) {
+		to = v
+	}
+	data, err := h.repo.GetClientModelStats(r.Context(), serviceName, from, to)
+	if err != nil {
+		log.Printf("client models error: %v", err)
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
+		return
+	}
+	if data == nil {
+		data = []db.ClientModelSummary{}
+	}
+	json.NewEncoder(w).Encode(map[string][]db.ClientModelSummary{"data": data})
 }
 
 // Hours returns (hour-of-day, client, model) detail cells aggregated across

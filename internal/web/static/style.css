@@ -1783,3 +1783,50 @@ td.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: 
     #codex-migrate-start { flex: 1 1 140px; }
     .dbi-cursor-import .dbi-migrate-actions { flex-wrap: wrap; }
 }
+
+/* Clients panel drill-down: expandable per-model rows (2026-11-11).
+   Scoped under #panel-clients so unrelated tables cannot drift. Graphite
+   surfaces only — no new colors; the share bar keeps the parent table's
+   --accent. Transitions stay in the 120-180ms band. */
+#panel-clients tr.client-row { cursor: pointer; }
+#panel-clients tr.client-row:hover td { background: var(--surface2); }
+#panel-clients button.client-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-right: 7px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    vertical-align: middle;
+    transition: color 130ms ease, background 130ms ease;
+}
+#panel-clients button.client-toggle:hover {
+    background: var(--surface3);
+    color: var(--text);
+}
+#panel-clients button.client-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+#panel-clients button.client-toggle svg { transition: transform 150ms ease; }
+#panel-clients button.client-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+#panel-clients tr.client-detail-row > td {
+    padding: 8px 10px 10px 35px; /* aligns the nested table under the client column */
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+}
+#panel-clients .client-models-wrap { margin: 0; background: var(--bg); }
+#panel-clients .client-models-table th,
+#panel-clients .client-models-table td { padding: 4px 16px; }
+#panel-clients .client-detail-loading,
+#panel-clients .client-detail-empty,
+#panel-clients .client-detail-error { padding: 10px 6px; font-size: 12px; }
+#panel-clients .client-detail-loading,
+#panel-clients .client-detail-empty { color: var(--text-muted); }
+#panel-clients .client-detail-error { color: var(--orange); }
