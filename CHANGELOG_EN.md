@@ -6,7 +6,7 @@ This project follows a lightweight changelog format (Keep a Changelog inspired),
 
 ---
 
-## Unreleased
+## [v0.1.9] - 2026-11-11
 
 ### Fixed
 

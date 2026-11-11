@@ -5,7 +5,7 @@
     "note": "Generated from BerriAI/litellm (MIT). Anthropic/Claude intentionally omitted — Claude Code reports authoritative cost_usd; cc-otel never recomputes Claude.",
     "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
     "unit": "per token",
-    "version": "2026-11-05"
+    "version": "2026-11-11"
   },
   "entries": [
     {
@@ -2264,6 +2264,15 @@
       ]
     },
     {
+      "model": "fireworks_ai/accounts/fireworks/routers/deepseek-flash-latest",
+      "input": 3e-7,
+      "output": 0.0000012,
+      "cache_read": 6e-9,
+      "aliases": [
+        "deepseek-flash-latest"
+      ]
+    },
+    {
       "model": "fireworks_ai/accounts/fireworks/routers/deepseek-v4p1-flash-1017-spot",
       "input": 2.1e-7,
       "output": 8.4e-7,
@@ -2342,6 +2351,42 @@
       "cache_read": 3.9e-7
     },
     {
+      "model": "fireworks_ai/accounts/fireworks/routers/glm-fast-latest",
+      "input": 0.0000021,
+      "output": 0.0000066,
+      "cache_read": 3.9e-7,
+      "aliases": [
+        "glm-fast-latest"
+      ]
+    },
+    {
+      "model": "fireworks_ai/accounts/fireworks/routers/glm-flash-latest",
+      "input": 1.5e-7,
+      "output": 5e-7,
+      "cache_read": 3e-8,
+      "aliases": [
+        "glm-flash-latest"
+      ]
+    },
+    {
+      "model": "fireworks_ai/accounts/fireworks/routers/glm-latest",
+      "input": 0.0000014,
+      "output": 0.0000044,
+      "cache_read": 2.6e-7,
+      "aliases": [
+        "glm-latest"
+      ]
+    },
+    {
+      "model": "fireworks_ai/accounts/fireworks/routers/kimi-fast-latest",
+      "input": 0.0000045,
+      "output": 0.0000225,
+      "cache_read": 4.5e-7,
+      "aliases": [
+        "kimi-fast-latest"
+      ]
+    },
+    {
       "model": "fireworks_ai/accounts/fireworks/routers/kimi-k2p6-fast",
       "input": 0.000002,
       "output": 0.000008,
@@ -2373,6 +2418,33 @@
       "input": 0.0000045,
       "output": 0.0000225,
       "cache_read": 4.5e-7
+    },
+    {
+      "model": "fireworks_ai/accounts/fireworks/routers/kimi-latest",
+      "input": 0.000003,
+      "output": 0.000015,
+      "cache_read": 3e-7,
+      "aliases": [
+        "kimi-latest"
+      ]
+    },
+    {
+      "model": "fireworks_ai/accounts/fireworks/routers/minimax-latest",
+      "input": 3e-7,
+      "output": 0.0000012,
+      "cache_read": 6e-8,
+      "aliases": [
+        "minimax-latest"
+      ]
+    },
+    {
+      "model": "fireworks_ai/accounts/fireworks/routers/qwen-max-latest",
+      "input": 0.000002,
+      "output": 0.000006,
+      "cache_read": 2.5e-7,
+      "aliases": [
+        "qwen-max-latest"
+      ]
     },
     {
       "model": "fireworks_ai/accounts/fireworks/routers/spot-deepseek-v4-flash",
@@ -3189,6 +3261,13 @@
       "cache_read": 0.000001
     },
     {
+      "model": "gpt-6-cyber",
+      "input": 0.00002,
+      "output": 0.0001,
+      "cache_read": 0.000002,
+      "cache_creation": 0.000025
+    },
+    {
       "model": "gpt-6-luna",
       "input": 1e-7,
       "output": 5e-7,
@@ -3813,6 +3892,16 @@
       ]
     },
     {
+      "model": "moonshot/kimi-k3.1-pro-highspeed",
+      "input": 0.000004,
+      "output": 0.00002,
+      "cache_read": 2e-7,
+      "cache_creation": 0.000004,
+      "aliases": [
+        "kimi-k3.1-pro-highspeed"
+      ]
+    },
+    {
       "model": "moonshot/moonshot-v1-128k",
       "input": 0.000002,
       "output": 0.000005,
@@ -4415,6 +4504,23 @@
       ]
     },
     {
+      "model": "together_ai/elorian-labs/glimpse-1.0",
+      "input": 6e-7,
+      "output": 0.000003,
+      "cache_read": 6e-8,
+      "aliases": [
+        "glimpse-1.0"
+      ]
+    },
+    {
+      "model": "together_ai/essentialai/rnj-1-instruct",
+      "input": 1.5e-7,
+      "output": 1.5e-7,
+      "aliases": [
+        "rnj-1-instruct"
+      ]
+    },
+    {
       "model": "together_ai/google/gemma-4-31b-it",
       "input": 3.9e-7,
       "output": 9.7e-7,
@@ -4753,9 +4859,9 @@
     },
     {
       "model": "together_ai/qwen/qwen3.7-max",
-      "input": 0.0000015,
-      "output": 0.0000045,
-      "cache_read": 3e-7,
+      "input": 0.0000025,
+      "output": 0.0000075,
+      "cache_read": 5e-7,
       "aliases": [
         "qwen3.7-max"
       ]
