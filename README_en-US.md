@@ -50,7 +50,7 @@ opencode / DSH ──OTLP/HTTP(:4318)───────┘        |
 - **Date ranges** -- Today, 7 Days, 30 Days, All Time, or custom date picker
 - **Chart switching** -- Tokens, Cost, Requests views
 - **Session tracking** -- per-session cost and token aggregation
-- **Clients panel** -- per-client (OTLP `service.name`) tokens / cost / requests / hit rate, read from the never-pruned `api_requests` ledger for full history
+- **Clients panel** -- per-client (OTLP `service.name`) tokens / cost / requests / hit rate, read from the never-pruned `api_requests` ledger for full history; click a row to expand a **per-model** breakdown for that client (sorted by total tokens, with share), lazy-loaded for the current time range
 
 ![Clients panel -- every client in the unified view](./assets/images/clients.png)
 - **Hour of Day pivot** -- the whole range folded into 24 hour-of-day buckets with client x model drill-down: pin a model to see who burned it, pin a client to see what it burned, pin both for a single-series detail
